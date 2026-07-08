@@ -1,0 +1,401 @@
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import ArchiveCard from '../components/ArchiveCard';
+import ConfirmDialog from '../components/ConfirmDialog';
+import { HomeSectionGlyph, getSectionGlyphColor } from '../components/AppGlyphs';
+import { getCropCover, getHideRead, getHistory, hasRemoteHistory, loadHistoryState, removeHistoryItems, setHideRead } from '../lib/history';
+import { runHistoryExistenceCheck } from '../lib/historyMaintenance';
+import { getSyncToken, getWorkerUrl } from '../lib/worker-config';
+
+function HeaderGlyph() {
+  return <HomeSectionGlyph name="continue" size={24} color={getSectionGlyphColor('continue')} />;
+}
+
+function startOfLocalDay(time) {
+  const date = new Date(time);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+function formatHistoryDate(time) {
+  if (!time) return '时间未知';
+  try {
+    return new Date(time).toLocaleDateString('zh-CN', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+  } catch {
+    return '时间未知';
+  }
+}
+
+function historyPeriodFor(time, todayStart = startOfLocalDay(Date.now())) {
+  if (!time) return { key: 'older', title: '更久以前' };
+  const dayStart = startOfLocalDay(time);
+  const ageDays = Math.floor((todayStart - dayStart) / (24 * 60 * 60 * 1000));
+
+  if (ageDays <= 0) {
+    return { key: 'today', title: '今天' };
+  }
+  if (ageDays === 1) {
+    return { key: 'yesterday', title: '昨天' };
+  }
+  if (ageDays < 7) {
+    return { key: 'week', title: '一周前' };
+  }
+  if (ageDays < 30) {
+    return { key: 'month', title: '一个月前' };
+  }
+  return { key: 'older', title: '更久以前' };
+}
+
+function groupHistoryByPeriod(items) {
+  const order = ['today', 'yesterday', 'week', 'month', 'older'];
+  const groups = new Map();
+  const todayStart = startOfLocalDay(Date.now());
+
+  items.forEach((item) => {
+    const period = historyPeriodFor(item.time, todayStart);
+    if (!groups.has(period.key)) {
+      groups.set(period.key, { ...period, items: [] });
+    }
+    groups.get(period.key).items.push(item);
+  });
+
+  return order.map((key) => groups.get(key)).filter(Boolean);
+}
+
+export default function HistoryPage({ onSelectArchive, onBack }) {
+  const [history, setHistoryState] = useState(() => getHistory());
+  const [hideRead, setHideReadState] = useState(getHideRead);
+  const [cropCover] = useState(getCropCover);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [lastSelectedId, setLastSelectedId] = useState(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [isNarrow, setIsNarrow] = useState(window.innerWidth < 600);
+
+  useEffect(() => {
+    if (hasRemoteHistory()) {
+      loadHistoryState().then((state) => {
+        setHistoryState(state.histories);
+        setHideReadState(state.hideRead);
+      }).catch(() => setHistoryState(getHistory()));
+    }
+  }, []);
+
+  useEffect(() => {
+    const refresh = () => {
+      setHistoryState(getHistory());
+      setSelectedIds((prev) => {
+        const visible = new Set(getHistory().map((item) => item.id));
+        return new Set(Array.from(prev).filter((id) => visible.has(id)));
+      });
+    };
+    window.addEventListener('lrr:history-changed', refresh);
+    return () => window.removeEventListener('lrr:history-changed', refresh);
+  }, []);
+
+  useEffect(() => {
+    const check = () => setIsNarrow(window.innerWidth < 600);
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
+
+  const filteredHistory = useMemo(() => {
+    if (!hideRead) return history;
+    return history.filter((h) => !(h.total > 0 && h.page >= h.total));
+  }, [history, hideRead]);
+
+  const groupedHistory = useMemo(() => groupHistoryByPeriod(filteredHistory), [filteredHistory]);
+
+  const selectedCount = selectedIds.size;
+
+  const toggleSelectionMode = useCallback(() => {
+    setSelectionMode((value) => {
+      const next = !value;
+      if (!next) {
+        setSelectedIds(new Set());
+        setLastSelectedId(null);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleToggleHideRead = useCallback(() => {
+    setHideReadState((value) => {
+      const next = !value;
+      setHideRead(next).catch(() => {});
+      return next;
+    });
+  }, []);
+
+  const handleSyncHistory = useCallback(async () => {
+    if (!getWorkerUrl() || !getSyncToken() || syncing) return;
+    setSyncing(true);
+    try {
+      const state = await loadHistoryState();
+      setHistoryState(state.histories);
+      setHideReadState(state.hideRead);
+    } finally {
+      setSyncing(false);
+    }
+  }, [syncing]);
+
+  const handleCheckHistory = useCallback(async () => {
+    if (checking) return;
+    setChecking(true);
+    try {
+      await runHistoryExistenceCheck({ force: true });
+      setHistoryState(getHistory());
+    } finally {
+      setChecking(false);
+    }
+  }, [checking]);
+
+  const toggleSelection = useCallback((id, event) => {
+    if (!id) return;
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (event?.shiftKey && lastSelectedId) {
+        const ids = filteredHistory.map((item) => item.id);
+        const from = ids.indexOf(lastSelectedId);
+        const to = ids.indexOf(id);
+        if (from >= 0 && to >= 0) {
+          const [start, end] = from < to ? [from, to] : [to, from];
+          ids.slice(start, end + 1).forEach((rangeId) => next.add(rangeId));
+        } else {
+          next.add(id);
+        }
+      } else if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+    setLastSelectedId(id);
+  }, [filteredHistory, lastSelectedId]);
+
+  const selectAllVisible = useCallback(() => {
+    setSelectedIds(new Set(filteredHistory.map((item) => item.id)));
+    setLastSelectedId(filteredHistory[0]?.id || null);
+  }, [filteredHistory]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    setLastSelectedId(null);
+  }, []);
+
+  const requestBatchDelete = useCallback(() => {
+    if (selectedIds.size === 0) return;
+    setDeleteTarget({ ids: Array.from(selectedIds), batch: true });
+  }, [selectedIds]);
+
+  const requestSingleDelete = useCallback((item) => {
+    if (!item?.id) return;
+    setDeleteTarget({ ids: [item.id], title: item.title, batch: false });
+  }, []);
+
+  const handleRemoveHistory = useCallback(async () => {
+    if (!Array.isArray(deleteTarget?.ids) || deleteTarget.ids.length === 0) return;
+    await removeHistoryItems(deleteTarget.ids);
+    setHistoryState(getHistory());
+    setSelectedIds((prev) => {
+      const removeSet = new Set(deleteTarget.ids);
+      return new Set(Array.from(prev).filter((id) => !removeSet.has(id)));
+    });
+    setDeleteTarget(null);
+  }, [deleteTarget]);
+
+  return (
+    <>
+      <div style={{ padding: isNarrow ? '16px 10px' : '24px 16px', maxWidth: '1400px', margin: '0 auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: '16px', marginBottom: '24px', flexWrap: 'wrap' }}>
+          <div>
+            <h1 style={{ fontWeight: 600, margin: '0 0 8px 0', fontSize: '28px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <HeaderGlyph />
+              阅读历史
+            </h1>
+            <div style={{ color: 'var(--text-sub)', fontSize: '14px' }}>
+              共 {history.length} 条记录{hideRead ? `，当前显示 ${filteredHistory.length} 条` : ''}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button className="btn" onClick={onBack} style={{ fontSize: '13px' }}>返回</button>
+            <button
+              className="btn"
+              onClick={handleSyncHistory}
+              disabled={!getWorkerUrl() || !getSyncToken() || syncing}
+              style={{ fontSize: '13px', opacity: !getWorkerUrl() || !getSyncToken() ? 0.5 : 1 }}
+              title={!getWorkerUrl() || !getSyncToken() ? '配置 Worker 后可从远端读取历史记录' : '从 Worker 刷新阅读历史'}
+            >
+              {syncing ? '刷新中' : '刷新'}
+            </button>
+            <button className="btn" onClick={handleCheckHistory} disabled={checking} style={{ fontSize: '13px' }}>
+              {checking ? '检查中' : '清理失效'}
+            </button>
+          </div>
+        </div>
+
+        <section className="glass-panel section-reveal section-reveal-delay-1" style={{ padding: isNarrow ? '16px 14px' : '20px 24px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '18px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '18px', fontWeight: 600 }}>
+              <HeaderGlyph />
+              <span>全部历史记录</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-sub)', fontSize: '13px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              {selectedCount > 0 && (
+                <>
+                  <span>{selectedCount} 项已选</span>
+                  <button className="btn" onClick={requestBatchDelete} style={{ padding: '6px 12px', fontSize: '12px' }}>删除选中</button>
+                  <button className="btn" onClick={clearSelection} style={{ padding: '6px 12px', fontSize: '12px' }}>取消选择</button>
+                </>
+              )}
+              {selectionMode && selectedCount === 0 && filteredHistory.length > 0 && (
+                <button className="btn" onClick={selectAllVisible} style={{ padding: '6px 12px', fontSize: '12px' }}>全选当前</button>
+              )}
+              {filteredHistory.length > 0 && (
+                <button
+                  className="btn"
+                  onClick={toggleSelectionMode}
+                  style={{
+                    padding: '6px 12px',
+                    fontSize: '12px',
+                    background: selectionMode ? 'var(--accent)' : undefined,
+                    borderColor: selectionMode ? 'var(--accent)' : undefined,
+                    color: selectionMode ? '#fff' : undefined,
+                  }}
+                >
+                  {selectionMode ? '退出多选' : '多选'}
+                </button>
+              )}
+              <span>隐藏已读完</span>
+              <button
+                type="button"
+                onClick={handleToggleHideRead}
+                style={{
+                  width: '36px',
+                  height: '20px',
+                  borderRadius: '10px',
+                  background: hideRead ? 'var(--accent)' : 'rgba(255,255,255,0.2)',
+                  border: 'none',
+                  cursor: 'pointer',
+                  position: 'relative',
+                  transition: 'background 0.2s ease',
+                  flexShrink: 0,
+                }}
+                title={hideRead ? '显示已读完' : '隐藏已读完'}
+              >
+                <span style={{
+                  position: 'absolute',
+                  top: '2px',
+                  left: hideRead ? '18px' : '2px',
+                  width: '16px',
+                  height: '16px',
+                  borderRadius: '50%',
+                  background: '#fff',
+                  transition: 'left 0.2s ease',
+                }} />
+              </button>
+            </div>
+          </div>
+
+          {filteredHistory.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: isNarrow ? '22px' : '28px' }}>
+              {groupedHistory.map((group) => (
+                <div key={group.key} style={{ display: 'flex', flexDirection: 'column', gap: isNarrow ? '12px' : '16px' }}>
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'minmax(92px, auto) 1fr auto',
+                    alignItems: 'center',
+                    gap: isNarrow ? '10px' : '14px',
+                    color: 'var(--text-sub)',
+                  }}>
+                    <div style={{ minWidth: 0 }}>
+                      <span style={{ color: '#e8edf5', fontSize: '15px', fontWeight: 700 }}>{group.title}</span>
+                    </div>
+                    <div style={{ height: '1px', background: 'linear-gradient(90deg, rgba(255,255,255,0.18), rgba(255,255,255,0.04))' }} />
+                    <div style={{ fontSize: '12px', whiteSpace: 'nowrap' }}>
+                      {group.items.length} 条
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gridAutoFlow: 'dense', gap: isNarrow ? '10px' : '16px', justifyItems: 'center' }}>
+                    {group.items.map((h) => {
+                      const selected = selectedIds.has(h.id);
+                      return (
+                        <ArchiveCard
+                          key={`all-hist-${group.key}-${h.id}`}
+                          archive={h}
+                          wrapStyle={{ position: 'relative' }}
+                          overlay={selectionMode ? (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleSelection(h.id, e);
+                              }}
+                              title={`选择历史记录，最后阅读于 ${formatHistoryDate(h.time)}`}
+                              style={{
+                                position: 'absolute',
+                                zIndex: 5,
+                                top: '8px',
+                                left: '8px',
+                                width: '28px',
+                                height: '28px',
+                                borderRadius: '8px',
+                                border: selected ? '1px solid var(--accent)' : '1px solid rgba(255,255,255,0.26)',
+                                background: selected ? 'var(--accent)' : 'rgba(8,10,14,0.78)',
+                                color: '#fff',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                boxShadow: '0 6px 18px rgba(0,0,0,0.35)',
+                              }}
+                            >
+                              {selected ? '✓' : ''}
+                            </button>
+                          ) : null}
+                          onClick={(e) => {
+                            if (selectionMode) {
+                              toggleSelection(h.id, e);
+                            } else {
+                              onSelectArchive(h.id);
+                            }
+                          }}
+                          onLongPress={() => requestSingleDelete(h)}
+                          longPressTitle="删除阅读记录"
+                          currentPage={h.page}
+                          showProgressBar
+                          noCrop={!cropCover}
+                        />
+                      );
+                    })}
+                  </div>
+
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ textAlign: 'center', padding: '48px 16px', color: 'var(--text-sub)', fontSize: '14px' }}>
+              {hideRead && history.length > 0 ? '所有归档均已读完' : '暂无阅读历史'}
+            </div>
+          )}
+        </section>
+      </div>
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="确认删除阅读记录"
+        message={deleteTarget ? (deleteTarget.batch ? `将选中的 ${deleteTarget.ids.length} 条记录从阅读历史中移除。再次阅读对应归档时会重新加入历史记录。` : `将“${deleteTarget.title}”从阅读历史中移除。再次阅读该归档时会重新加入历史记录。`) : ''}
+        confirmLabel="确认删除"
+        cancelLabel="取消"
+        onConfirm={handleRemoveHistory}
+        onCancel={() => setDeleteTarget(null)}
+      />
+    </>
+  );
+}

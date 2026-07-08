@@ -1,0 +1,470 @@
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { lrrApi } from '../lib/api';
+import { getCropCover } from '../lib/history';
+import { useHorizontalScroller } from '../lib/horizontalScroller';
+import { navigateToArchive } from '../lib/navigation';
+import ArchiveCard from './ArchiveCard';
+import ArchiveContextMenu from './ArchiveContextMenu';
+import ConfirmDialog from './ConfirmDialog';
+
+const CUSTOM_WEIGHT_TAGS = {
+  'female:ahegao': 1.5, 'female:anal intercourse': 2, 'female:anal': 2,
+  'female:bbw': 4, 'female:beauty mark': 1.5, 'female:big ass': 1.5,
+  'female:big breast': 2, 'female:bikini': 1.5, 'female:blowjob': 1.5,
+  'female:bondage': 2, 'female:cheating': 2, 'female:corruption': 2,
+  'female:dark skin': 2, 'female:defloration': 2, 'female:dickgirl on female': 3,
+  'female:double penetration': 2, 'female:exhibitionism': 1.5, 'female:femdom': 3,
+  'female:fingering': 1.5, 'female:futanari': 5, 'female:glasses': 1.5,
+  'female:gloves': 1.5, 'female:gyaru': 3, 'female:hairy': 2, 'female:handjob': 1.5,
+  'female:harem': 3, 'female:huge breasts': 2, 'female:impregnation': 2,
+  'female:kemonomimi': 2, 'female:kissing': 1.5, 'female:lactation': 2,
+  'female:lingerie': 2, 'female:lolicon': 5, 'female:masturbation': 1.5,
+  'female:milf': 3, 'female:mind control': 3, 'female:mother': 3,
+  'female:nakadashi': 2, 'female:netorare': 3, 'female:paizuri': 1.5,
+  'female:pantyhose': 2, 'female:ponytail': 1.5, 'female:public use': 3,
+  'female:rape': 3, 'female:schoolgirl uniform': 1.5, 'female:sex toys': 1.5,
+  'female:shemale': 4, 'female:sister': 2, 'female:squirting': 1.5,
+  'female:stockings': 2, 'female:sweating': 1.5, 'female:swimsuit': 1.5,
+  'female:tomboy': 4, 'female:yuri': 3,
+  'male:anal': 3, 'male:bbm': 3, 'male:big penis': 1.5, 'male:condom': 1.5,
+  'male:crossdressing': 3, 'male:dark skin': 3, 'male:dilf': 3,
+  'male:gender change': 4, 'male:harem': 3, 'male:netorare': 3,
+  'male:shotacon': 3, 'male:tomgirl': 5, 'male:virginity': 3, 'male:yaoi': 4,
+  'mixed:ffm threesome': 2, 'mixed:group': 2, 'mixed:incest': 3,
+  'mixed:mmf threesome': 2,
+  'other:3d': 3, 'parody:': 2, 'character:': 2, 'cosplayer:': 3,
+  'group:': 0.1, 'artist:': 0.1, 'category:': 0.1,
+  'other:ai 超分': 0, 'other:mosaic censorship': 0, 'other:uncensored': 0,
+  'language:': 0, 'uploader:': 0, 'timestamp:': 0, 'source:': 0, 'dateadded:': 0,
+};
+
+const LIKE_NAMESPACES = ['female', 'male', 'others'];
+const LIKE_FALLBACK_NS = ['character', 'parody'];
+const PER_VIEW_LIMIT = 15;
+
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function calculateSimilarity(sourceTagsLower, archive) {
+  const tagsStr = archive.tags;
+  if (!tagsStr) return 0;
+
+  const candidateTags = tagsStr.split(',');
+  let totalScore = 0;
+
+  for (const rawTag of candidateTags) {
+    const tag = rawTag.trim().toLowerCase();
+    if (!tag) continue;
+    if (!sourceTagsLower.has(tag)) continue;
+
+    let pts = CUSTOM_WEIGHT_TAGS[tag];
+    if (pts === undefined) {
+      const ci = tag.indexOf(':');
+      if (ci > 0) pts = CUSTOM_WEIGHT_TAGS[tag.slice(0, ci + 1)];
+    }
+    if (pts === undefined || pts === 0) continue;
+
+    totalScore += pts * (0.8 + Math.random() * 0.4);
+  }
+
+  if (totalScore === 0) return 0;
+
+  const pagecount = +archive.pagecount;
+  const progress = +archive.progress;
+  if (pagecount > 0 && progress >= pagecount) {
+    totalScore *= 0.5;
+  }
+
+  return totalScore;
+}
+
+export default function Recommendations({ currentArchive }) {
+  const [tab, setTab] = useState('sim');
+  const [collapsed, setCollapsed] = useState(false);
+  const [simData, setSimData] = useState([]);
+  const [artistData, setArtistData] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [isNarrow, setIsNarrow] = useState(window.innerWidth < 600);
+  const [retryTick, setRetryTick] = useState(0);
+  const [archiveMenu, setArchiveMenu] = useState(null);
+  const [archiveDeleteTarget, setArchiveDeleteTarget] = useState(null);
+  const retryTimerRef = useRef(null);
+  const retryCountRef = useRef(0);
+  const scroller = useHorizontalScroller();
+  useEffect(() => {
+    const check = () => setIsNarrow(window.innerWidth < 600);
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
+
+  const sourceTagsLower = useMemo(() => {
+    if (!currentArchive?.tags) return new Set();
+    return new Set(currentArchive.tags.split(',').map(t => t.trim().toLowerCase()).filter(Boolean));
+  }, [currentArchive?.tags]);
+
+  const noCrop = useMemo(() => !getCropCover(), [currentArchive?.arcid]);
+
+  const artistTags = useMemo(() => {
+    if (!currentArchive?.tags) return [];
+    return currentArchive.tags.split(',').map(t => t.trim()).filter(Boolean).filter(t => {
+      const p = t.split(':')[0].toLowerCase();
+      return p === 'artist' || p === 'group';
+    });
+  }, [currentArchive?.tags]);
+
+  const sourceCategoryLower = useMemo(() => {
+    if (!currentArchive?.tags) return new Set();
+    return new Set(currentArchive.tags.split(',').map(t => t.trim()).filter(Boolean).filter(t => t.split(':')[0].toLowerCase() === 'category').map(t => t.toLowerCase()));
+  }, [currentArchive?.tags]);
+
+  useEffect(() => {
+    if (!currentArchive?.arcid || !currentArchive?.tags) return;
+    const cacheKey = `lrr_rec_cache_v2_${currentArchive.arcid}`;
+    let cancelled = false;
+
+    const fetchAll = async () => {
+      setLoading(true);
+      try {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          try {
+            const parsed = JSON.parse(cached);
+            if (Date.now() - parsed.t < 86400000) {
+              if (cancelled) return;
+              setSimData(parsed.sim || []);
+              setArtistData(parsed.artist || []);
+              setLoading(false);
+              return;
+            }
+          } catch {}
+        }
+
+        const [sim, artist] = await Promise.all([
+          buildYouMayLike(),
+          buildSameAuthor(),
+        ]);
+
+        if (cancelled) return;
+        setSimData(sim);
+        setArtistData(artist);
+        if (sim.length || artist.length) {
+          try { localStorage.setItem(cacheKey, JSON.stringify({ t: Date.now(), sim, artist })); } catch {}
+        }
+      } catch {}
+      if (!cancelled) setLoading(false);
+    };
+    fetchAll();
+    return () => { cancelled = true; };
+  }, [currentArchive?.arcid, retryTick]);
+
+  const buildYouMayLike = async () => {
+    const tags = currentArchive.tags.split(',').map(t => t.trim()).filter(Boolean);
+
+    const primary = [], fallback = [];
+    tags.forEach(raw => {
+      const parts = raw.split(':');
+      if (parts.length <= 1) return;
+      const ns = parts[0].toLowerCase();
+      if (LIKE_NAMESPACES.includes(ns)) primary.push(raw);
+      else if (LIKE_FALLBACK_NS.includes(ns)) fallback.push(raw);
+    });
+
+    let base = primary.length > 0 ? primary : fallback;
+    if (base.length === 0) return [];
+
+    let maxSearch = 3;
+    if (tags.length > 40) maxSearch = 7;
+    else if (tags.length > 20) maxSearch = 5;
+
+    const queryTags = shuffle(base).slice(0, Math.min(maxSearch, base.length));
+    const map = new Map();
+
+    for (const tag of queryTags) {
+      try {
+        const res = await lrrApi.search(`${tag}$`);
+        (res.data || []).forEach(arc => {
+          if (arc.arcid !== currentArchive.arcid && !map.has(arc.arcid)) {
+            map.set(arc.arcid, arc);
+          }
+        });
+      } catch {}
+    }
+
+    let all = Array.from(map.values());
+    if (all.length === 0) return [];
+
+    all.forEach(arc => { arc._score = calculateSimilarity(sourceTagsLower, arc); });
+
+    const sameCat = [], otherCat = [];
+    all.forEach(arc => {
+      const hasCat = (arc.tags || '').split(',').some(t => sourceCategoryLower.has(t.trim().toLowerCase()));
+      if (hasCat) sameCat.push(arc);
+      else otherCat.push(arc);
+    });
+
+    const sortDesc = (a, b) => b._score - a._score;
+    let picked;
+    if (sameCat.length >= PER_VIEW_LIMIT) {
+      picked = sameCat.sort(sortDesc).slice(0, PER_VIEW_LIMIT);
+    } else {
+      picked = sameCat.sort(sortDesc);
+      const need = PER_VIEW_LIMIT - picked.length;
+      if (need > 0) picked = picked.concat(otherCat.sort(sortDesc).slice(0, need));
+    }
+    return picked;
+  };
+
+  const buildSameAuthor = async () => {
+    if (artistTags.length === 0) return [];
+    const map = new Map();
+
+    for (const tag of shuffle(artistTags)) {
+      if (map.size >= PER_VIEW_LIMIT * 2) break;
+      try {
+        const res = await lrrApi.search(`${tag}$`);
+        (res.data || []).forEach(arc => {
+          if (arc.arcid !== currentArchive.arcid && !map.has(arc.arcid)) {
+            map.set(arc.arcid, arc);
+          }
+        });
+      } catch {}
+      if (map.size >= PER_VIEW_LIMIT) break;
+    }
+
+    const all = Array.from(map.values());
+    all.sort((a, b) => {
+      const ra = (parseInt(a.pagecount) > 0 && parseInt(a.progress) >= parseInt(a.pagecount));
+      const rb = (parseInt(b.pagecount) > 0 && parseInt(b.progress) >= parseInt(b.pagecount));
+      if (ra !== rb) return ra ? 1 : -1;
+      return (a.title || '').localeCompare(b.title || '');
+    });
+    return all.slice(0, PER_VIEW_LIMIT);
+  };
+
+  const refreshCache = useCallback(async () => {
+    const cacheKey = `lrr_rec_cache_v2_${currentArchive.arcid}`;
+    try { localStorage.removeItem(cacheKey); } catch {}
+    retryCountRef.current = 0;
+    setLoading(true);
+    try {
+      const [sim, artist] = await Promise.all([buildYouMayLike(), buildSameAuthor()]);
+      setSimData(sim);
+      setArtistData(artist);
+      if (sim.length || artist.length) {
+        try { localStorage.setItem(cacheKey, JSON.stringify({ t: Date.now(), sim, artist })); } catch {}
+      }
+    } catch {}
+    setLoading(false);
+  }, [currentArchive]);
+
+  useEffect(() => {
+    if (!currentArchive?.arcid) return undefined;
+    if (loading) return undefined;
+    if (simData.length > 0 || artistData.length > 0 || artistTags.length === 0) {
+      retryCountRef.current = 0;
+      return undefined;
+    }
+    if (retryCountRef.current >= 2) return undefined;
+    retryTimerRef.current = setTimeout(() => {
+      retryCountRef.current += 1;
+      setRetryTick((v) => v + 1);
+    }, 1200);
+    return () => {
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+    };
+  }, [artistData.length, artistTags.length, currentArchive?.arcid, loading, simData.length]);
+
+  const toggleCollapse = () => setCollapsed(v => !v);
+  const data = tab === 'sim' ? simData : artistData;
+  const hasArtist = artistData.length > 0;
+  const skeletonCount = isNarrow ? 6 : 8;
+  const contentKey = loading
+    ? `loading-${currentArchive?.arcid || ''}`
+    : `${tab}-${data.map((arc) => arc.arcid || arc.id).join('-')}`;
+
+  const handleCardClick = (arc) => {
+    navigateToArchive(arc.arcid || arc.id);
+  };
+
+  const handleOpenArchiveMenu = useCallback((archive, point) => {
+    setArchiveMenu({ archive, x: point.x, y: point.y });
+  }, []);
+
+  const handleArchiveDownload = useCallback(async (archive) => {
+    const archiveId = archive?.arcid || archive?.id;
+    if (!archiveId) return;
+    try {
+      const { blob, filename } = await lrrApi.downloadArchive(archiveId);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename || `${archiveId}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      alert(err.message || '下载失败');
+    }
+  }, []);
+
+  const handleArchiveCopyLink = useCallback(async (archive) => {
+    const archiveId = archive?.arcid || archive?.id;
+    if (!archiveId) return;
+    const url = `${window.location.origin}/?id=${encodeURIComponent(archiveId)}`;
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      prompt('复制归档链接:', url);
+    }
+  }, []);
+
+  const handleArchiveDelete = useCallback(async () => {
+    const archiveId = archiveDeleteTarget?.arcid || archiveDeleteTarget?.id;
+    if (!archiveId) return;
+    try {
+      await lrrApi.deleteArchive(archiveId);
+      setSimData((prev) => prev.filter((arc) => (arc.arcid || arc.id) !== archiveId));
+      setArtistData((prev) => prev.filter((arc) => (arc.arcid || arc.id) !== archiveId));
+      setArchiveDeleteTarget(null);
+    } catch (err) {
+      alert(err.message || '删除失败');
+    }
+  }, [archiveDeleteTarget]);
+
+  if (!currentArchive || (!loading && simData.length === 0 && artistData.length === 0 && artistTags.length === 0)) return null;
+
+  return (
+    <>
+    <div data-lrr-recommendations className="section-reveal section-reveal-delay-2" style={{ width: '100%', marginTop: '20px', boxSizing: 'border-box' }}>
+      <div className="glass-panel" style={{
+        width: '100%', maxWidth: '1400px', margin: '0 auto', boxSizing: 'border-box',
+        padding: 0,
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)',
+        maxHeight: collapsed ? '46px' : '380px',
+      }}>
+        <div style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          padding: isNarrow ? '0 14px' : '0 20px', height: '46px', minHeight: '46px',
+          borderBottom: collapsed ? '1px solid transparent' : '1px solid rgba(255,255,255,0.06)',
+          fontSize: '14px', color: '#e3e9f3', userSelect: 'none',
+        }}>
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+            <button
+              onClick={() => { if (collapsed) toggleCollapse(); setTab('sim'); }}
+              className="btn"
+              style={{
+                background: tab === 'sim' ? 'var(--accent)' : 'transparent',
+                border: tab === 'sim' ? '1px solid var(--accent)' : '1px solid rgba(255,255,255,0.15)',
+                color: tab === 'sim' ? '#fff' : '#a7b1c2',
+                fontSize: '13px', fontWeight: 600, cursor: 'pointer',
+                padding: '5px 12px', borderRadius: '6px', transition: 'all 0.2s',
+              }}
+            >猜你喜欢</button>
+            {hasArtist && (
+              <button
+                onClick={() => { if (collapsed) toggleCollapse(); setTab('artist'); }}
+                className="btn"
+                style={{
+                  background: tab === 'artist' ? 'var(--accent)' : 'transparent',
+                  border: tab === 'artist' ? '1px solid var(--accent)' : '1px solid rgba(255,255,255,0.15)',
+                  color: tab === 'artist' ? '#fff' : '#a7b1c2',
+                  fontSize: '13px', fontWeight: 600, cursor: 'pointer',
+                  padding: '5px 12px', borderRadius: '6px', transition: 'all 0.2s',
+                }}
+              >同作者</button>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
+            <button onClick={refreshCache} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ccc', opacity: 0.7, padding: '4px', borderRadius: '4px', display: 'flex' }} title="清理缓存并刷新">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+            </button>
+            <button onClick={toggleCollapse} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ccc', opacity: 0.8, padding: '4px', borderRadius: '4px', display: 'flex' }}>
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" style={{ transition: 'transform 0.3s', transform: collapsed ? 'rotate(180deg)' : 'rotate(0deg)' }}><path d="M6 15l6-6 6 6z"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div
+          ref={scroller.ref}
+          onWheelCapture={scroller.onWheelCapture}
+          onScroll={scroller.onScroll}
+          onMouseDown={scroller.onMouseDown}
+          onClickCapture={scroller.onClickCapture}
+          onDragStart={scroller.onDragStart}
+          style={{
+            display: 'flex', flexDirection: 'row', overflowX: 'auto', overflowY: 'hidden',
+            gap: '10px', padding: isNarrow ? '10px 14px 16px' : '14px 20px 16px', scrollBehavior: 'smooth',
+            scrollbarWidth: 'none',
+            overscrollBehaviorY: 'contain',
+            ...scroller.getTouchScrollStyle(),
+            ...scroller.getMouseScrollStyle(),
+          }}
+          className="no-scrollbar"
+        >
+          <div key={contentKey} className="component-content-fade" style={{ display: 'flex', gap: '10px', padding: loading ? '4px 0' : 0, flexShrink: 0, minWidth: 'max-content' }}>
+            {loading ? (
+              <>
+              {Array.from({ length: skeletonCount }).map((_, i) => (
+                <div key={`rsk-${i}`} style={{
+                  flexShrink: 0, width: '150px', minWidth: '150px',
+                  background: 'rgba(255,255,255,0.04)', borderRadius: '12px',
+                  border: '1px solid rgba(255,255,255,0.06)',
+                  overflow: 'hidden', display: 'flex', flexDirection: 'column',
+                }}>
+                  <div style={{
+                    width: '100%', height: '210px',
+                    background: 'linear-gradient(90deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.04) 75%)',
+                    backgroundSize: '200% 100%',
+                    animation: 'shimmer 1.5s infinite',
+                  }} />
+                  <div style={{ padding: '8px 10px 10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <div style={{ height: '10px', borderRadius: '4px', background: 'rgba(255,255,255,0.06)', width: '80%' }} />
+                    <div style={{ height: '3px', borderRadius: '2px', background: 'rgba(255,255,255,0.08)', width: '100%' }}>
+                      <div style={{ height: '100%', borderRadius: '2px', background: 'rgba(255,255,255,0.04)', width: '40%' }} />
+                    </div>
+                    <div style={{ height: '8px', borderRadius: '4px', background: 'rgba(255,255,255,0.04)', width: '60%' }} />
+                  </div>
+                </div>
+              ))}
+              </>
+            ) : data.length === 0 ? (
+              <div style={{ padding: '24px 8px', color: 'var(--text-sub)', fontStyle: 'italic', fontSize: '13px' }}>暂无推荐结果。</div>
+            ) : (
+              data.map(arc => (
+                <ArchiveCard key={arc.arcid || arc.id} archive={arc} onClick={() => handleCardClick(arc)} onArchiveContextMenu={handleOpenArchiveMenu} noCrop={noCrop} />
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+    <ArchiveContextMenu
+      menu={archiveMenu}
+      onClose={() => setArchiveMenu(null)}
+      onRead={(archive) => handleCardClick(archive)}
+      onDownload={handleArchiveDownload}
+      onCopyLink={handleArchiveCopyLink}
+      onDelete={(archive) => setArchiveDeleteTarget(archive)}
+    />
+    <ConfirmDialog
+      open={!!archiveDeleteTarget}
+      title="确认删除归档"
+      message={archiveDeleteTarget ? `将从 LANraragi 中删除“${archiveDeleteTarget.title || archiveDeleteTarget.arcid || archiveDeleteTarget.id}”。此操作不可撤销。` : ''}
+      confirmLabel="确认删除"
+      cancelLabel="取消"
+      onConfirm={handleArchiveDelete}
+      onCancel={() => setArchiveDeleteTarget(null)}
+    />
+    </>
+  );
+}
+

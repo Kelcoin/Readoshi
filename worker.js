@@ -1,0 +1,790 @@
+addEventListener('fetch', (event) => {
+  event.respondWith(handleRequest(event.request));
+});
+
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, x-sync-token',
+  'Access-Control-Max-Age': '86400',
+};
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: Object.assign({}, CORS, { 'Content-Type': 'application/json' }),
+  });
+}
+
+function text(data, status = 200, extraHeaders = {}) {
+  return new Response(data, {
+    status,
+    headers: Object.assign({}, CORS, { 'Content-Type': 'text/html; charset=utf-8' }, extraHeaders),
+  });
+}
+
+// ── Memory-Cached State (loaded once at first request) ──────────
+let tokenLoadPromise = null;      // Promise that resolves once KV tokens are loaded
+let cachedTokens = new Set();     // Set<string>; empty set means no token can pass
+let authEnabled = true;           // Worker auth is mandatory for sync and EH proxy routes
+let requestCount = 0;             // in-memory counter, seeded from KV on first load
+
+// ── IP Rate Limiter ────────────────────────────────────────────
+// In-memory only (resets on cold start).  Tracks failed auths per IP.
+const ipFailures = new Map();      // IP → { count, firstSeen }
+const ipBans = new Map();          // IP → banExpiry (timestamp)
+const MAX_FAILURES = 5;            // failures before temporary ban
+const FAILURE_WINDOW_MS = 60000;   // 1 minute rolling window
+const BAN_DURATION_MS = 300000;    // 5 minute ban
+
+function getClientIP(request) {
+  return request.headers.get('cf-connecting-ip') ||
+    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+    request.headers.get('x-real-ip') ||
+    '0.0.0.0';
+}
+
+function isIPBanned(ip) {
+  const banExpiry = ipBans.get(ip);
+  if (!banExpiry) return false;
+  if (Date.now() > banExpiry) {
+    ipBans.delete(ip);
+    ipFailures.delete(ip);
+    return false;
+  }
+  return true;
+}
+
+function recordAuthFailure(ip) {
+  const now = Date.now();
+  const entry = ipFailures.get(ip);
+  if (!entry || now - entry.firstSeen > FAILURE_WINDOW_MS) {
+    ipFailures.set(ip, { count: 1, firstSeen: now });
+    return;
+  }
+  entry.count += 1;
+  if (entry.count >= MAX_FAILURES) {
+    ipBans.set(ip, now + BAN_DURATION_MS);
+    ipFailures.delete(ip);
+  }
+}
+
+function recordAuthSuccess(ip) {
+  ipFailures.delete(ip);
+  ipBans.delete(ip);
+}
+
+// ── Token Auth ─────────────────────────────────────────────────
+function parseTokens(raw) {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return [];
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) {
+      return parsed.map(t => String(t).trim()).filter(Boolean);
+    }
+  } catch {}
+
+  return trimmed.split(/[\s,]+/).map(t => t.trim()).filter(Boolean);
+}
+
+// Load tokens from KV exactly once.  All concurrent callers share
+// the same Promise so the KV is only read a single time.
+// Returns true if tokens were successfully loaded from KV.
+async function loadTokens() {
+  if (tokenLoadPromise) return tokenLoadPromise;
+  tokenLoadPromise = (async () => {
+    if (typeof HISTORY_KV === 'undefined') {
+      authEnabled = true;
+      cachedTokens = new Set();
+      return false;
+    }
+    try {
+      const raw = await HISTORY_KV.get('tokens');
+      const tokens = parseTokens(raw);
+      authEnabled = true;
+      cachedTokens = new Set(tokens);
+      // Seed in-memory counter from KV
+      try {
+        const rawCount = await HISTORY_KV.get('stats:requests');
+        requestCount = rawCount ? parseInt(rawCount) || 0 : 0;
+      } catch {}
+      return true;
+    } catch (e) {
+      // KV read error → fail CLOSED (reject all tokens)
+      // This prevents the scenario where KV is temporarily unavailable
+      // and unauthorized requests slip through.
+      authEnabled = true;
+      cachedTokens = new Set(); // empty set → NO token matches
+      return false;
+    }
+  })();
+  return tokenLoadPromise;
+}
+
+// Force reload tokens from KV (called from status page admin action)
+async function reloadTokens() {
+  tokenLoadPromise = null;
+  return loadTokens();
+}
+
+function isValidToken(token) {
+  // Empty or missing KV tokens fail closed: no token can match.
+  if (!token) return false;
+  return cachedTokens.has(token);
+}
+
+async function ensureTokensLoaded() {
+  await loadTokens();
+}
+
+// Increment request counter (in-memory; periodically flushed to KV)
+function incrementCounter() {
+  requestCount += 1;
+}
+
+// ── Auth Guard ─────────────────────────────────────────────────
+async function requireAuth(request) {
+  await ensureTokensLoaded();
+
+  const ip = getClientIP(request);
+
+  if (isIPBanned(ip)) {
+    const expiry = ipBans.get(ip);
+    const remainingSec = Math.ceil((expiry - Date.now()) / 1000);
+    return json({
+      error: 'Too many unauthorized requests. Try again later.',
+      retryAfter: remainingSec,
+    }, 429);
+  }
+
+  const url = new URL(request.url);
+  const token = request.headers.get('x-sync-token') || url.searchParams.get('token') || '';
+
+  if (!isValidToken(token)) {
+    recordAuthFailure(ip);
+    return json({ error: 'Unauthorized', detail: 'Invalid or missing token' }, 401);
+  }
+
+  recordAuthSuccess(ip);
+  return null;
+}
+
+// ── Shared EH fetch helper ─────────────────────────────────────
+function buildEHHeaders(hostname, cookie) {
+  const h = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Origin': 'https://' + hostname,
+    'Referer': 'https://' + hostname + '/',
+  };
+  if (cookie) h['Cookie'] = cookie;
+  return h;
+}
+
+// ── EH Gallery Proxy (POST /) ──────────────────────────────────
+function detectNonGallery(html) {
+  const lower = html.toLowerCase();
+  if (lower.includes('cf-browser-verification') ||
+      lower.includes('_cf_chl_opt') ||
+      lower.includes('cf-challenge') ||
+      lower.includes('just a moment') ||
+      lower.includes('checking your browser')) {
+    return 'cloudflare-block';
+  }
+  if (lower.includes('<title>login</title>') ||
+      lower.includes('please login') ||
+      lower.includes('you must be logged in') ||
+      lower.includes('your ip address has been temporarily banned')) {
+    return 'login-or-banned';
+  }
+  if (html.length < 500 && !html.includes('gallery')) {
+    return 'empty-or-redirect';
+  }
+  return null;
+}
+
+async function ehProxy(request) {
+  const authErr = await requireAuth(request);
+  if (authErr) return authErr;
+  incrementCounter();
+
+  let body;
+  try { body = await request.json(); } catch {
+    return json({ error: 'Invalid JSON' }, 400);
+  }
+
+  const { url, cookie } = body || {};
+  if (!url) return json({ error: 'Missing url' }, 400);
+
+  let targetUrl = url;
+  if (!/^https?:\/\//i.test(targetUrl)) targetUrl = 'https://' + targetUrl;
+
+  const u = new URL(targetUrl);
+  if (!/(exhentai\.org|e-hentai\.org)$/i.test(u.hostname)) {
+    return json({ error: 'Invalid host' }, 403);
+  }
+
+  try {
+    const res = await fetch(targetUrl, {
+      headers: buildEHHeaders(u.hostname, cookie),
+      redirect: 'follow',
+      cf: { cacheEverything: false },
+    });
+
+    const htmlText = await res.text();
+
+    if (!res.ok) {
+      const blockType = detectNonGallery(htmlText);
+      if (blockType === 'login-or-banned') {
+        return json({ error: 'EH_REQUIRES_LOGIN', status: res.status, detail: '画廊需要有效 Cookie 或 IP 被临时封禁' }, res.status);
+      }
+      if (blockType === 'cloudflare-block') {
+        return json({ error: 'EH_CLOUDFLARE_BLOCK', status: res.status, detail: 'EH/EX 返回了 Cloudflare 验证页面' }, res.status);
+      }
+      return text('Upstream returned ' + res.status, res.status);
+    }
+
+    const blockType = detectNonGallery(htmlText);
+    if (blockType === 'login-or-banned') {
+      return json({ error: 'EH_REQUIRES_LOGIN', status: 200, detail: 'EH 返回了登录页或封禁页，请检查 Cookie' }, 403);
+    }
+    if (blockType === 'cloudflare-block') {
+      return json({ error: 'EH_CLOUDFLARE_BLOCK', status: 200, detail: 'Worker 节点被 EH/EX 的 Cloudflare 防护拦截' }, 403);
+    }
+    if (blockType === 'empty-or-redirect') {
+      return json({ error: 'EH_EMPTY_RESPONSE', status: 200, detail: 'EH 返回了空白或极短页面' }, 403);
+    }
+
+    if (!htmlText.includes('#cdiv') && !htmlText.includes('commentthread') && !htmlText.includes('gid')) {
+      return json({
+        error: 'EH_UNEXPECTED_PAGE',
+        status: 200,
+        detail: 'EH 返回了非预期页面，可能需要登录或 Cookie 已过期',
+      }, 403);
+    }
+
+    return text(htmlText, 200, { 'Cache-Control': 'no-store' });
+  } catch (err) {
+    return text('Fetch failed: ' + err.message, 502);
+  }
+}
+
+// ── EH API Proxy (POST /api) ───────────────────────────────────
+async function ehApiProxy(request) {
+  const authErr = await requireAuth(request);
+  if (authErr) return authErr;
+  incrementCounter();
+
+  let body;
+  try { body = await request.json(); } catch {
+    return json({ error: 'Invalid JSON' }, 400);
+  }
+
+  const { apiUrl, cookie, payload } = body || {};
+  if (!apiUrl || !payload) return json({ error: 'Missing apiUrl or payload' }, 400);
+
+  const u = new URL(apiUrl);
+  if (!/(e-hentai\.org|exhentai\.org)$/i.test(u.hostname)) {
+    return json({ error: 'Invalid API host' }, 403);
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Origin': 'https://' + u.hostname,
+  };
+  if (cookie) headers['Cookie'] = cookie;
+
+  try {
+    const res = await fetch(apiUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    return json(data, res.status);
+  } catch (err) {
+    return json({ error: 'API request failed: ' + err.message }, 502);
+  }
+}
+
+// ── EH Comment Post Proxy (POST /comment) ──────────────────────
+async function ehCommentProxy(request) {
+  const authErr = await requireAuth(request);
+  if (authErr) return authErr;
+  incrementCounter();
+
+  let body;
+  try { body = await request.json(); } catch {
+    return json({ error: 'Invalid JSON' }, 400);
+  }
+
+  const { galleryUrl, cookie, formBody, referer } = body || {};
+  if (!galleryUrl || !formBody) return json({ error: 'Missing galleryUrl or formBody' }, 400);
+
+  const u = new URL(galleryUrl);
+  if (!/(exhentai\.org|e-hentai\.org)$/i.test(u.hostname)) {
+    return json({ error: 'Invalid host' }, 403);
+  }
+
+  const headers = {
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Origin': 'https://' + u.hostname,
+    'Referer': referer || galleryUrl,
+  };
+  if (cookie) headers['Cookie'] = cookie;
+
+  try {
+    const res = await fetch(galleryUrl, {
+      method: 'POST',
+      headers,
+      body: formBody,
+      redirect: 'follow',
+    });
+    return text(await res.text(), res.status, { 'Cache-Control': 'no-store' });
+  } catch (err) {
+    return json({ error: 'Comment post failed: ' + err.message }, 502);
+  }
+}
+
+
+function parseEhGalleryUrl(rawUrl) {
+  let targetUrl = (rawUrl || '').replace(/^source:\s*/i, '').trim();
+  if (!targetUrl) return null;
+  if (!/^https?:\/\//i.test(targetUrl)) targetUrl = 'https://' + targetUrl;
+  const u = new URL(targetUrl);
+  if (!/(exhentai\.org|e-hentai\.org)$/i.test(u.hostname)) return null;
+  const match = u.pathname.match(/^\/g\/(\d+)\/([0-9a-f]+)\/?/i);
+  if (!match) return null;
+  return {
+    hostname: u.hostname,
+    baseUrl: `${u.protocol}//${u.hostname}`,
+    gid: match[1],
+    token: match[2],
+    galleryUrl: `${u.protocol}//${u.hostname}/g/${match[1]}/${match[2]}/`,
+  };
+}
+
+function parseGalpopInputs(htmlText) {
+  const payload = {};
+  const inputRe = /<(input|textarea)\b[^>]*\bname=["']([^"']+)["'][^>]*>/gi;
+  let match;
+  while ((match = inputRe.exec(htmlText))) {
+    const tag = match[0];
+    const name = decodeHtml(match[2]);
+    const valueMatch = tag.match(/\bvalue=["']([^"']*)["']/i);
+    payload[name] = valueMatch ? decodeHtml(valueMatch[1]) : '';
+  }
+  return payload;
+}
+
+function decodeHtml(value) {
+  return String(value || '')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+function findGalpopAction(htmlText, fallbackUrl) {
+  const formMatch = htmlText.match(/<form\b[^>]*(?:id=["']galpop["'][^>]*)?>/i) || htmlText.match(/<form\b[^>]*>/i);
+  if (!formMatch) return fallbackUrl;
+  const actionMatch = formMatch[0].match(/\baction=["']([^"']+)["']/i);
+  if (!actionMatch) return fallbackUrl;
+  try {
+    return new URL(decodeHtml(actionMatch[1]), fallbackUrl).toString();
+  } catch {
+    return fallbackUrl;
+  }
+}
+
+// ── EH Favorite Proxy (POST /favorite) ─────────────────────────
+async function ehFavoriteProxy(request) {
+  const authErr = await requireAuth(request);
+  if (authErr) return authErr;
+  incrementCounter();
+
+  let body;
+  try { body = await request.json(); } catch {
+    return json({ error: 'Invalid JSON' }, 400);
+  }
+
+  const { url, cookie, mode = 'remove' } = body || {};
+  if (mode !== 'remove') return json({ error: 'Unsupported favorite mode' }, 400);
+  if (!url) return json({ error: 'Missing url' }, 400);
+  if (!cookie) return json({ error: 'Missing cookie' }, 400);
+
+  let parsed;
+  try { parsed = parseEhGalleryUrl(url); } catch {}
+  if (!parsed) return json({ error: 'Invalid EH gallery url' }, 400);
+
+  const popupUrl = `${parsed.baseUrl}/gallerypopups.php?gid=${parsed.gid}&t=${parsed.token}&act=addfav`;
+  const headers = buildEHHeaders(parsed.hostname, cookie);
+  headers.Referer = parsed.galleryUrl;
+
+  try {
+    const popupRes = await fetch(popupUrl, {
+      headers,
+      redirect: 'follow',
+      cf: { cacheEverything: false },
+    });
+    const popupHtml = await popupRes.text();
+    if (!popupRes.ok) return json({ error: 'EH_POPUP_FAILED', detail: `获取收藏表单失败 (HTTP ${popupRes.status})` }, popupRes.status);
+
+    const blockType = detectNonGallery(popupHtml);
+    if (blockType === 'login-or-banned') return json({ error: 'EH_REQUIRES_LOGIN', detail: 'EH 返回了登录页或封禁页，请检查 Cookie' }, 403);
+    if (blockType === 'cloudflare-block') return json({ error: 'EH_CLOUDFLARE_BLOCK', detail: 'Worker 被 EH/EX 的 Cloudflare 防护拦截' }, 403);
+    if (!/<form\b[^>]*id=["']galpop["']/i.test(popupHtml) && !/name=["']favcat["']/i.test(popupHtml)) {
+      return json({ error: 'EH_FAVORITE_FORM_MISSING', detail: '无法获取 E 站收藏夹表单，可能 Cookie 过期或画廊不可访问' }, 502);
+    }
+
+    const payload = parseGalpopInputs(popupHtml);
+    payload.favcat = 'favdel';
+    payload.favnote = '';
+    payload.apply = 'Apply Changes';
+    payload.update = '1';
+
+    const formBody = new URLSearchParams(payload).toString();
+    const actionUrl = findGalpopAction(popupHtml, popupUrl);
+    const postHeaders = buildEHHeaders(parsed.hostname, cookie);
+    postHeaders['Content-Type'] = 'application/x-www-form-urlencoded';
+    postHeaders.Referer = popupUrl;
+
+    const postRes = await fetch(actionUrl, {
+      method: 'POST',
+      headers: postHeaders,
+      body: formBody,
+      redirect: 'follow',
+      cf: { cacheEverything: false },
+    });
+    const postText = await postRes.text();
+    if (!postRes.ok) return json({ error: 'EH_FAVORITE_REMOVE_FAILED', detail: `提交收藏夹移除失败 (HTTP ${postRes.status})` }, postRes.status);
+
+    const postBlockType = detectNonGallery(postText);
+    if (postBlockType === 'login-or-banned') return json({ error: 'EH_REQUIRES_LOGIN', detail: 'EH 返回了登录页或封禁页，请检查 Cookie' }, 403);
+    if (postBlockType === 'cloudflare-block') return json({ error: 'EH_CLOUDFLARE_BLOCK', detail: 'Worker 被 EH/EX 的 Cloudflare 防护拦截' }, 403);
+
+    return json({ ok: true, gid: parsed.gid, action: 'removed' });
+  } catch (err) {
+    return json({ error: 'EH_FAVORITE_REQUEST_FAILED', detail: err.message }, 502);
+  }
+}
+
+// ── History Sync (GET/PUT /history) ────────────────────────────
+function getToken(request) {
+  const url = new URL(request.url);
+  return request.headers.get('x-sync-token') || url.searchParams.get('token') || '';
+}
+
+async function getHistory(request) {
+  const authErr = await requireAuth(request);
+  if (authErr) return authErr;
+  incrementCounter();
+
+  const token = getToken(request);
+  try {
+    const raw = await HISTORY_KV.get('history:' + token);
+    if (!raw) return json({ histories: [], hideRead: false, deleted: [], lastSync: 0 });
+    return json(JSON.parse(raw));
+  } catch (err) {
+    return json({ error: 'KV read failed: ' + err.message }, 500);
+  }
+}
+
+async function putHistory(request) {
+  const authErr = await requireAuth(request);
+  if (authErr) return authErr;
+  incrementCounter();
+
+  const token = getToken(request);
+
+  let payload;
+  try { payload = await request.json(); } catch {
+    return json({ error: 'Invalid JSON' }, 400);
+  }
+
+  const { histories, history, hideRead, deleted } = payload || {};
+  if (histories !== undefined && !Array.isArray(histories)) return json({ error: 'Invalid histories array' }, 400);
+  if (history !== undefined && (!history || typeof history !== 'object')) return json({ error: 'Invalid history item' }, 400);
+  if (deleted !== undefined && !Array.isArray(deleted)) return json({ error: 'Invalid deleted array' }, 400);
+  const incomingHistories = Array.isArray(histories) ? histories : (history ? [history] : []);
+
+  const existing = await (async () => {
+    try {
+      const raw = await HISTORY_KV.get('history:' + token);
+      return raw ? JSON.parse(raw) : { histories: [], hideRead: false, deleted: [] };
+    } catch { return { histories: [], hideRead: false, deleted: [] }; }
+  })();
+
+  const deletedMap = new Map();
+  for (const item of Array.isArray(existing.deleted) ? existing.deleted : []) {
+    if (!item || !item.id) continue;
+    deletedMap.set(item.id, item.deletedAt || 0);
+  }
+  for (const item of Array.isArray(deleted) ? deleted : []) {
+    if (!item || !item.id) continue;
+    const oldDeletedAt = deletedMap.get(item.id) || 0;
+    if ((item.deletedAt || 0) >= oldDeletedAt) {
+      deletedMap.set(item.id, item.deletedAt || Date.now());
+    }
+  }
+
+  const merged = new Map();
+  for (const h of existing.histories) {
+    if (!h?.id) continue;
+    const deletedAt = deletedMap.get(h.id) || 0;
+    if ((h.time || 0) > deletedAt) merged.set(h.id, h);
+  }
+  for (const h of incomingHistories) {
+    if (!h?.id) continue;
+    const deletedAt = deletedMap.get(h.id) || 0;
+    if ((h.time || 0) <= deletedAt) continue;
+    const old = merged.get(h.id);
+    if (!old || (h.time && h.time > (old.time || 0))) {
+      merged.set(h.id, h);
+    }
+  }
+
+  for (const [id, deletedAt] of Array.from(deletedMap.entries())) {
+    const existingHistory = merged.get(id);
+    if (existingHistory && (existingHistory.time || 0) > deletedAt) {
+      deletedMap.delete(id);
+    }
+  }
+
+  const normalizedDeleted = Array.from(deletedMap.entries())
+    .map(([id, deletedAt]) => ({ id, deletedAt }))
+    .sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0))
+    .slice(0, 200);
+
+  const result = {
+    histories: Array.from(merged.values())
+      .sort((a, b) => (b.time || 0) - (a.time || 0))
+      .slice(0, 50),
+    hideRead: hideRead !== undefined ? hideRead : existing.hideRead !== undefined ? existing.hideRead : false,
+    deleted: normalizedDeleted,
+    lastSync: Date.now(),
+  };
+
+  try {
+    await HISTORY_KV.put('history:' + token, JSON.stringify(result));
+    return json({ ok: true, count: result.histories.length });
+  } catch (err) {
+    return json({ error: 'KV write failed: ' + err.message }, 500);
+  }
+}
+
+
+async function deleteHistory(request) {
+  const authErr = await requireAuth(request);
+  if (authErr) return authErr;
+  incrementCounter();
+
+  const token = getToken(request);
+  let payload;
+  try { payload = await request.json(); } catch {
+    return json({ error: 'Invalid JSON' }, 400);
+  }
+
+  const ids = Array.isArray(payload?.ids) ? payload.ids.map(id => String(id).trim()).filter(Boolean) : [];
+  if (ids.length === 0) return json({ error: 'Missing ids array' }, 400);
+  const removeSet = new Set(ids);
+
+  const existing = await (async () => {
+    try {
+      const raw = await HISTORY_KV.get('history:' + token);
+      return raw ? JSON.parse(raw) : { histories: [], hideRead: false, deleted: [] };
+    } catch { return { histories: [], hideRead: false, deleted: [] }; }
+  })();
+
+  const now = Date.now();
+  const deletedMap = new Map();
+  for (const item of Array.isArray(existing.deleted) ? existing.deleted : []) {
+    if (!item || !item.id) continue;
+    deletedMap.set(item.id, item.deletedAt || 0);
+  }
+  ids.forEach((id) => deletedMap.set(id, now));
+
+  const result = {
+    histories: (Array.isArray(existing.histories) ? existing.histories : [])
+      .filter((item) => item?.id && !removeSet.has(item.id))
+      .sort((a, b) => (b.time || 0) - (a.time || 0))
+      .slice(0, 50),
+    hideRead: existing.hideRead !== undefined ? existing.hideRead : false,
+    deleted: Array.from(deletedMap.entries())
+      .map(([id, deletedAt]) => ({ id, deletedAt }))
+      .sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0))
+      .slice(0, 200),
+    lastSync: now,
+  };
+
+  try {
+    await HISTORY_KV.put('history:' + token, JSON.stringify(result));
+    return json({ ok: true, removed: ids.length, count: result.histories.length });
+  } catch (err) {
+    return json({ error: 'KV write failed: ' + err.message }, 500);
+  }
+}
+
+// ── Status Page (GET /) ───────────────────────────────────────
+async function statusPage(request) {
+  const reloadParam = new URL(request.url).searchParams.get('reload');
+  if (reloadParam === '1') {
+    await reloadTokens();
+    const nextUrl = new URL(request.url);
+    nextUrl.searchParams.delete('reload');
+    return Response.redirect(nextUrl.toString(), 302);
+  }
+
+  await ensureTokensLoaded();
+  const kvOk = tokenLoadPromise ? (await tokenLoadPromise) : false;
+  const reqCount = requestCount;
+  const { totalArchives, userCount } = await (async () => {
+    if (typeof HISTORY_KV === 'undefined') return { totalArchives: 'N/A', userCount: 'N/A' };
+    try {
+      const list = await HISTORY_KV.list({ prefix: 'history:' });
+      const allIds = new Set();
+      for (const key of list.keys) {
+        try {
+          const raw = await HISTORY_KV.get(key.name);
+          const data = raw ? JSON.parse(raw) : null;
+          if (data && Array.isArray(data.histories)) {
+            for (const h of data.histories) {
+              if (h.id) allIds.add(h.id);
+            }
+          }
+        } catch {}
+      }
+      return { totalArchives: allIds.size, userCount: list.keys.length };
+    } catch { return { totalArchives: '错误', userCount: '错误' }; }
+  })();
+  const hasKV = typeof HISTORY_KV !== 'undefined';
+  const tokenCount = cachedTokens ? cachedTokens.size : 0;
+
+  const tokenStatusHtml = authEnabled
+    ? (tokenCount > 0
+      ? `<div class="stat"><span class="label">Token 认证</span><span class="ok">已启用 (${tokenCount} 个)</span></div>`
+      : `<div class="stat"><span class="label">⚠ Token 认证</span><span class="err">已启用但 KV tokens 为空，所有受保护接口都会拒绝</span></div>`)
+    : `<div class="stat"><span class="label">Token 认证</span><span class="err">强制启用</span></div>`;
+
+  const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LRR Sync Worker</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0f1115; color:#d1d5db; font-family:system-ui,-apple-system,sans-serif;
+         display:flex; align-items:center; justify-content:center; min-height:100vh; padding:20px; }
+  .card { background:#1a1d24; border:1px solid rgba(255,255,255,0.07); border-radius:16px;
+          padding:36px 32px; max-width:460px; width:100%; }
+  h1 { font-size:22px; color:#fff; margin-bottom:28px; }
+  .stat { display:flex; justify-content:space-between; align-items:center; padding:12px 0;
+          border-bottom:1px solid rgba(255,255,255,0.04); font-size:14px; }
+  .stat:last-of-type { border:none; }
+  .label { color:#9ca3af; }
+  .value { font-weight:600; color:#e5e7eb; }
+  .ok { color:#6ee7b7; font-size:13px; }
+  .err { color:#f87171; font-size:13px; }
+  .warn { color:#fbbf24; font-size:13px; }
+  .divider { border-top:1px solid rgba(255,255,255,0.06); margin:24px 0 20px; }
+  .section-title { color:#9ca3af; font-size:12px; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px; }
+  .footer { font-size:11px; color:#4b5563; text-align:center; margin-top:20px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>LRR Sync Worker</h1>
+
+  <div class="section-title">服务概览</div>
+  <div class="stat"><span class="label">服务状态</span><span class="ok">● 运行中</span></div>
+  <div class="stat"><span class="label">请求计数</span><span class="value">${reqCount}</span></div>
+  <div class="stat"><span class="label">同步用户数</span><span class="value">${userCount}</span></div>
+  <div class="stat"><span class="label">阅读记录数</span><span class="value">${totalArchives}</span></div>
+  <div class="stat"><span class="label">KV 存储</span><span class="${hasKV ? 'ok' : 'warn'}">${hasKV ? '已绑定' : '未绑定'}</span></div>
+  <div class="stat"><span class="label">KV 读取</span><span class="${kvOk ? 'ok' : 'err'}">${kvOk ? '正常' : '失败'}</span></div>
+
+  <div class="divider"></div>
+  <div class="section-title">认证状态</div>
+  ${tokenStatusHtml}
+  <div class="stat"><span class="label">部署时间</span><span class="value">${new Date().toISOString().slice(0, 19).replace('T', ' ')} UTC</span></div>
+
+  <div class="footer">LRR Modern Reader · Cloudflare Worker</div>
+</div>
+</body>
+</html>`;
+  return new Response(html, {
+    status: 200,
+    headers: { 'Content-Type': 'text/html; charset=utf-8' },
+  });
+}
+
+// ── Router ─────────────────────────────────────────────────────
+async function handleRequest(request) {
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
+
+  const url = new URL(request.url);
+
+  // GET / → status page (browser visits)
+  if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '')) {
+    return statusPage(request);
+  }
+
+  // GET /health → JSON diagnostic endpoint
+  if (request.method === 'GET' && url.pathname === '/health') {
+    const authErr = await requireAuth(request);
+    if (authErr) return authErr;
+    return json({
+      status: 'running',
+      authEnabled,
+      tokenCount: cachedTokens ? cachedTokens.size : 0,
+      hasKV: typeof HISTORY_KV !== 'undefined',
+      kvReadOk: tokenLoadPromise ? await tokenLoadPromise : false,
+      requestCount,
+      bannedIPs: ipBans.size,
+      trackedIPs: ipFailures.size,
+    });
+  }
+
+  const ip = getClientIP(request);
+
+  // Reject banned IPs before routing
+  if (isIPBanned(ip)) {
+    const expiry = ipBans.get(ip);
+    const remainingSec = Math.ceil((expiry - Date.now()) / 1000);
+    return json({
+      error: 'Too many unauthorized requests.',
+      retryAfter: remainingSec,
+    }, 429);
+  }
+
+  if (url.pathname === '/history') {
+    if (request.method === 'GET') return getHistory(request);
+    if (request.method === 'PUT') return putHistory(request);
+    if (request.method === 'DELETE') return deleteHistory(request);
+    return json({ error: 'Method not allowed' }, 405);
+  }
+
+  if (url.pathname === '/api' && request.method === 'POST') {
+    return ehApiProxy(request);
+  }
+
+  if (url.pathname === '/comment' && request.method === 'POST') {
+    return ehCommentProxy(request);
+  }
+
+  if (url.pathname === '/favorite' && request.method === 'POST') {
+    return ehFavoriteProxy(request);
+  }
+
+  // POST / → EH gallery proxy
+  if (request.method === 'POST') return ehProxy(request);
+
+  return json({ error: 'Not found' }, 404);
+}
