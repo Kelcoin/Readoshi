@@ -1,18 +1,10 @@
 name: Publish Docker image
 
 on:
-  workflow_dispatch:
-    inputs:
-      image_name:
-        description: Docker Hub image name, for example username/lrr-modern-reader
-        required: false
-        default: kelcoin/lanraragi-react-reader
-        type: string
-      tag:
-        description: Extra image tag
-        required: false
-        default: latest
-        type: string
+  push:
+    branches:
+      - main
+      - dev
 
 jobs:
   publish:
@@ -48,13 +40,23 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Select Docker tag
+        id: docker-tag
+        run: |
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          elif [ "${GITHUB_REF_NAME}" = "dev" ]; then
+            echo "tag=beta" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error title=Unsupported branch::This workflow only publishes main or dev."
+            exit 1
+          fi
+
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
           context: .
           push: true
-          tags: |
-            ${{ inputs.image_name }}:${{ inputs.tag }}
-            ${{ inputs.image_name }}:sha-${{ github.sha }}
+          tags: kelcoin/lanraragi-react-reader:${{ steps.docker-tag.outputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
