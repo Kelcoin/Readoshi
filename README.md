@@ -90,6 +90,10 @@ services:
 | `/api/` | 代理到 `$LRR_SERVER/api/` |
 | `/eh/` | 代理到 `exhentai.org`，用于 E-Hentai 评论的备选代理 |
 
+### 自行发布镜像
+
+如果你 fork 后想发布自己的 Docker 镜像，在 GitHub 仓库的 `Settings -> Secrets and variables -> Actions` 添加 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，然后手动运行 `Publish Docker image` workflow。
+
 ## 本地开发
 
 需要 Node.js 18+ 和 npm 9+。

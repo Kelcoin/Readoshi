@@ -5,7 +5,8 @@ on:
     inputs:
       image_name:
         description: Docker Hub image name, for example username/lrr-modern-reader
-        required: true
+        required: false
+        default: kelcoin/lanraragi-react-reader
         type: string
       tag:
         description: Extra image tag
@@ -24,17 +25,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check Docker Hub secrets
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ]; then
+            echo "::error title=Missing DOCKERHUB_USERNAME::Add this secret under Settings > Secrets and variables > Actions. Codespaces secrets are not available to Actions workflows."
+            exit 1
+          fi
+          if [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::error title=Missing DOCKERHUB_TOKEN::Add this secret under Settings > Secrets and variables > Actions. Codespaces secrets are not available to Actions workflows."
+            exit 1
+          fi
+
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
