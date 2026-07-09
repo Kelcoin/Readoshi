@@ -159,20 +159,14 @@ Worker 依赖名为 `HISTORY_KV` 的 KV 绑定。受保护接口会读取 KV 中
 ["your-sync-token"]
 ```
 
-KV 导入/导出功能需要额外配置 `adminApiKey`。如果 KV 中没有配置有效的 `adminApiKey`，Worker 会拒绝所有导入/导出 API 调用，并在 Worker 网页醒目提示。
-
-`adminApiKey` 示例：
-
-```text
-your-admin-api-key
-```
+KV 导入/导出功能不需要额外的管理 API Key。打开 Worker 网页后，点击“打开导入 / 导出菜单”，输入 KV `tokens` 中配置的合法 Token 并验证通过，即可导入或导出该 Token 对应的 KV 数据。
 
 ### Worker 网页
 
 直接打开 Worker 根路径可以查看状态页：
 
 - 服务状态、请求计数、同步用户数、阅读记录数。
-- KV 绑定、KV 读取、Token 认证和 Admin API Key 状态。
+- KV 绑定、KV 读取和 Token 认证状态。
 - 非重复记录数量。
 - KV 导入/导出工具。
 
@@ -251,8 +245,7 @@ Worker KV 会保存：
 
 - `tokens`：允许访问受保护接口的 Token 列表。
 - `history:<token>`：对应 Token 的远端阅读历史和设置。
-- `dedupe:non-duplicates`：重复归档检测中标记为非重复的组合。
-- `adminApiKey`：KV 导入/导出的管理 API Key。
+- `dedupe:non-duplicates`：重复归档检测中标记为非重复的全局组合；读取、写入、导入和导出都必须携带合法 Token。
 - `stats:requests`：Worker 请求计数。
 
 ## 许可

@@ -1375,16 +1375,17 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
   }, []);
 
   const ehFavoriteCookieValid = hasValidEhCookie(readerSettings.ehCookie || getEhCookie());
+  const ehFavoriteSyncReady = ehFavoriteCookieValid && !!getWorkerUrl() && !!getSyncToken();
 
   useEffect(() => {
-    if (!ehFavoriteCookieValid && ehFavoriteDeleteSync) {
+    if (!ehFavoriteSyncReady && ehFavoriteDeleteSync) {
       setEhFavoriteDeleteSync(false);
       setEhFavoriteDeleteSyncState(false);
     }
-  }, [ehFavoriteCookieValid, ehFavoriteDeleteSync]);
+  }, [ehFavoriteSyncReady, ehFavoriteDeleteSync]);
 
   const handleToggleEhFavoriteDeleteSync = useCallback(() => {
-    if (!ehFavoriteCookieValid) {
+    if (!ehFavoriteSyncReady) {
       setEhFavoriteDeleteSync(false);
       setEhFavoriteDeleteSyncState(false);
       return;
@@ -1394,7 +1395,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
       setEhFavoriteDeleteSync(next);
       return next;
     });
-  }, [ehFavoriteCookieValid]);
+  }, [ehFavoriteSyncReady]);
 
   const handleSyncHistory = useCallback(async () => {
     if (!getWorkerUrl() || !getSyncToken() || historySyncing) return;
@@ -2103,18 +2104,18 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
             <button
               type="button"
               onClick={handleToggleEhFavoriteDeleteSync}
-              disabled={!ehFavoriteCookieValid}
+              disabled={!ehFavoriteSyncReady}
               style={{
                 width: '36px', height: '20px', borderRadius: '10px',
-                background: ehFavoriteDeleteSync && ehFavoriteCookieValid ? 'var(--accent)' : 'rgba(255,255,255,0.2)',
-                border: 'none', cursor: ehFavoriteCookieValid ? 'pointer' : 'not-allowed', position: 'relative',
-                transition: 'background 0.2s ease', flexShrink: 0, opacity: ehFavoriteCookieValid ? 1 : 0.48,
+                background: ehFavoriteDeleteSync && ehFavoriteSyncReady ? 'var(--accent)' : 'rgba(255,255,255,0.2)',
+                border: 'none', cursor: ehFavoriteSyncReady ? 'pointer' : 'not-allowed', position: 'relative',
+                transition: 'background 0.2s ease', flexShrink: 0, opacity: ehFavoriteSyncReady ? 1 : 0.48,
               }}
-              title={ehFavoriteCookieValid ? '删除归档时同步删除 E 站收藏夹' : '需要先配置包含 ipb_member_id 与 ipb_pass_hash 的合法 EH Cookie'}
+              title={ehFavoriteSyncReady ? '删除归档时同步删除 E 站收藏夹' : '需要先配置 Worker、访问 Token 与包含 ipb_member_id / ipb_pass_hash 的合法 EH Cookie'}
             >
               <span style={{
                 position: 'absolute', top: '2px',
-                left: ehFavoriteDeleteSync && ehFavoriteCookieValid ? '18px' : '2px',
+                left: ehFavoriteDeleteSync && ehFavoriteSyncReady ? '18px' : '2px',
                 width: '16px', height: '16px', borderRadius: '50%',
                 background: '#fff', transition: 'left 0.2s ease',
               }} />

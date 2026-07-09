@@ -5,7 +5,7 @@ addEventListener('fetch', (event) => {
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, x-sync-token, x-admin-api-key',
+  'Access-Control-Allow-Headers': 'Content-Type, x-sync-token',
   'Access-Control-Max-Age': '86400',
 };
 
@@ -654,8 +654,7 @@ async function getNonDuplicatePairs(request) {
 
   try {
     const raw = await HISTORY_KV.get(DEDUPE_NON_DUP_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return json({ pairs: normalizePairKeys(parsed) });
+    return json({ pairs: normalizePairKeys(raw ? JSON.parse(raw) : []) });
   } catch (err) {
     return json({ error: 'KV read failed: ' + err.message }, 500);
   }
@@ -686,31 +685,6 @@ async function putNonDuplicatePairs(request) {
   }
 }
 
-async function getConfiguredAdminApiKey() {
-  if (typeof HISTORY_KV === 'undefined') return '';
-  try {
-    return String(await HISTORY_KV.get('adminApiKey') || '').trim();
-  } catch {
-    return '';
-  }
-}
-
-async function requireAdminApiKey(request, payload) {
-  const configured = await getConfiguredAdminApiKey();
-  if (!configured) {
-    return json({
-      error: 'ADMIN_KEY_NOT_CONFIGURED',
-      detail: 'KV 中未配置 adminApiKey，导入/导出功能已拒绝响应',
-    }, 403);
-  }
-  const url = new URL(request.url);
-  const supplied = request.headers.get('x-admin-api-key') || url.searchParams.get('apiKey') || payload?.apiKey || '';
-  if (supplied !== configured) {
-    return json({ error: 'Unauthorized', detail: 'Admin API key invalid or missing' }, 401);
-  }
-  return null;
-}
-
 async function listKVKeys(prefix) {
   const names = [];
   let cursor;
@@ -722,27 +696,39 @@ async function listKVKeys(prefix) {
   return names;
 }
 
+function firstObjectValue(obj) {
+  if (!obj || typeof obj !== 'object') return undefined;
+  const values = Object.values(obj);
+  return values.length ? values[0] : undefined;
+}
+
 async function exportKV(request) {
   let payload;
   try { payload = await request.json(); } catch {
     return json({ error: 'Invalid JSON' }, 400);
   }
-  const adminErr = await requireAdminApiKey(request, payload);
-  if (adminErr) return adminErr;
+  const authErr = await requireAuth(request);
+  if (authErr) return authErr;
+  incrementCounter();
   if (typeof HISTORY_KV === 'undefined') return json({ error: 'KV is not bound' }, 500);
 
+  const token = getToken(request);
   const selected = payload?.sections || {};
   const includeHistory = selected.history !== false;
   const includeDedupe = selected.dedupe !== false;
-  const data = { version: 1, exportedAt: new Date().toISOString(), sections: {} };
+  const historyKey = 'history:' + token;
+  const data = {
+    version: 2,
+    scope: 'token',
+    tokenKey: token,
+    exportedAt: new Date().toISOString(),
+    sections: {},
+  };
 
   try {
     if (includeHistory) {
-      const history = {};
-      for (const key of await listKVKeys('history:')) {
-        history[key] = await HISTORY_KV.get(key);
-      }
-      data.sections.history = history;
+      const raw = await HISTORY_KV.get(historyKey);
+      data.sections.history = { [historyKey]: raw || '' };
     }
     if (includeDedupe) {
       const raw = await HISTORY_KV.get(DEDUPE_NON_DUP_KEY);
@@ -759,10 +745,12 @@ async function importKV(request) {
   try { payload = await request.json(); } catch {
     return json({ error: 'Invalid JSON' }, 400);
   }
-  const adminErr = await requireAdminApiKey(request, payload);
-  if (adminErr) return adminErr;
+  const authErr = await requireAuth(request);
+  if (authErr) return authErr;
+  incrementCounter();
   if (typeof HISTORY_KV === 'undefined') return json({ error: 'KV is not bound' }, 500);
 
+  const token = getToken(request);
   const selected = payload?.sections || {};
   const input = payload?.data?.sections ? payload.data.sections : payload?.data;
   if (!input || typeof input !== 'object') return json({ error: 'Invalid import data' }, 400);
@@ -770,14 +758,15 @@ async function importKV(request) {
   let imported = 0;
   try {
     if (selected.history !== false && input.history && typeof input.history === 'object') {
-      for (const [key, value] of Object.entries(input.history)) {
-        if (!key.startsWith('history:')) continue;
-        await HISTORY_KV.put(key, typeof value === 'string' ? value : JSON.stringify(value));
+      const historyKey = 'history:' + token;
+      const value = input.history[historyKey] ?? firstObjectValue(input.history);
+      if (value !== undefined && value !== null && value !== '') {
+        await HISTORY_KV.put(historyKey, typeof value === 'string' ? value : JSON.stringify(value));
         imported += 1;
       }
     }
     if (selected.dedupe !== false && input.dedupe && typeof input.dedupe === 'object') {
-      const raw = input.dedupe[DEDUPE_NON_DUP_KEY] || input.dedupe.pairs || [];
+      const raw = input.dedupe[DEDUPE_NON_DUP_KEY] || input.dedupe.pairs || firstObjectValue(input.dedupe) || [];
       const incoming = normalizePairKeys(typeof raw === 'string' ? JSON.parse(raw || '[]') : raw);
       const existingRaw = await HISTORY_KV.get(DEDUPE_NON_DUP_KEY);
       const existing = normalizePairKeys(existingRaw ? JSON.parse(existingRaw) : []);
@@ -825,7 +814,6 @@ async function statusPage(request) {
   })();
   const hasKV = typeof HISTORY_KV !== 'undefined';
   const tokenCount = cachedTokens ? cachedTokens.size : 0;
-  const adminKeyConfigured = !!(await getConfiguredAdminApiKey());
   const dedupeCount = await (async () => {
     if (!hasKV) return 'N/A';
     try {
@@ -868,19 +856,22 @@ async function statusPage(request) {
   .warning { border:1px solid rgba(248,113,113,.45); background:rgba(248,113,113,.12); color:#fecaca;
              padding:12px 14px; border-radius:10px; margin:0 0 18px; font-size:13px; line-height:1.5; }
   .tool { display:grid; gap:10px; margin-top:10px; }
+  .hidden { display:none; }
+  .hint { color:#9ca3af; font-size:12px; line-height:1.5; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .checks { display:flex; gap:14px; flex-wrap:wrap; color:#cbd5e1; font-size:13px; }
   input, textarea { width:100%; background:#111827; border:1px solid rgba(255,255,255,.09); color:#e5e7eb;
                     border-radius:8px; padding:9px 10px; font:inherit; }
   textarea { min-height:110px; resize:vertical; }
   button { background:#2563eb; border:0; border-radius:8px; color:white; padding:9px 12px; cursor:pointer; font-weight:650; }
   button.secondary { background:#374151; }
+  button.subtle { background:#1f2937; color:#cbd5e1; }
   #kvResult { color:#9ca3af; font-size:12px; white-space:pre-wrap; line-height:1.5; }
 </style>
 </head>
 <body>
 <div class="card">
   <h1>LRR Sync Worker</h1>
-  ${adminKeyConfigured ? '' : '<div class="warning">KV 未配置 <b>adminApiKey</b>。KV 导入/导出接口会拒绝所有调用，请先在 Cloudflare KV 中添加该键后再使用。</div>'}
 
   <div class="section-title">服务概览</div>
   <div class="stat"><span class="label">服务状态</span><span class="ok">● 运行中</span></div>
@@ -894,27 +885,45 @@ async function statusPage(request) {
   <div class="divider"></div>
   <div class="section-title">认证状态</div>
   ${tokenStatusHtml}
-  <div class="stat"><span class="label">Admin API Key</span><span class="${adminKeyConfigured ? 'ok' : 'err'}">${adminKeyConfigured ? '已配置' : '未配置'}</span></div>
   <div class="stat"><span class="label">部署时间</span><span class="value">${new Date().toISOString().slice(0, 19).replace('T', ' ')} UTC</span></div>
 
   <div class="divider"></div>
   <div class="section-title">KV 导入 / 导出</div>
-  <div class="tool">
-    <input id="adminKey" type="password" placeholder="Admin API Key">
+  <div id="kvClosed" class="tool">
+    <button id="openKvTool" type="button">打开导入 / 导出菜单</button>
+  </div>
+  <div id="kvAuth" class="tool hidden">
+    <div class="hint">请输入 KV tokens 中配置的访问 Token。验证通过后，只能导入 / 导出该 Token 对应的阅读历史与非重复记录。</div>
+    <input id="syncTokenInput" type="password" placeholder="访问 Token">
+    <div class="row">
+      <button id="validateTokenBtn" type="button">验证 Token</button>
+      <button id="cancelKvBtn" class="subtle" type="button">取消</button>
+    </div>
+  </div>
+  <div id="kvPanel" class="tool hidden">
+    <div class="hint">已通过 Token 验证。导入会写入当前 Token 对应的 KV 数据，不会覆盖其他 Token。</div>
     <div class="checks">
       <label><input id="sectionHistory" type="checkbox" checked style="width:auto"> 阅读历史</label>
       <label><input id="sectionDedupe" type="checkbox" checked style="width:auto"> 非重复 arcid</label>
     </div>
     <button id="exportBtn" type="button">导出选中数据</button>
     <textarea id="importData" placeholder="粘贴导出的 JSON 后点击导入"></textarea>
-    <button id="importBtn" class="secondary" type="button">导入选中数据</button>
-    <div id="kvResult"></div>
+    <div class="row">
+      <button id="importBtn" class="secondary" type="button">导入选中数据</button>
+      <button id="switchTokenBtn" class="subtle" type="button">更换 Token</button>
+    </div>
   </div>
+  <div id="kvResult"></div>
 
   <div class="footer">LRR Modern Reader · Cloudflare Worker</div>
 </div>
 <script>
 const result = document.getElementById('kvResult');
+const kvClosed = document.getElementById('kvClosed');
+const kvAuth = document.getElementById('kvAuth');
+const kvPanel = document.getElementById('kvPanel');
+const syncTokenInput = document.getElementById('syncTokenInput');
+let syncToken = '';
 function sections() {
   return {
     history: document.getElementById('sectionHistory').checked,
@@ -922,16 +931,50 @@ function sections() {
   };
 }
 async function call(path, body) {
-  const apiKey = document.getElementById('adminKey').value.trim();
   const res = await fetch(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-admin-api-key': apiKey },
-    body: JSON.stringify({ ...body, apiKey }),
+    headers: { 'Content-Type': 'application/json', 'x-sync-token': syncToken },
+    body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new Error((data && (data.detail || data.error)) || 'HTTP ' + res.status);
   return data;
 }
+function showClosed() {
+  syncToken = '';
+  syncTokenInput.value = '';
+  kvClosed.classList.remove('hidden');
+  kvAuth.classList.add('hidden');
+  kvPanel.classList.add('hidden');
+}
+document.getElementById('openKvTool').onclick = () => {
+  result.textContent = '';
+  kvClosed.classList.add('hidden');
+  kvAuth.classList.remove('hidden');
+  syncTokenInput.focus();
+};
+document.getElementById('cancelKvBtn').onclick = showClosed;
+document.getElementById('switchTokenBtn').onclick = () => {
+  result.textContent = '';
+  syncToken = '';
+  kvPanel.classList.add('hidden');
+  kvAuth.classList.remove('hidden');
+  syncTokenInput.focus();
+};
+document.getElementById('validateTokenBtn').onclick = async () => {
+  try {
+    const token = syncTokenInput.value.trim();
+    if (!token) throw new Error('请输入 Token');
+    result.textContent = '正在验证 Token...';
+    const res = await fetch('/health', { headers: { 'x-sync-token': token } });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((data && (data.detail || data.error)) || 'Token 无效');
+    syncToken = token;
+    kvAuth.classList.add('hidden');
+    kvPanel.classList.remove('hidden');
+    result.textContent = 'Token 验证通过。';
+  } catch (e) { result.textContent = e.message; }
+};
 document.getElementById('exportBtn').onclick = async () => {
   try {
     result.textContent = '正在导出...';

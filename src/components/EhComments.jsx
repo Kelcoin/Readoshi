@@ -198,9 +198,9 @@ function normaliseEhUrl(rawUrl) {
 }
 
 async function workerApi(workerBase, path, body, token) {
+  if (!token) throw new Error('Worker Token 无效或缺失。请在设定面板填入 KV tokens 中配置的 Token。');
   const url = (workerBase || '').replace(/\/$/, '') + path;
-  const headers = { 'Content-Type': 'application/json' };
-  if (token) headers['x-sync-token'] = token;
+  const headers = { 'Content-Type': 'application/json', 'x-sync-token': token };
   const res = await fetch(url, {
     method: 'POST',
     headers,
@@ -255,8 +255,8 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
       let htmlText;
 
       if (ehWorker) {
-        const workerHeaders = { 'Content-Type': 'application/json' };
-        if (ehToken) workerHeaders['x-sync-token'] = ehToken;
+        if (!ehToken) throw new Error('Worker Token 无效或缺失。请在设定面板填入 KV tokens 中配置的 Token。');
+        const workerHeaders = { 'Content-Type': 'application/json', 'x-sync-token': ehToken };
         const galleryRes = await fetch(workerUrl, {
           method: 'POST',
           headers: workerHeaders,

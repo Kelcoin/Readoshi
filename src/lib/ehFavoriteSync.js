@@ -58,10 +58,10 @@ export async function removeEhFavorite({ galleryUrl, cookie, workerUrl, token })
   if (!galleryUrl) return { skipped: true, reason: 'missing-url' };
   if (!cookie) return { skipped: true, reason: 'missing-cookie' };
   if (!workerUrl) return { skipped: true, reason: 'missing-worker' };
+  if (!token) return { skipped: true, reason: 'missing-token' };
 
   const endpoint = workerUrl.replace(/\/$/, '') + '/favorite';
-  const headers = { 'Content-Type': 'application/json' };
-  if (token) headers['x-sync-token'] = token;
+  const headers = { 'Content-Type': 'application/json', 'x-sync-token': token };
 
   const res = await fetch(endpoint, {
     method: 'POST',
