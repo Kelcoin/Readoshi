@@ -27,6 +27,15 @@ LRR Modern Reader 是一个面向 [LANraragi](https://github.com/Difegue/LANrara
 
 推荐直接使用镜像：
 
+### Docker 镜像标签
+
+| 分支 | Docker 标签 | 说明 |
+|------|-------------|------|
+| `main` | `latest` | 稳定分支镜像 |
+| `dev` | `beta` | 开发分支镜像，包含最新测试功能 |
+
+如果要部署 `dev` 分支，请把下面示例中的 `kelcoin/lanraragi-react-reader:latest` 改为 `kelcoin/lanraragi-react-reader:beta`。
+
 ```bash
 docker run -d \
   --name lanraragi-react-reader \
