@@ -482,25 +482,15 @@ textarea:focus-visible,
 .watchlist-card::before {
   content: '';
   position: absolute;
-  inset: -5px;
+  inset: -2px;
   z-index: 0;
   pointer-events: none;
   border: 1px solid color-mix(in srgb, var(--watchlist-glow) 52%, transparent);
   border-radius: 17px;
   box-shadow:
-    0 0 8px color-mix(in srgb, var(--watchlist-glow) 34%, transparent),
-    0 0 18px color-mix(in srgb, var(--watchlist-glow) 22%, transparent),
-    0 0 30px color-mix(in srgb, var(--watchlist-glow) 12%, transparent);
-  animation: watchlistGlowRadiate 2.8s ease-in-out infinite;
-}
-
-@keyframes watchlistGlowRadiate {
-  0%, 100% { opacity: 0.56; transform: scale(0.99); }
-  50% { opacity: 1; transform: scale(1.025); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .watchlist-card::before { animation: none; }
+    0 0 7px color-mix(in srgb, var(--watchlist-glow) 30%, transparent),
+    0 0 15px color-mix(in srgb, var(--watchlist-glow) 17%, transparent);
+  opacity: 0.82;
 }
 
 .archive-cover-image {
