@@ -287,7 +287,6 @@ export default function Recommendations({ currentArchive }) {
   const contentKey = loading
     ? `loading-${currentArchive?.arcid || ''}`
     : `${tab}-${data.map((arc) => arc.arcid || arc.id).join('-')}`;
-  const contentItemCount = loading ? skeletonCount : data.length;
 
   const handleCardClick = (arc) => {
     navigateToArchive(arc.arcid || arc.id);
@@ -411,7 +410,7 @@ export default function Recommendations({ currentArchive }) {
           }}
           className="no-scrollbar"
         >
-          <div key={contentKey} className="component-content-fade" style={{ display: 'flex', gap: '10px', padding: loading ? '4px 0' : 0, flex: '0 0 auto', width: `${Math.max(1, contentItemCount) * 176}px`, minWidth: '100%' }}>
+          <div key={contentKey} className="component-content-fade" style={{ display: 'flex', gap: '10px', padding: loading ? '4px 0' : 0, flex: '0 0 auto', width: 'max-content' }}>
             {loading ? (
               <>
               {Array.from({ length: skeletonCount }).map((_, i) => (
