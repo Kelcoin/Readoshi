@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import ArchiveCard from '../components/ArchiveCard';
+import ConfirmDialog from '../components/ConfirmDialog';
 import { lrrApi } from '../lib/api';
 import {
   buildDuplicateGroups,
@@ -13,7 +14,7 @@ import {
   selectDuplicateDeletionIds,
   toPairKey,
 } from '../lib/deduplicate';
-import { extractEhGalleryUrl, getEhCookie, getEhFavoriteDeleteSync, removeEhFavorite } from '../lib/ehFavoriteSync';
+import { extractEhGalleryUrl, getEhCookie, getEhFavoriteDeleteSync, removeEhFavorite, shouldSyncEhFavorite } from '../lib/ehFavoriteSync';
 import { getNonDuplicatePairKeys, markNonDuplicatePairs } from '../lib/worker-kv';
 import { getSyncToken, getWorkerUrl } from '../lib/worker-config';
 
@@ -317,6 +318,8 @@ export default function DeduplicatePage({ onBack }) {
   const [lastScanStats, setLastScanStats] = useState(null);
   const [workerWarning, setWorkerWarning] = useState('');
   const [progress, setProgress] = useState(null);
+  const [deletePending, setDeletePending] = useState(false);
+  const [deleteSyncConfirmed, setDeleteSyncConfirmed] = useState(true);
   const [dateRange, setDateRange] = useState(() => ({
     start: DEDUPE_DEFAULT_START_DATE,
     end: getTodayDateString(),
@@ -326,6 +329,7 @@ export default function DeduplicatePage({ onBack }) {
   const selectedArchives = useMemo(() => (
     Array.from(selectedArchiveIds).map((id) => archiveMap.get(id)).filter(Boolean)
   ), [archiveMap, selectedArchiveIds]);
+  const ehFavoriteDeleteSync = getEhFavoriteDeleteSync();
 
   const loadAllArchives = useCallback(async () => {
     const all = [];
@@ -539,8 +543,8 @@ export default function DeduplicatePage({ onBack }) {
     setSelectedGroupKeys(new Set());
   }, [groups]);
 
-  const syncEhFavoriteBeforeDelete = useCallback(async (archive) => {
-    if (!getEhFavoriteDeleteSync()) return;
+  const syncEhFavoriteBeforeDelete = useCallback(async (archive, confirmationEnabled) => {
+    if (!shouldSyncEhFavorite(ehFavoriteDeleteSync, confirmationEnabled)) return;
     const id = archiveId(archive);
     let galleryUrl = extractEhGalleryUrl(archive);
     if (!galleryUrl && id) {
@@ -556,11 +560,15 @@ export default function DeduplicatePage({ onBack }) {
       workerUrl: getWorkerUrl(),
       token: getSyncToken(),
     });
+  }, [ehFavoriteDeleteSync]);
+
+  const requestDeleteSelectedArchives = useCallback(() => {
+    setDeleteSyncConfirmed(true);
+    setDeletePending(true);
   }, []);
 
   const deleteSelectedArchives = useCallback(async () => {
     if (selectedArchives.length === 0) return;
-    if (!window.confirm(`确认删除选中的 ${selectedArchives.length} 个归档？此操作不可撤销。`)) return;
 
     setRunning(true);
     const deleted = [];
@@ -569,7 +577,7 @@ export default function DeduplicatePage({ onBack }) {
       const id = archiveId(archive);
       setStatus(`正在删除 ${archive.title || id}`);
       try {
-        await syncEhFavoriteBeforeDelete(archive);
+        await syncEhFavoriteBeforeDelete(archive, deleteSyncConfirmed);
         await lrrApi.deleteArchive(id);
         deleted.push(id);
       } catch (err) {
@@ -585,10 +593,11 @@ export default function DeduplicatePage({ onBack }) {
     setProcessedDeletedArchiveIds((prev) => new Set([...prev, ...deleted]));
     setSelectedArchiveIds(new Set());
     setSelectedGroupKeys(new Set());
+    setDeletePending(false);
     setRunning(false);
     setStatus(failures.length ? `已删除 ${deleted.length} 个，${failures.length} 个失败` : `已删除 ${deleted.length} 个归档`);
     if (failures.length) alert(failures.slice(0, 5).join('\n') + (failures.length > 5 ? '\n...' : ''));
-  }, [selectedArchives, syncEhFavoriteBeforeDelete]);
+  }, [deleteSyncConfirmed, selectedArchives, syncEhFavoriteBeforeDelete]);
 
   const markSelectedGroups = useCallback(async () => {
     const selectedGroups = groups.filter((group) => selectedGroupKeys.has(groupKey(group)));
@@ -714,7 +723,7 @@ export default function DeduplicatePage({ onBack }) {
           <button type="button" className="btn" onClick={onBack} disabled={running}>返回</button>
           <button type="button" className="btn" onClick={runDetection} disabled={running}>{running ? '处理中...' : '开始检测'}</button>
           <button type="button" className="btn" onClick={smartSelect} disabled={running || groups.length === 0}>智能选择</button>
-          <button type="button" className="btn" onClick={deleteSelectedArchives} disabled={running || selectedArchiveIds.size === 0}>删除选中 ({selectedArchiveIds.size})</button>
+          <button type="button" className="btn" onClick={requestDeleteSelectedArchives} disabled={running || selectedArchiveIds.size === 0}>删除选中 ({selectedArchiveIds.size})</button>
           <button type="button" className="btn" onClick={markSelectedGroups} disabled={running || selectedGroupKeys.size === 0}>标记分组不重复 ({selectedGroupKeys.size})</button>
           <button type="button" className="btn" onClick={saveResult} disabled={running || (!lastScanStats && groups.length === 0)}>保存结果</button>
           <button type="button" className="btn" onClick={loadSavedResult} disabled={running || !savedResultAvailable}>载入保存</button>
@@ -866,6 +875,28 @@ export default function DeduplicatePage({ onBack }) {
             : '所有有效封面已完成比较。'}
         />
       )}
+      <ConfirmDialog
+        open={deletePending}
+        title="确认批量删除归档"
+        message={`将从 LANraragi 中删除选中的 ${selectedArchives.length} 个归档。此操作不可撤销。`}
+        confirmLabel={running ? '删除中...' : '确认删除'}
+        cancelLabel="取消"
+        onConfirm={deleteSelectedArchives}
+        onCancel={() => { if (!running) setDeletePending(false); }}
+        confirmDisabled={running}
+      >
+        {ehFavoriteDeleteSync && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: '9px', fontSize: '13px', color: 'var(--text-main)' }}>
+            <input
+              type="checkbox"
+              checked={deleteSyncConfirmed}
+              onChange={(event) => setDeleteSyncConfirmed(event.target.checked)}
+              disabled={running}
+            />
+            <span>同时从 EH/EX 收藏夹移除</span>
+          </label>
+        )}
+      </ConfirmDialog>
     </div>
   );
 }

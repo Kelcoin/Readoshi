@@ -6,7 +6,7 @@ import { addWatchlistItem, getWatchlist, hasRemoteWatchlist, loadWatchlistState,
 import { loadTagDB, startTagDBUpdateTimer, stopTagDBUpdateTimer } from '../lib/tags';
 import { getWorkerUrl, setWorkerUrl, getSyncToken, setSyncToken, exportConfig, importConfig } from '../lib/worker-config';
 import { runHistoryExistenceCheck } from '../lib/historyMaintenance';
-import { extractEhGalleryUrl, getEhCookie, getEhFavoriteDeleteSync, hasValidEhCookie, removeEhFavorite, setEhFavoriteDeleteSync } from '../lib/ehFavoriteSync';
+import { extractEhGalleryUrl, getEhCookie, getEhFavoriteDeleteSync, hasValidEhCookie, removeEhFavorite, setEhFavoriteDeleteSync, shouldSyncEhFavorite } from '../lib/ehFavoriteSync';
 import ArchiveCard from '../components/ArchiveCard';
 import ArchiveContextMenu from '../components/ArchiveContextMenu';
 import ConfirmDialog from '../components/ConfirmDialog';
@@ -379,9 +379,11 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
   const [historyDeleteTarget, setHistoryDeleteTarget] = useState(null);
   const [archiveMenu, setArchiveMenu] = useState(null);
   const [archiveDeleteTarget, setArchiveDeleteTarget] = useState(null);
+  const [archiveDeleteSyncConfirmed, setArchiveDeleteSyncConfirmed] = useState(true);
   const [archiveSelectionMode, setArchiveSelectionMode] = useState(false);
   const [selectedArchiveIds, setSelectedArchiveIds] = useState(() => new Set());
   const [bulkDeletePending, setBulkDeletePending] = useState(false);
+  const [bulkDeleteSyncConfirmed, setBulkDeleteSyncConfirmed] = useState(true);
   const [archiveDeleting, setArchiveDeleting] = useState(false);
   const [ehFavoriteDeleteSync, setEhFavoriteDeleteSyncState] = useState(getEhFavoriteDeleteSync);
   const [historySyncing, setHistorySyncing] = useState(false);
@@ -594,8 +596,8 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     });
   }, []);
 
-  const syncEhFavoriteBeforeDelete = useCallback(async (archive) => {
-    if (!ehFavoriteDeleteSync) return { skipped: true, reason: 'disabled' };
+  const syncEhFavoriteBeforeDelete = useCallback(async (archive, confirmationEnabled) => {
+    if (!shouldSyncEhFavorite(ehFavoriteDeleteSync, confirmationEnabled)) return { skipped: true, reason: 'disabled' };
     const archiveId = archive?.arcid || archive?.id;
     let galleryUrl = extractEhGalleryUrl(archive);
     if (!galleryUrl && archiveId) {
@@ -613,10 +615,10 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     });
   }, [ehFavoriteDeleteSync]);
 
-  const deleteArchiveWithSync = useCallback(async (archive) => {
+  const deleteArchiveWithSync = useCallback(async (archive, confirmationEnabled) => {
     const archiveId = archive?.arcid || archive?.id;
     if (!archiveId) throw new Error('归档 ID 缺失');
-    await syncEhFavoriteBeforeDelete(archive);
+    await syncEhFavoriteBeforeDelete(archive, confirmationEnabled);
     await lrrApi.deleteArchive(archiveId);
     return archiveId;
   }, [syncEhFavoriteBeforeDelete]);
@@ -625,7 +627,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     if (!archiveDeleteTarget) return;
     setArchiveDeleting(true);
     try {
-      const archiveId = await deleteArchiveWithSync(archiveDeleteTarget);
+      const archiveId = await deleteArchiveWithSync(archiveDeleteTarget, archiveDeleteSyncConfirmed);
       removeWatchlistItem(archiveId).catch(() => {});
       removeDeletedArchiveIds([archiveId]);
       setArchiveDeleteTarget(null);
@@ -634,7 +636,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     } finally {
       setArchiveDeleting(false);
     }
-  }, [archiveDeleteTarget, deleteArchiveWithSync, removeDeletedArchiveIds, removeWatchlistItem]);
+  }, [archiveDeleteSyncConfirmed, archiveDeleteTarget, deleteArchiveWithSync, removeDeletedArchiveIds, removeWatchlistItem]);
 
   useEffect(() => {
     if (archives.length === 0 && randoms.length === 0) return;
@@ -1300,6 +1302,16 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     });
   }, []);
 
+  const requestArchiveDelete = useCallback((archive) => {
+    setArchiveDeleteSyncConfirmed(true);
+    setArchiveDeleteTarget(archive);
+  }, []);
+
+  const requestBulkArchiveDelete = useCallback(() => {
+    setBulkDeleteSyncConfirmed(true);
+    setBulkDeletePending(true);
+  }, []);
+
   const toggleSelectAllVisibleArchives = useCallback(() => {
     setSelectedArchiveIds((prev) => {
       const next = new Set(prev);
@@ -1321,7 +1333,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     for (const archive of selectedArchiveList) {
       const archiveId = archive?.arcid || archive?.id;
       try {
-        const deletedId = await deleteArchiveWithSync(archive);
+        const deletedId = await deleteArchiveWithSync(archive, bulkDeleteSyncConfirmed);
         deletedIds.push(deletedId);
       } catch (err) {
         failures.push({ id: archiveId, title: archive?.title || archiveId, message: err.message || '删除失败' });
@@ -1340,7 +1352,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     }
     const preview = failures.slice(0, 5).map((item) => '- ' + item.title + ': ' + item.message).join('\n');
     alert('已删除 ' + deletedIds.length + ' 个，' + failures.length + ' 个失败：\n' + preview + (failures.length > 5 ? '\n...' : ''));
-  }, [deleteArchiveWithSync, removeDeletedArchiveIds, removeWatchlistItems, selectedArchiveList]);
+  }, [bulkDeleteSyncConfirmed, deleteArchiveWithSync, removeDeletedArchiveIds, removeWatchlistItems, selectedArchiveList]);
 
   const archiveCountLabel = useMemo(() => {
     if (loading && archives.length === 0) return '正在获取结果...';
@@ -1935,7 +1947,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
               <button
                 className="btn"
                 style={{ padding: '6px 12px', fontSize: '12px', background: 'rgba(244,67,54,0.16)', borderColor: 'rgba(244,67,54,0.32)', color: '#ffd2d0', opacity: selectedArchiveIds.size === 0 || archiveDeleting ? 0.55 : 1 }}
-                onClick={() => setBulkDeletePending(true)}
+                onClick={requestBulkArchiveDelete}
                 disabled={selectedArchiveIds.size === 0 || archiveDeleting}
               >
                 {archiveDeleting ? '删除中' : '删除所选'}
@@ -2434,7 +2446,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
       onRead={(archive) => handleSelectArchive(archive.arcid || archive.id)}
       onDownload={handleArchiveDownload}
       onCopyLink={handleArchiveCopyLink}
-      onDelete={(archive) => setArchiveDeleteTarget(archive)}
+      onDelete={requestArchiveDelete}
       onRemoveHistory={removeHistoryArchive}
       onAddWatchlist={addWatchlistArchive}
       onRemoveWatchlist={removeWatchlistArchive}
@@ -2442,23 +2454,47 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     <ConfirmDialog
       open={!!archiveDeleteTarget}
       title="确认删除归档"
-      message={archiveDeleteTarget ? `将从 LANraragi 中删除“${archiveDeleteTarget.title || archiveDeleteTarget.arcid || archiveDeleteTarget.id}”。${ehFavoriteDeleteSync ? '若元数据包含有效 EH/EX 链接，会先同步从 E 站收藏夹移除。' : ''}此操作不可撤销。` : ''}
+      message={archiveDeleteTarget ? `将从 LANraragi 中删除“${archiveDeleteTarget.title || archiveDeleteTarget.arcid || archiveDeleteTarget.id}”。此操作不可撤销。` : ''}
       confirmLabel={archiveDeleting ? '删除中...' : '确认删除'}
       cancelLabel="取消"
       onConfirm={handleArchiveDelete}
       onCancel={() => { if (!archiveDeleting) setArchiveDeleteTarget(null); }}
       confirmDisabled={archiveDeleting}
-    />
+    >
+      {ehFavoriteDeleteSync && (
+        <label style={{ display: 'flex', alignItems: 'center', gap: '9px', fontSize: '13px', color: 'var(--text-main)' }}>
+          <input
+            type="checkbox"
+            checked={archiveDeleteSyncConfirmed}
+            onChange={(event) => setArchiveDeleteSyncConfirmed(event.target.checked)}
+            disabled={archiveDeleting}
+          />
+          <span>同时从 EH/EX 收藏夹移除</span>
+        </label>
+      )}
+    </ConfirmDialog>
     <ConfirmDialog
       open={bulkDeletePending}
       title="确认批量删除归档"
-      message={`将从 LANraragi 中删除选中的 ${selectedArchiveIds.size} 个归档。${ehFavoriteDeleteSync ? '若归档元数据包含有效 EH/EX 链接，会先同步从 E 站收藏夹移除。' : ''}此操作不可撤销。`}
+      message={`将从 LANraragi 中删除选中的 ${selectedArchiveIds.size} 个归档。此操作不可撤销。`}
       confirmLabel={archiveDeleting ? '删除中...' : '确认删除'}
       cancelLabel="取消"
       onConfirm={handleBulkArchiveDelete}
       onCancel={() => { if (!archiveDeleting) setBulkDeletePending(false); }}
       confirmDisabled={archiveDeleting}
-    />
+    >
+      {ehFavoriteDeleteSync && (
+        <label style={{ display: 'flex', alignItems: 'center', gap: '9px', fontSize: '13px', color: 'var(--text-main)' }}>
+          <input
+            type="checkbox"
+            checked={bulkDeleteSyncConfirmed}
+            onChange={(event) => setBulkDeleteSyncConfirmed(event.target.checked)}
+            disabled={archiveDeleting}
+          />
+          <span>同时从 EH/EX 收藏夹移除</span>
+        </label>
+      )}
+    </ConfirmDialog>
     <ConfirmDialog
       open={!!historyDeleteTarget}
       title="确认删除阅读记录"

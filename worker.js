@@ -1001,7 +1001,7 @@ async function statusPage(request) {
   <div class="stat"><span class="label">待看记录数</span><span class="value">${watchlistCount}</span></div>
   <div class="stat"><span class="label">KV 存储</span><span class="${hasKV ? 'ok' : 'warn'}">${hasKV ? '已绑定' : '未绑定'}</span></div>
   <div class="stat"><span class="label">KV 读取</span><span class="${kvOk ? 'ok' : 'err'}">${kvOk ? '正常' : '失败'}</span></div>
-  <div class="stat"><span class="label">非重复 pair</span><span class="value">${dedupeCount}</span></div>
+  <div class="stat"><span class="label">非重复归档记录</span><span class="value">${dedupeCount}</span></div>
 
   <div class="divider"></div>
   <div class="section-title">认证状态</div>

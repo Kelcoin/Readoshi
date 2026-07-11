@@ -11,6 +11,7 @@ export default function ConfirmDialog({
   onCancel,
   destructive = true,
   confirmDisabled = false,
+  children,
 }) {
   useEffect(() => {
     if (!open) return undefined;
@@ -77,6 +78,7 @@ export default function ConfirmDialog({
             {message}
           </div>
         )}
+        {children}
         <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
           <button
             type="button"

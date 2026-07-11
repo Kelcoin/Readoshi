@@ -1,5 +1,9 @@
 const EH_FAVORITE_DELETE_SYNC_KEY = 'lrr_eh_favorite_delete_sync';
 
+export function shouldSyncEhFavorite(globalEnabled, confirmationEnabled) {
+  return !!globalEnabled && !!confirmationEnabled;
+}
+
 export function getEhFavoriteDeleteSync() {
   try {
     return localStorage.getItem(EH_FAVORITE_DELETE_SYNC_KEY) === '1';
