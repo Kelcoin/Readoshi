@@ -214,20 +214,6 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
     updateAspectRatio(imgRef.current);
   }, [thumbSrc, thumbState, updateAspectRatio]);
 
-  useEffect(() => {
-    if (aspectRatio == null) return undefined;
-    const frame = requestAnimationFrame(() => {
-      const el = cardRef.current;
-      const parent = el?.parentElement;
-      if (!el) return;
-      // Wide covers change their CSS grid span after thumbnail decode; forcing
-      // a layout read prevents Chromium from delaying the repaint until scroll.
-      void el.offsetWidth;
-      if (parent) void parent.offsetHeight;
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [aspectRatio, isWide, noCrop]);
-
   useLayoutEffect(() => {
     const el = metaRef.current;
     if (!el) return undefined;
@@ -535,8 +521,6 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
         position: 'relative',
         display: 'inline-block',
         gridColumn: isWide ? 'span 2' : undefined,
-        transform: 'translateZ(0)',
-        backfaceVisibility: 'hidden',
         ...wrapStyle,
       }}
     >
@@ -553,7 +537,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
           transition: 'transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.22s ease, border-color 0.22s ease',
           display: 'flex',
           flexDirection: 'column',
-          transform: isPanelVisible ? 'translateY(-6px) translateZ(0)' : 'translateY(0) translateZ(0)',
+          transform: isPanelVisible ? 'translateY(-6px)' : undefined,
           boxShadow: selected
             ? '0 0 0 2px rgba(74,159,240,0.92), 0 12px 34px rgba(74,159,240,0.20)'
             : (isPanelVisible ? '0 12px 40px 0 rgba(0, 0, 0, 0.5)' : 'var(--shadow)'),
@@ -637,7 +621,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
           {thumbState === 'ready' && thumbSrc && (
             <img
               ref={imgRef}
-              className="reader-content-fade-in"
+              className="archive-cover-image"
               src={thumbSrc}
               alt="cover"
               draggable={false}
@@ -648,8 +632,6 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
                 objectFit: 'cover',
                 display: 'block',
                 opacity: 1,
-                transform: 'translateZ(0)',
-                backfaceVisibility: 'hidden',
                 WebkitTouchCallout: 'none',
                 userSelect: 'none',
                 pointerEvents: 'none',

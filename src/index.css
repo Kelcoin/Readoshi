@@ -466,16 +466,45 @@ textarea:focus-visible,
 }
 
 .watchlist-card .archive-card-shell {
-  border-color: rgba(240, 193, 95, 0.32);
-  outline: 1px solid rgba(240, 193, 95, 0.16);
-  outline-offset: 2px;
-  box-shadow: 0 0 18px rgba(240, 193, 95, 0.12), var(--shadow);
+  position: relative;
+  z-index: 1;
+  border-color: color-mix(in srgb, var(--watchlist-glow) 48%, transparent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--watchlist-glow) 24%, transparent), var(--shadow);
 }
 
 :root[data-theme="light"] .watchlist-card .archive-card-shell {
-  border-color: rgba(217, 147, 54, 0.24);
-  outline-color: rgba(217, 147, 54, 0.14);
-  box-shadow: 0 0 16px rgba(217, 147, 54, 0.08), 0 4px 12px rgba(26, 38, 56, 0.06), inset 0 1px 0 rgba(255,255,255,0.5);
+  box-shadow: 0 0 9px color-mix(in srgb, var(--watchlist-glow) 18%, transparent), 0 4px 12px rgba(26, 38, 56, 0.06), inset 0 1px 0 rgba(255,255,255,0.5);
+}
+
+:root { --watchlist-glow: #ffc85a; }
+:root[data-theme="light"] { --watchlist-glow: #258bd2; }
+
+.watchlist-card::before {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  z-index: 0;
+  pointer-events: none;
+  border: 1px solid color-mix(in srgb, var(--watchlist-glow) 52%, transparent);
+  border-radius: 17px;
+  box-shadow:
+    0 0 8px color-mix(in srgb, var(--watchlist-glow) 34%, transparent),
+    0 0 18px color-mix(in srgb, var(--watchlist-glow) 22%, transparent),
+    0 0 30px color-mix(in srgb, var(--watchlist-glow) 12%, transparent);
+  animation: watchlistGlowRadiate 2.8s ease-in-out infinite;
+}
+
+@keyframes watchlistGlowRadiate {
+  0%, 100% { opacity: 0.56; transform: scale(0.99); }
+  50% { opacity: 1; transform: scale(1.025); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .watchlist-card::before { animation: none; }
+}
+
+.archive-cover-image {
+  opacity: 1;
 }
 
 .archive-cover-frame {
