@@ -4,6 +4,7 @@ import Home from './pages/Home';
 import HistoryPage from './pages/HistoryPage';
 import WatchlistPage from './pages/WatchlistPage';
 import DeduplicatePage from './pages/DeduplicatePage';
+import MetadataPage from './pages/MetadataPage';
 import { loadTagDB } from './lib/tags';
 import { checkServerStatus } from './lib/api';
 import { navigateHome, navigateToArchive, parseRouteFromLocation } from './lib/navigation';
@@ -203,6 +204,8 @@ export default function App() {
       </>
     );
   }
+
+  if (route.kind === 'metadata') return <><MetadataPage archiveId={route.archiveId} /><PwaStatus /></>;
 
   if (route.kind === 'history') {
     return (

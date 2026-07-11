@@ -7,10 +7,14 @@ import { getReaderArchiveListMeta } from '../lib/readerArchiveList';
 import { isArchiveMissingError } from '../lib/historyMaintenance';
 import { translateTag, categorizeTags } from '../lib/tags';
 import { getCachedImage, getImage, clearImageCache, primeImage } from '../lib/imageCache';
+import { DEFAULT_READER_SETTINGS, READER_SETTINGS_KEY, normalizeReaderSettings } from '../lib/readerSettings';
+import { computeContainedImageRect, rectsOverlap } from '../lib/pageIndicatorLayout';
+import { classifyWebtoonSeams, compareSeamPixels, sampleImageSeam } from '../lib/webtoonDetector';
+import { detectImageBorderInsets } from '../lib/readerImageTransform';
 import { getWorkerUrl, getSyncToken } from '../lib/worker-config';
 import { getBootState, markBackground, loadReaderSnapshot, saveReaderSnapshot } from '../lib/sessionState';
 import { getStoredServerInfo, loadServerInfo } from '../lib/serverInfoCache';
-import { navigateHome, navigateToArchive, parseRouteFromLocation } from '../lib/navigation';
+import { navigateHome, navigateToArchive, navigateToMetadata, parseRouteFromLocation } from '../lib/navigation';
 import Recommendations from '../components/Recommendations';
 import EhComments from '../components/EhComments';
 import ConfirmDialog from '../components/ConfirmDialog';
@@ -264,12 +268,16 @@ const PageImage = React.forwardRef(({
   onLoadStart,
   onReady,
   onError,
+  splitWide = false,
+  cropBorders = false,
 }, fwdRef) => {
   const [imgSrc, setImgSrc] = useState(null);
   const [loadState, setLoadState] = useState(() => (pageUrl ? 'loading' : 'idle'));
   const [allowNetworkFallback, setAllowNetworkFallback] = useState(() => !cacheOnly);
   const requestSeqRef = useRef(0);
   const imgRef = useRef(null);
+  const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
+  const [cropInsets, setCropInsets] = useState({ top: 0, right: 0, bottom: 0, left: 0 });
 
   useEffect(() => {
     if (!cacheOnly) {
@@ -298,8 +306,9 @@ const PageImage = React.forwardRef(({
         const src = await resolvePageImageSource(pageUrl, { cacheOnly, allowNetworkFallback });
         if (!isMounted || requestSeq !== requestSeqRef.current) return;
         if (src) {
-          await ensureImageDecoded(src);
+          const decoded = new Image(); decoded.src = src; await decoded.decode?.().catch(() => {});
           if (!isMounted || requestSeq !== requestSeqRef.current) return;
+          setNaturalSize({ width: decoded.naturalWidth, height: decoded.naturalHeight });
           setImgSrc(src);
           setLoadState('ready');
           onReady?.(pageIndex);
@@ -373,6 +382,12 @@ const PageImage = React.forwardRef(({
     );
   }
 
+  if (splitWide && naturalSize.width > naturalSize.height * 1.2) {
+    return <div style={{ display: 'flex', width: '100%', height: '100%', gap: 2 }}>
+      {[0, 1].map(part => <div key={part} style={{ width: '50%', height: '100%', overflow: 'hidden', position: 'relative' }}><img ref={part === 0 ? setRefs : undefined} src={imgSrc} alt="Comic Content" draggable={false} style={{ position: 'absolute', height: '100%', width: '200%', maxWidth: 'none', objectFit: 'fill', left: part === 0 ? 0 : '-100%', userSelect: 'none' }} /></div>)}
+    </div>;
+  }
+
   return (
     <img
       ref={setRefs}
@@ -389,12 +404,14 @@ const PageImage = React.forwardRef(({
         MozUserSelect: 'none',
         msUserSelect: 'none',
         ...style
+        , ...(cropBorders ? { clipPath: `inset(${cropInsets.top * 100}% ${cropInsets.right * 100}% ${cropInsets.bottom * 100}% ${cropInsets.left * 100}%)` } : {})
       }}
       alt="Comic Content"
       draggable={false}
       loading="eager"
       fetchpriority="high"
       decoding="async"
+      onLoad={(event) => { if (cropBorders) { try { setCropInsets(detectImageBorderInsets(event.currentTarget)); } catch {} } }}
       onContextMenu={(e) => isImmersive && e.preventDefault()}
     />
   );
@@ -669,41 +686,6 @@ function getPageNavButtonStyle(isMobile) {
   };
 }
 
-function PageIndicatorModeGlyph({ mode, size = 18 }) {
-  if (mode === 'hidden') {
-    return (
-      <span aria-hidden="true" style={{ display: 'inline-flex', width: size, height: size, lineHeight: 0 }}>
-        <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="4" y="5" width="16" height="14" rx="3" />
-          <path d="M8 10h3.2M8 14h5.2" opacity="0.45" />
-          <path d="M4.5 20.5l19-19" />
-        </svg>
-      </span>
-    );
-  }
-  if (mode === 'auto') {
-    return (
-      <span aria-hidden="true" style={{ display: 'inline-flex', width: size, height: size, lineHeight: 0 }}>
-        <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="4" y="5" width="16" height="14" rx="3" />
-          <path d="M8 10h3.4M8 14h4.8" />
-          <path d="M16 8.4v2.2h2.2M18.2 8.4A4 4 0 0 1 14.4 15" />
-          <path d="M8 18.5l-2 2-2-2M6 20.5V17" opacity="0.78" />
-        </svg>
-      </span>
-    );
-  }
-  return (
-    <span aria-hidden="true" style={{ display: 'inline-flex', width: size, height: size, lineHeight: 0 }}>
-      <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="4" y="5" width="16" height="14" rx="3" />
-        <path d="M8 10h3.4M8 14h5.2" />
-        <path d="M16.2 9.2l1.5 1.5 3-3" />
-      </svg>
-    </span>
-  );
-}
-
 function ReaderStageSkeleton({ title = '', hasMeta = false, hasPages = false, isMobile = false }) {
   const topBtnStyle = getTopBarButtonStyle(isMobile);
   const pageNavBtnStyle = getPageNavButtonStyle(isMobile);
@@ -899,17 +881,13 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   }, [zoomScale]);
 
   // ===== Settings (persisted across archives) =====
-  const SETTINGS_KEY = 'lrr_reader_settings';
-  const DEFAULT_SETTINGS = { direction: 'ltr', preloadCount: 3, autoTurnInterval: 5, autoTurnActive: false,
-    ehEnabled: false, ehCookie: '', ehMinScore: 0, ehMaxComments: 45, ehSortMethod: 'score', ehSortOrder: 'desc' };
-
   const [settings, setSettingsState] = useState(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
-      if (saved && typeof saved === 'object') return { ...DEFAULT_SETTINGS, ...saved };
+      return normalizeReaderSettings(JSON.parse(localStorage.getItem(READER_SETTINGS_KEY)));
     } catch {}
-    return { ...DEFAULT_SETTINGS };
+    return { ...DEFAULT_READER_SETTINGS };
   });
+  const [autoWebtoon, setAutoWebtoon] = useState(false);
 
   const [preloadInput, setPreloadInput] = useState(String(settings.preloadCount));
   const [autoTurnInput, setAutoTurnInput] = useState(String(settings.autoTurnInterval));
@@ -992,13 +970,30 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
 
   const updateSettings = useCallback((updater) => {
     setSettingsState((prev) => {
-      const next = typeof updater === 'function' ? updater(prev) : updater;
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+      const next = normalizeReaderSettings(typeof updater === 'function' ? updater(prev) : updater);
+      localStorage.setItem(READER_SETTINGS_KEY, JSON.stringify(next));
       setPreloadInput(String(next.preloadCount));
       setAutoTurnInput(String(next.autoTurnInterval));
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    if (settings.readingLayout !== 'auto' || pages.length < 2) { setAutoWebtoon(false); return undefined; }
+    let active = true;
+    (async () => {
+      const seams = [];
+      const count = Math.min(12, pages.length - 1);
+      for (let index = 0; index < count; index++) {
+        const sources = await Promise.all([resolvePageImageSource(pages[index]), resolvePageImageSource(pages[index + 1])]);
+        const images = await Promise.all(sources.map(src => new Promise((resolve, reject) => { const image = new Image(); image.onload = () => resolve(image); image.onerror = reject; image.src = src; })));
+        seams.push(compareSeamPixels(await sampleImageSeam(images[0], 'bottom'), await sampleImageSeam(images[1], 'top')));
+      }
+      const result = classifyWebtoonSeams(seams, { minimumValid: pages.length <= 3 ? 1 : 3 });
+      if (active) setAutoWebtoon(result.isWebtoon);
+    })().catch(() => { if (active) setAutoWebtoon(false); });
+    return () => { active = false; };
+  }, [pages, settings.readingLayout]);
 
   useEffect(() => {
     if (!archive || pages.length === 0) return;
@@ -1269,17 +1264,12 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   }, [getImmersiveTopTriggerHeight, revealImmersiveHeader, viewMode]);
 
   // ===== Page number visibility with overlap detection =====
-  const [pageIndicatorVisibilityMode, setPageIndicatorVisibilityMode] = useState('auto');
+  const pageIndicatorVisibilityMode = settings.pageIndicatorVisibilityMode;
   const [pageNumVisible, setPageNumVisible] = useState(true);
   const [pageIndicatorMode, setPageIndicatorMode] = useState('pinned');
   const pageNumTimerRef = useRef(null);
   const pageIndicatorTransientActiveRef = useRef(false);
 
-  const cyclePageIndicatorVisibilityMode = useCallback(() => {
-    setPageIndicatorVisibilityMode((mode) => (
-      mode === 'pinned' ? 'hidden' : mode === 'hidden' ? 'auto' : 'pinned'
-    ));
-  }, []);
 
   const showTransientPageIndicator = useCallback((duration = 1400) => {
     if (pageNumTimerRef.current) clearTimeout(pageNumTimerRef.current);
@@ -1302,30 +1292,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     const loweredGap = window.innerWidth < 960 ? 2 : 0;
 
     const imageRect = imgEl.getBoundingClientRect();
-    let renderRect = { left: imageRect.left, right: imageRect.right, top: imageRect.top, bottom: imageRect.bottom };
-
-    if (imgEl.naturalWidth && imgEl.naturalHeight) {
-      const imgRatio = imgEl.naturalWidth / imgEl.naturalHeight;
-      const boxRatio = imageRect.width / (imageRect.height || 1);
-
-      if (imgRatio < boxRatio) {
-        const renderWidth = imageRect.height * imgRatio;
-        const gap = (imageRect.width - renderWidth) / 2;
-        renderRect.left = imageRect.left + gap;
-        renderRect.right = imageRect.right - gap;
-      } else if (imgRatio > boxRatio) {
-        const renderHeight = imageRect.width / imgRatio;
-        const gap = (imageRect.height - renderHeight) / 2;
-        renderRect.top = imageRect.top + gap;
-        renderRect.bottom = imageRect.bottom - gap;
-      }
-    }
-
-    const doesOverlap = (rect) => {
-      const overlapWidth = Math.max(0, Math.min(rect.right, renderRect.right) - Math.max(rect.left, renderRect.left));
-      const overlapHeight = Math.max(0, Math.min(rect.bottom, renderRect.bottom) - Math.max(rect.top, renderRect.top));
-      return overlapWidth > 0.5 && overlapHeight > 0.5;
-    };
+    const renderRect = computeContainedImageRect(imageRect, imgEl.naturalWidth, imgEl.naturalHeight);
+    const doesOverlap = (rect) => rectsOverlap(renderRect, rect, 6);
 
     const measureRectForBottom = (bottomGapPx) => {
       const width = indicator.offsetWidth || indicator.getBoundingClientRect().width;
@@ -2275,6 +2243,12 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
 
   const navBtnBase = getPageNavButtonStyle(isMobile);
   const normalReaderFrameStyle = getNormalReaderFrameStyle(isMobile);
+  const webtoonActive = settings.readingLayout === 'webtoon' || (settings.readingLayout === 'auto' && autoWebtoon);
+  const scaleStyle = settings.scaleMode === 'fit-width' ? { width: '100%', height: 'auto', objectFit: 'contain' }
+    : settings.scaleMode === 'fit-height' ? { width: 'auto', height: '100%', objectFit: 'contain' }
+      : settings.scaleMode === 'original' ? { width: 'auto', height: 'auto', maxWidth: 'none', maxHeight: 'none', objectFit: 'none' }
+        : { width: '100%', height: '100%', objectFit: 'contain' };
+  const transformStyle = settings.rotateWidePagesEnabled ? { transform: 'rotate(90deg) scale(.82)' } : {};
   const normalVisibleIndex = Math.max(0, Math.min(pageLoadPhase.visibleIndex, Math.max(pages.length - 1, 0)));
   const normalTargetIndex = Math.max(0, Math.min(currentIndex, Math.max(pages.length - 1, 0)));
   const targetPending = pages.length > 0 && currentIndex !== displayedIndex;
@@ -2285,11 +2259,6 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const immersiveManualPending = viewMode === 'immersive' && !settings.autoTurnActive && loadingUiVisible;
   const immersiveManualError = viewMode === 'immersive' && !settings.autoTurnActive && targetPending && pageLoadPhase.status === 'error';
   const normalDisplayIndex = normalPagePending || normalPageError ? normalVisibleIndex : normalTargetIndex;
-  const pageIndicatorModeLabel = pageIndicatorVisibilityMode === 'pinned'
-    ? '页码常显'
-    : pageIndicatorVisibilityMode === 'hidden'
-      ? '页码隐藏'
-      : '页码自动';
   const pageIndicatorShouldRender = pageIndicatorVisibilityMode !== 'hidden';
   const pageIndicatorShouldShow = zoomScale === 1.0 && (
     pageIndicatorVisibilityMode === 'pinned' ||
@@ -2367,16 +2336,6 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '6px' : '8px', flex: '1 0 0', justifyContent: 'flex-end', minWidth: 0 }}>
             {viewMode === 'immersive' && (
-              <button
-                style={{ ...btnBase, padding: isMobile ? '8px 10px' : '8px 12px', fontSize: isMobile ? '16px' : '13px' }}
-                onClick={cyclePageIndicatorVisibilityMode}
-                title={pageIndicatorModeLabel}
-                aria-label={pageIndicatorModeLabel}
-              >
-                <PageIndicatorModeGlyph mode={pageIndicatorVisibilityMode} size={18} />
-              </button>
-            )}
-            {viewMode === 'immersive' && (
               <button style={{ ...btnBase, padding: isMobile ? '8px 8px' : '8px 14px', fontSize: isMobile ? '14px' : '13px' }} onClick={() => updateSettings((s) => ({ ...s, autoTurnActive: !s.autoTurnActive }))}>
                 {isMobile
                   ? <ToolbarGlyph name={settings.autoTurnActive ? 'pause' : 'play'} size={18} />
@@ -2412,6 +2371,9 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                 </button>
                 <button style={{ ...btnBase, padding: isMobile ? '8px 10px' : '8px 14px', fontSize: isMobile ? '16px' : '13px' }} data-panel-toggle onClick={() => { setShowSettingsPanel((v) => !v); setShowHistoryPanel(false); setShowWatchlistPanel(false); }}>
                   {isMobile ? <ToolbarGlyph name="settings" size={18} /> : '阅读设定'}
+                </button>
+                <button style={{ ...btnBase, padding: isMobile ? '8px 10px' : '8px 14px', fontSize: '13px' }} onClick={() => navigateToMetadata(archiveId)} title="编辑元数据">
+                  {isMobile ? '编辑' : '编辑元数据'}
                 </button>
               </>
             )}
@@ -2455,6 +2417,26 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                       />
                     </div>
                   </label>
+                  <label style={{ fontSize: '12px', color: 'var(--text-sub)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+                    <span>页码指示器</span>
+                    <div style={{ width: '135px' }}><CustomSelect value={settings.pageIndicatorVisibilityMode} options={[{ label: '自动避让', value: 'auto' }, { label: '始终显示', value: 'pinned' }, { label: '隐藏', value: 'hidden' }]} onChange={(v) => updateSettings((s) => ({ ...s, pageIndicatorVisibilityMode: v }))} compact /></div>
+                  </label>
+                  <label style={{ fontSize: '12px', color: 'var(--text-sub)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+                    <span>阅读布局</span>
+                    <div style={{ width: '135px' }}><CustomSelect value={settings.readingLayout} options={[{ label: '单页', value: 'single' }, { label: 'Webtoon', value: 'webtoon' }, { label: '自动检测', value: 'auto' }]} onChange={(v) => updateSettings((s) => ({ ...s, readingLayout: v }))} compact /></div>
+                  </label>
+                  <label style={{ fontSize: '12px', color: 'var(--text-sub)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+                    <span>缩放模式</span>
+                    <div style={{ width: '135px' }}><CustomSelect value={settings.scaleMode} options={[{ label: '适应屏幕', value: 'fit-screen' }, { label: '适应宽度', value: 'fit-width' }, { label: '适应高度', value: 'fit-height' }, { label: '原始尺寸', value: 'original' }]} onChange={(v) => updateSettings((s) => ({ ...s, scaleMode: v }))} compact /></div>
+                  </label>
+                  {[
+                    ['doublePageEnabled', '双页显示'], ['cropBordersEnabled', '自动裁白边'],
+                    ['splitWidePagesEnabled', '拆分宽页'], ['rotateWidePagesEnabled', '旋转宽页'],
+                  ].map(([key, label]) => (
+                    <label key={key} style={{ fontSize: '12px', color: 'var(--text-sub)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      {label}<input type="checkbox" checked={settings[key]} onChange={(event) => updateSettings((s) => ({ ...s, [key]: event.target.checked }))} />
+                    </label>
+                  ))}
                   <label style={{ fontSize: '12px', color: 'var(--text-sub)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     预加载
                     <input type="text" inputMode="numeric" pattern="[0-9]*" className="input-glass no-spinner"
@@ -2508,19 +2490,21 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             <div
               style={{ ...normalReaderFrameStyle, position: 'relative' }}
             >
-              <PageImage
+              {webtoonActive ? <div style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: settings.webtoonGap, overflow: 'auto' }}>
+                {pages.map((pageUrl, index) => <PageImage key={pageUrl} pageUrl={pageUrl} pageIndex={index} isImmersive={false} cacheOnly={assetCacheOnly} style={{ width: '100%', height: 'auto', maxWidth: '100%', objectFit: 'contain', borderRadius: 0 }} />)}
+              </div> : <div style={{ width: '100%', height: '100%', display: 'flex', justifyContent: 'center', gap: settings.doublePageGap, overflow: settings.scaleMode === 'original' ? 'auto' : 'hidden' }}><PageImage
                 pageUrl={pages[normalDisplayIndex]}
                 pageIndex={normalDisplayIndex}
                 isImmersive={false}
                 cacheOnly={assetCacheOnly}
-                style={{ maxWidth: '100%', maxHeight: '100%', borderRadius: '8px' }}
+                style={{ ...scaleStyle, ...transformStyle, maxWidth: settings.scaleMode === 'original' ? 'none' : '100%', maxHeight: settings.scaleMode === 'original' ? 'none' : '100%', borderRadius: '8px' }} splitWide={settings.splitWidePagesEnabled} cropBorders={settings.cropBordersEnabled}
                 loadingLabel={`正在切换到第 ${normalTargetIndex + 1} 页`}
                 loadingHint={normalPagePending ? '正在请求并解码图像' : '正在准备图像'}
                 errorLabel={`第 ${normalTargetIndex + 1} 页加载失败`}
                 onLoadStart={handlePageVisualLoadStart}
                 onReady={handlePageVisualReady}
                 onError={handlePageVisualError}
-              />
+              />{settings.doublePageEnabled && pages[normalDisplayIndex + 1] && <PageImage pageUrl={pages[normalDisplayIndex + 1]} pageIndex={normalDisplayIndex + 1} isImmersive={false} cacheOnly={assetCacheOnly} style={{ ...scaleStyle, maxWidth: '50%', maxHeight: '100%', borderRadius: 8 }} />}</div>}
               {normalPagePending && (
                 <div
                   style={{

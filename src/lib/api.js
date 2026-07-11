@@ -56,6 +56,15 @@ export const lrrApi = {
 
   getRandom: (count = 10, options = {}) => request(`/search/random?count=${count}`, 'GET', null, options),
   getArchive: (id) => request(`/archives/${id}/metadata`),
+  updateArchiveMetadata: (id, { title = '', tags = '', summary = '' }) => {
+    const params = new URLSearchParams({ title, tags, summary });
+    return request(`/archives/${encodeURIComponent(id)}/metadata?${params}`, 'PUT');
+  },
+  getMetadataPlugins: () => request('/plugins/metadata'),
+  useMetadataPlugin: (id, plugin, arg = '') => {
+    const params = new URLSearchParams({ id, plugin, arg });
+    return request(`/plugins/use?${params}`, 'POST');
+  },
   getArchiveFiles: (id) => request(`/archives/${id}/files`),
   deleteArchive: (id) => request(`/archives/${encodeURIComponent(id)}`, 'DELETE'),
   setArchiveThumbnail: (id, page) =>

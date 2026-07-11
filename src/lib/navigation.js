@@ -8,6 +8,8 @@ export function parseRouteFromLocation() {
   const query = params.get('q');
   const view = params.get('view');
 
+  if (archiveId && view === 'metadata') return { kind: 'metadata', archiveId };
+
   if (archiveId) {
     return { kind: 'reader', archiveId };
   }
@@ -30,6 +32,14 @@ export function navigateToArchive(archiveId, { replace = false } = {}) {
   if (replace) window.history.replaceState({}, '', url);
   else window.history.pushState({}, '', url);
   dispatchRouteChange({ kind: 'reader', archiveId: String(archiveId) });
+}
+
+export function navigateToMetadata(archiveId, { replace = false } = {}) {
+  if (!archiveId) return;
+  const url = `/?view=metadata&id=${encodeURIComponent(archiveId)}`;
+  if (replace) window.history.replaceState({}, '', url);
+  else window.history.pushState({}, '', url);
+  dispatchRouteChange({ kind: 'metadata', archiveId: String(archiveId) });
 }
 
 export function navigateHome({ query = '', replace = false, scrollToArchives = false } = {}) {

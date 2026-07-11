@@ -6,12 +6,14 @@ import { addWatchlistItem, getWatchlist, hasRemoteWatchlist, loadWatchlistState,
 import { loadTagDB, startTagDBUpdateTimer, stopTagDBUpdateTimer } from '../lib/tags';
 import { getWorkerUrl, setWorkerUrl, getSyncToken, setSyncToken, exportConfig, importConfig } from '../lib/worker-config';
 import { runHistoryExistenceCheck } from '../lib/historyMaintenance';
-import { extractEhGalleryUrl, getEhCookie, getEhFavoriteDeleteSync, hasValidEhCookie, removeEhFavorite, setEhFavoriteDeleteSync, shouldSyncEhFavorite } from '../lib/ehFavoriteSync';
+import { getEhCookie, getEhFavoriteDeleteSync, hasValidEhCookie, setEhFavoriteDeleteSync } from '../lib/ehFavoriteSync';
+import { deleteArchiveWithFavoriteSync } from '../lib/archiveDeletion';
 import ArchiveCard from '../components/ArchiveCard';
 import ArchiveContextMenu from '../components/ArchiveContextMenu';
 import ConfirmDialog from '../components/ConfirmDialog';
 import CustomSelect from '../components/CustomSelect';
 import TagSuggest from '../components/TagSuggest';
+import CacheSettings from '../components/CacheSettings';
 import { HomeSectionGlyph, ThemeModeGlyph, getSectionGlyphColor } from '../components/AppGlyphs';
 import { getStoredCategories, loadCategories, startCategoriesUpdateTimer, stopCategoriesUpdateTimer } from '../lib/categories';
 import { clearImageCache } from '../lib/imageCache';
@@ -596,32 +598,9 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     });
   }, []);
 
-  const syncEhFavoriteBeforeDelete = useCallback(async (archive, confirmationEnabled) => {
-    if (!shouldSyncEhFavorite(ehFavoriteDeleteSync, confirmationEnabled)) return { skipped: true, reason: 'disabled' };
-    const archiveId = archive?.arcid || archive?.id;
-    let galleryUrl = extractEhGalleryUrl(archive);
-    if (!galleryUrl && archiveId) {
-      try {
-        const metadata = await lrrApi.getArchive(archiveId);
-        galleryUrl = extractEhGalleryUrl({ ...archive, ...metadata });
-      } catch {}
-    }
-    if (!galleryUrl) return { skipped: true, reason: 'missing-url' };
-    return removeEhFavorite({
-      galleryUrl,
-      cookie: getEhCookie(),
-      workerUrl: getWorkerUrl(),
-      token: getSyncToken(),
-    });
-  }, [ehFavoriteDeleteSync]);
-
   const deleteArchiveWithSync = useCallback(async (archive, confirmationEnabled) => {
-    const archiveId = archive?.arcid || archive?.id;
-    if (!archiveId) throw new Error('归档 ID 缺失');
-    await syncEhFavoriteBeforeDelete(archive, confirmationEnabled);
-    await lrrApi.deleteArchive(archiveId);
-    return archiveId;
-  }, [syncEhFavoriteBeforeDelete]);
+    return deleteArchiveWithFavoriteSync(archive, { syncEnabled: ehFavoriteDeleteSync, confirmationEnabled });
+  }, [ehFavoriteDeleteSync]);
 
   const handleArchiveDelete = useCallback(async () => {
     if (!archiveDeleteTarget) return;
@@ -2186,6 +2165,8 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           </div>
 
           <div className="settings-panel-scroll" style={{ display: 'flex', flexDirection: 'column', gap: '18px', padding: '0 28px 18px', overflowY: 'auto', minHeight: 0 }}>
+
+          <CacheSettings />
 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
             <div>
