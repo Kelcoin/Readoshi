@@ -889,6 +889,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     return { ...DEFAULT_READER_SETTINGS };
   });
   const [autoWebtoon, setAutoWebtoon] = useState(false);
+  const snapshotSaveTimerRef = useRef(null);
 
   const [preloadInput, setPreloadInput] = useState(String(settings.preloadCount));
   const [autoTurnInput, setAutoTurnInput] = useState(String(settings.autoTurnInterval));
@@ -985,10 +986,16 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     (async () => {
       const seams = [];
       const count = Math.min(12, pages.length - 1);
+      const loadDetectorImage = async (pageUrl) => {
+        const source = await resolvePageImageSource(pageUrl);
+        return new Promise((resolve, reject) => { const image = new Image(); image.onload = () => resolve(image); image.onerror = reject; image.src = source; });
+      };
+      let previousImage = await loadDetectorImage(pages[0]);
       for (let index = 0; index < count; index++) {
-        const sources = await Promise.all([resolvePageImageSource(pages[index]), resolvePageImageSource(pages[index + 1])]);
-        const images = await Promise.all(sources.map(src => new Promise((resolve, reject) => { const image = new Image(); image.onload = () => resolve(image); image.onerror = reject; image.src = src; })));
-        seams.push(compareSeamPixels(await sampleImageSeam(images[0], 'bottom'), await sampleImageSeam(images[1], 'top')));
+        if (!active) return;
+        const nextImage = await loadDetectorImage(pages[index + 1]);
+        seams.push(compareSeamPixels(await sampleImageSeam(previousImage, 'bottom'), await sampleImageSeam(nextImage, 'top')));
+        previousImage = nextImage;
       }
       const result = classifyWebtoonSeams(seams, { minimumValid: pages.length <= 3 ? 1 : 3 });
       if (active) setAutoWebtoon(result.isWebtoon);
@@ -998,7 +1005,11 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
 
   useEffect(() => {
     if (!archive || pages.length === 0) return;
-    saveReaderStateSnapshot();
+    if (snapshotSaveTimerRef.current) clearTimeout(snapshotSaveTimerRef.current);
+    snapshotSaveTimerRef.current = setTimeout(() => {
+      snapshotSaveTimerRef.current = null;
+      saveReaderStateSnapshot();
+    }, 250);
   }, [archive, pages, currentIndex, displayedIndex, viewMode, zoomScale, panX, panY, saveReaderStateSnapshot]);
 
   useEffect(() => {
@@ -1364,22 +1375,33 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     setPageIndicatorMode('pinned');
     requestAnimationFrame(() => checkIndicatorOverlap(true));
 
-    const ro = new ResizeObserver(() => {
-      checkIndicatorOverlap();
-    });
+    let overlapFrame = 0;
+    const scheduleOverlapCheck = () => {
+      if (overlapFrame) return;
+      overlapFrame = requestAnimationFrame(() => {
+        overlapFrame = 0;
+        checkIndicatorOverlap();
+      });
+    };
+    const ro = new ResizeObserver(scheduleOverlapCheck);
     resizeObserverRef.current = ro;
 
     const imgEl = imgCurrRef.current;
     if (imgEl) ro.observe(imgEl);
-
-    const interval = setInterval(checkIndicatorOverlap, 500);
+    if (indicatorRef.current) ro.observe(indicatorRef.current);
+    window.addEventListener('resize', scheduleOverlapCheck, { passive: true });
+    window.visualViewport?.addEventListener('resize', scheduleOverlapCheck, { passive: true });
+    window.visualViewport?.addEventListener('scroll', scheduleOverlapCheck, { passive: true });
 
     return () => {
       if (pageNumTimerRef.current) clearTimeout(pageNumTimerRef.current);
       pageNumTimerRef.current = null;
       pageIndicatorTransientActiveRef.current = false;
       ro.disconnect();
-      clearInterval(interval);
+      if (overlapFrame) cancelAnimationFrame(overlapFrame);
+      window.removeEventListener('resize', scheduleOverlapCheck);
+      window.visualViewport?.removeEventListener('resize', scheduleOverlapCheck);
+      window.visualViewport?.removeEventListener('scroll', scheduleOverlapCheck);
     };
   }, [viewMode, currentIndex, pageIndicatorVisibilityMode, checkIndicatorOverlap]);
 

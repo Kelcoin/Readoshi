@@ -4,6 +4,7 @@ import { translateTag, categorizeTags, NAMESPACE_COLORS_MAP } from '../lib/tags'
 import { getCachedImage, getImage } from '../lib/imageCache';
 import { navigateHome, parseRouteFromLocation } from '../lib/navigation';
 import { NamespaceGlyph, stripDecoratedLabel } from './AppGlyphs';
+import { useViewportWidth } from '../lib/viewport';
 
 const NAMESPACE_COLORS = NAMESPACE_COLORS_MAP;
 
@@ -87,13 +88,12 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   const [thumbState, setThumbState] = useState('loading');
   const [retryKey, setRetryKey] = useState(0);
   const [panelPos, setPanelPos] = useState({ top: 0, left: 0 });
-  const [isMobile, setIsMobile] = useState(false);
+  const isMobile = useViewportWidth() < 768;
   const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
   const [aspectRatio, setAspectRatio] = useState(null);
   const cardRef = useRef(null);
   const panelRef = useRef(null);
   const imgRef = useRef(null);
-  const metaRef = useRef(null);
   const leaveTimerRef = useRef(null);
   const thumbObjectUrlRef = useRef(null);
   const [shouldLoadThumb, setShouldLoadThumb] = useState(cacheOnly);
@@ -109,13 +109,6 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
       setAllowNetworkFallback(true);
     }
   }, [cacheOnly]);
-
-  useEffect(() => {
-    const check = () => setIsMobile(window.innerWidth < 768);
-    check();
-    window.addEventListener('resize', check);
-    return () => window.removeEventListener('resize', check);
-  }, []);
 
   useEffect(() => {
     if (cacheOnly || allowNetworkFallback) {
@@ -188,7 +181,6 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
 
   const isWide = noCrop && aspectRatio != null && aspectRatio > 1.0;
   const baseMetaFontSize = isMobile ? 10.5 : 11;
-  const [metaFontSize, setMetaFontSize] = useState(baseMetaFontSize);
 
   const updateAspectRatio = useCallback((img) => {
     const nw = img?.naturalWidth;
@@ -213,38 +205,6 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
     if (thumbState !== 'ready' || !thumbSrc) return;
     updateAspectRatio(imgRef.current);
   }, [thumbSrc, thumbState, updateAspectRatio]);
-
-  useLayoutEffect(() => {
-    const el = metaRef.current;
-    if (!el) return undefined;
-
-    const update = () => {
-      const width = el.clientWidth;
-      if (!width) return;
-      const previousFontSize = el.style.fontSize;
-      el.style.fontSize = `${baseMetaFontSize}px`;
-      const naturalWidth = el.scrollWidth;
-      el.style.fontSize = previousFontSize;
-      const nextSize = naturalWidth <= width
-        ? baseMetaFontSize
-        : Math.max(5, Math.floor((baseMetaFontSize * width / naturalWidth) * 10) / 10);
-      setMetaFontSize((prev) => (Math.abs(prev - nextSize) < 0.05 ? prev : nextSize));
-    };
-
-    update();
-    if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', update);
-      return () => {
-        window.removeEventListener('resize', update);
-      };
-    }
-
-    const observer = new ResizeObserver(update);
-    observer.observe(el);
-    return () => {
-      observer.disconnect();
-    };
-  }, [baseMetaFontSize, dateAddedStr, pageInfo]);
 
   // ===== Lazy thumbnail: only load near viewport (biggest memory win) =====
   useEffect(() => {
@@ -690,9 +650,8 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
 
         {(pageInfo || dateAddedStr) && (
           <div
-            ref={metaRef}
             style={{
-              fontSize: `${metaFontSize}px`,
+              fontSize: `${baseMetaFontSize}px`,
               color: 'var(--text-sub)',
               marginTop: isMobile ? '4px' : '6px',
               display: 'flex',
@@ -702,6 +661,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
               lineHeight: 1.35,
               maxWidth: '100%',
               whiteSpace: 'nowrap',
+              overflow: 'hidden',
             }}
           >
             {pageInfo && (

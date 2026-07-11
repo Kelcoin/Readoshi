@@ -38,7 +38,13 @@ export default function App() {
   const [loginLoading, setLoginLoading] = useState(false);
   
   useEffect(() => {
-    loadTagDB(); 
+    const run = () => loadTagDB();
+    if (typeof requestIdleCallback === 'function') {
+      const id = requestIdleCallback(run, { timeout: 1500 });
+      return () => cancelIdleCallback(id);
+    }
+    const timer = setTimeout(run, 250);
+    return () => clearTimeout(timer);
   }, []);
 
   useEffect(() => {

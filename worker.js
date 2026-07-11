@@ -497,15 +497,22 @@ function normalizePairKeys(values) {
 }
 
 const DEFAULT_HISTORY_RETENTION_DAYS = 90;
+let cachedHistoryRetentionDays = null;
+let historyRetentionLoadedAt = 0;
+const HISTORY_RETENTION_CACHE_MS = 60 * 1000;
 
 async function getHistoryRetentionDays() {
+  const now = Date.now();
+  if (cachedHistoryRetentionDays != null && now - historyRetentionLoadedAt < HISTORY_RETENTION_CACHE_MS) return cachedHistoryRetentionDays;
   try {
     const raw = await HISTORY_KV.get('history_retention_days');
     const days = Number(raw);
-    return Number.isFinite(days) && days > 0 ? days : DEFAULT_HISTORY_RETENTION_DAYS;
+    cachedHistoryRetentionDays = Number.isFinite(days) && days > 0 ? days : DEFAULT_HISTORY_RETENTION_DAYS;
   } catch {
-    return DEFAULT_HISTORY_RETENTION_DAYS;
+    cachedHistoryRetentionDays = DEFAULT_HISTORY_RETENTION_DAYS;
   }
+  historyRetentionLoadedAt = now;
+  return cachedHistoryRetentionDays;
 }
 
 function historyTimestamp(item) {

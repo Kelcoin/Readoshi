@@ -6,6 +6,7 @@ import { navigateToArchive, navigateToMetadata } from '../lib/navigation';
 import ArchiveCard from './ArchiveCard';
 import ArchiveContextMenu from './ArchiveContextMenu';
 import ConfirmDialog from './ConfirmDialog';
+import { useViewportWidth } from '../lib/viewport';
 
 const CUSTOM_WEIGHT_TAGS = {
   'female:ahegao': 1.5, 'female:anal intercourse': 2, 'female:anal': 2,
@@ -90,19 +91,13 @@ export default function Recommendations({ currentArchive }) {
   const [simData, setSimData] = useState([]);
   const [artistData, setArtistData] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [isNarrow, setIsNarrow] = useState(window.innerWidth < 600);
+  const isNarrow = useViewportWidth() < 600;
   const [retryTick, setRetryTick] = useState(0);
   const [archiveMenu, setArchiveMenu] = useState(null);
   const [archiveDeleteTarget, setArchiveDeleteTarget] = useState(null);
   const retryTimerRef = useRef(null);
   const retryCountRef = useRef(0);
   const scroller = useHorizontalScroller();
-  useEffect(() => {
-    const check = () => setIsNarrow(window.innerWidth < 600);
-    window.addEventListener('resize', check);
-    return () => window.removeEventListener('resize', check);
-  }, []);
-
   const sourceTagsLower = useMemo(() => {
     if (!currentArchive?.tags) return new Set();
     return new Set(currentArchive.tags.split(',').map(t => t.trim().toLowerCase()).filter(Boolean));
