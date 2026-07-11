@@ -481,6 +481,9 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
         position: 'relative',
         display: 'inline-block',
         gridColumn: isWide ? 'span 2' : undefined,
+        transform: isPanelVisible ? 'translateY(-6px)' : undefined,
+        transformOrigin: 'center top',
+        transition: 'transform 0.22s cubic-bezier(0.22, 1, 0.36, 1)',
         ...wrapStyle,
       }}
     >
@@ -497,11 +500,9 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
           transition: 'transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.22s ease, border-color 0.22s ease',
           display: 'flex',
           flexDirection: 'column',
-          transform: isPanelVisible ? 'translateY(-6px)' : undefined,
           boxShadow: selected
             ? '0 0 0 2px rgba(74,159,240,0.92), 0 12px 34px rgba(74,159,240,0.20)'
             : (isPanelVisible ? '0 12px 40px 0 rgba(0, 0, 0, 0.5)' : 'var(--shadow)'),
-          transformOrigin: 'center top',
           touchAction: 'pan-x pan-y pinch-zoom',
           WebkitTouchCallout: (selectionMode || onLongPress || onArchiveContextMenu) ? 'none' : undefined,
           WebkitUserSelect: 'none',

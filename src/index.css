@@ -484,7 +484,7 @@ textarea:focus-visible,
 }
 
 :root { --watchlist-glow: #ffc85a; }
-:root[data-theme="light"] { --watchlist-glow: #258bd2; }
+:root[data-theme="light"] { --watchlist-glow: #d88720; }
 
 .watchlist-card::before {
   content: '';
