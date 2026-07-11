@@ -7,7 +7,7 @@ import { NamespaceGlyph, stripDecoratedLabel } from './AppGlyphs';
 
 const NAMESPACE_COLORS = NAMESPACE_COLORS_MAP;
 
-function calculatePanelPosition(cardRect, panelHeight) {
+function calculatePanelPosition(cardRect, panelHeight, pointerY = null) {
   const panelWidth = 320;
   const panelMaxHeight = 440;
   const effectivePanelHeight = Math.min(
@@ -35,10 +35,13 @@ function calculatePanelPosition(cardRect, panelHeight) {
     return { top: aboveTop, left: centeredLeft };
   }
 
-  const sideTop = Math.min(
-    Math.max(sideGap, cardRect.top + (cardRect.height - effectivePanelHeight) / 2),
-    Math.max(sideGap, vh - effectivePanelHeight - sideGap),
-  );
+  const centeredSideTop = cardRect.top + (cardRect.height - effectivePanelHeight) / 2;
+  const pointerSafeTop = pointerY == null
+    ? centeredSideTop
+    : (pointerY + 18 + effectivePanelHeight <= vh - sideGap
+      ? pointerY + 18
+      : pointerY - effectivePanelHeight - 18);
+  const sideTop = Math.min(Math.max(sideGap, pointerSafeTop), Math.max(sideGap, vh - effectivePanelHeight - sideGap));
 
   const rightLeft = cardRect.right + sideGap;
   if (rightLeft + panelWidth <= vw - sideGap) {
@@ -98,6 +101,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   const longPressTimerRef = useRef(null);
   const longPressTriggeredRef = useRef(false);
   const pointerStartRef = useRef(null);
+  const hoverPointerYRef = useRef(null);
   const id = archive.arcid || archive.id;
 
   useEffect(() => {
@@ -342,11 +346,11 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
     }
   };
 
-  const updatePanelPosition = useCallback(() => {
+  const updatePanelPosition = useCallback((pointerY = hoverPointerYRef.current) => {
     if (!cardRef.current) return;
     const rect = cardRef.current.getBoundingClientRect();
     const panelHeight = panelRef.current?.getBoundingClientRect().height;
-    const nextPos = calculatePanelPosition(rect, panelHeight);
+    const nextPos = calculatePanelPosition(rect, panelHeight, pointerY);
     setPanelPos((prev) => (
       Math.abs(prev.top - nextPos.top) < 0.5 && Math.abs(prev.left - nextPos.left) < 0.5
         ? prev
@@ -355,13 +359,14 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   }, []);
 
   // ===== Fix 1: 200ms 延迟消失，鼠标可从卡片滑入面板 =====
-  const showPanel = () => {
+  const showPanel = (event) => {
     if (cardRef.current?.closest?.('[data-scroll-block]')) return;
     if (leaveTimerRef.current) {
       clearTimeout(leaveTimerRef.current);
       leaveTimerRef.current = null;
     }
-    updatePanelPosition();
+    hoverPointerYRef.current = event?.clientY ?? null;
+    updatePanelPosition(hoverPointerYRef.current);
     setHovered(true);
   };
 
@@ -417,7 +422,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
         return;
       }
       const panelHeight = panelRef.current?.getBoundingClientRect().height;
-      setPanelPos(calculatePanelPosition(rect, panelHeight));
+      setPanelPos(calculatePanelPosition(rect, panelHeight, hoverPointerYRef.current));
     };
     window.addEventListener('scroll', handleScroll, true);
     return () => window.removeEventListener('scroll', handleScroll, true);

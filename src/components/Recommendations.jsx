@@ -418,7 +418,7 @@ export default function Recommendations({ currentArchive }) {
                   flexShrink: 0, width: '150px', minWidth: '150px',
                   background: 'rgba(255,255,255,0.04)', borderRadius: '12px',
                   border: '1px solid rgba(255,255,255,0.06)',
-                  overflow: 'hidden', display: 'flex', flexDirection: 'column',
+                  overflow: 'hidden', display: 'flex', flexDirection: 'column', padding: '12px',
                 }}>
                   <div style={{
                     width: '100%', height: '210px',
@@ -426,12 +426,10 @@ export default function Recommendations({ currentArchive }) {
                     backgroundSize: '200% 100%',
                     animation: 'shimmer 1.5s infinite',
                   }} />
-                  <div style={{ padding: '8px 10px 10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    <div style={{ height: '10px', borderRadius: '4px', background: 'rgba(255,255,255,0.06)', width: '80%' }} />
-                    <div style={{ height: '3px', borderRadius: '2px', background: 'rgba(255,255,255,0.08)', width: '100%' }}>
-                      <div style={{ height: '100%', borderRadius: '2px', background: 'rgba(255,255,255,0.04)', width: '40%' }} />
-                    </div>
-                    <div style={{ height: '8px', borderRadius: '4px', background: 'rgba(255,255,255,0.04)', width: '60%' }} />
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ height: '12px', borderRadius: '4px', background: 'rgba(255,255,255,0.06)', width: '84%', marginTop: '12px' }} />
+                    <div style={{ height: '12px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', width: '66%', marginTop: '8px' }} />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '10px' }}><span style={{ height: '8px', width: '36%', borderRadius: '4px', background: 'rgba(255,255,255,0.04)' }} /><span style={{ height: '8px', width: '30%', borderRadius: '4px', background: 'rgba(255,255,255,0.04)' }} /></div>
                   </div>
                 </div>
               ))}

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { searchTags, isDBReady, NAMESPACE_COLORS_MAP, NS_CN_LABELS } from '../lib/tags';
 
 const COLORS = NAMESPACE_COLORS_MAP || {};
@@ -214,12 +215,13 @@ export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSe
     };
   }
 
-  return (
-    <div onKeyDown={handleKeyDown} tabIndex={-1} style={{ outline: 'none', position: 'relative' }}>
+  return createPortal(
       <div
         ref={listRef}
         className="dropdown-animate no-scrollbar"
         style={panelStyle}
+        onKeyDown={handleKeyDown}
+        tabIndex={-1}
         onMouseDown={(e) => e.stopPropagation()}
         onTouchStart={(e) => e.stopPropagation()}
       >
@@ -341,7 +343,7 @@ export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSe
             </div>
           );
         })}
-      </div>
-    </div>
+      </div>,
+    document.body,
   );
 }

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 
 export default function CustomSelect({ value, options, onChange, style, compact }) {
@@ -7,6 +7,18 @@ export default function CustomSelect({ value, options, onChange, style, compact 
   const triggerRef = useRef(null);
   const dropdownRef = useRef(null);
   const [pos, setPos] = useState({ top: 0, left: 0, width: 0, maxHeight: 250 });
+
+  const updatePosition = useCallback(() => {
+    if (!triggerRef.current) return;
+    const r = triggerRef.current.getBoundingClientRect();
+    const gap = 8;
+    const viewportGap = 12;
+    const below = window.innerHeight - r.bottom - gap - viewportGap;
+    const above = r.top - gap - viewportGap;
+    const openAbove = below < 180 && above > below;
+    const maxHeight = Math.max(120, Math.min(320, openAbove ? above : below));
+    setPos({ top: openAbove ? Math.max(viewportGap, r.top - gap - maxHeight) : r.bottom + gap, left: Math.max(viewportGap, Math.min(r.left, window.innerWidth - r.width - viewportGap)), width: r.width, maxHeight });
+  }, []);
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -17,6 +29,17 @@ export default function CustomSelect({ value, options, onChange, style, compact 
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    updatePosition();
+    window.addEventListener('scroll', updatePosition, true);
+    window.addEventListener('resize', updatePosition);
+    return () => {
+      window.removeEventListener('scroll', updatePosition, true);
+      window.removeEventListener('resize', updatePosition);
+    };
+  }, [isOpen, updatePosition]);
 
   const selectedOption = options.find(opt => opt.value === value);
   const isNarrow = typeof window !== 'undefined' && window.innerWidth < 480;
@@ -37,14 +60,7 @@ export default function CustomSelect({ value, options, onChange, style, compact 
         }}
         onClick={() => {
             if (!isOpen && triggerRef.current) {
-              const r = triggerRef.current.getBoundingClientRect();
-              const gap = 8;
-              const viewportGap = 12;
-              const below = window.innerHeight - r.bottom - gap - viewportGap;
-              const above = r.top - gap - viewportGap;
-              const openAbove = below < 180 && above > below;
-              const maxHeight = Math.max(120, Math.min(320, openAbove ? above : below));
-              setPos({ top: openAbove ? Math.max(viewportGap, r.top - gap - maxHeight) : r.bottom + gap, left: Math.max(viewportGap, Math.min(r.left, window.innerWidth - r.width - viewportGap)), width: r.width, maxHeight });
+              updatePosition();
             }
             setIsOpen(prev => !prev);
           }}
@@ -73,14 +89,14 @@ export default function CustomSelect({ value, options, onChange, style, compact 
             <div
               key={opt.value}
               style={{
-                padding: '10px 16px', cursor: 'pointer', fontSize: '14px',
+                padding: '10px 12px', margin: '2px 8px', borderRadius: '8px', cursor: 'pointer', fontSize: '14px',
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                 background: opt.value === value ? 'rgba(88, 183, 255, 0.16)' : 'transparent',
                 color: opt.value === value ? 'var(--accent-strong)' : 'var(--text-main)',
                 transition: 'background 0.2s'
               }}
-              onMouseEnter={(e) => { if(opt.value !== value) e.target.style.background = 'rgba(255, 255, 255, 0.08)' }}
-              onMouseLeave={(e) => { if(opt.value !== value) e.target.style.background = 'transparent' }}
+              onMouseEnter={(e) => { if(opt.value !== value) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)' }}
+              onMouseLeave={(e) => { if(opt.value !== value) e.currentTarget.style.background = 'transparent' }}
               onClick={() => { onChange(opt.value); setIsOpen(false); }}
             >
               <span>{opt.label}</span>

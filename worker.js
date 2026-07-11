@@ -496,6 +496,30 @@ function normalizePairKeys(values) {
     .sort();
 }
 
+const DEFAULT_HISTORY_RETENTION_DAYS = 90;
+
+async function getHistoryRetentionDays() {
+  try {
+    const raw = await HISTORY_KV.get('history_retention_days');
+    const days = Number(raw);
+    return Number.isFinite(days) && days > 0 ? days : DEFAULT_HISTORY_RETENTION_DAYS;
+  } catch {
+    return DEFAULT_HISTORY_RETENTION_DAYS;
+  }
+}
+
+function historyTimestamp(item) {
+  const value = Number(item?.time || item?.updatedAt || item?.date || 0);
+  return value > 0 && value < 1e12 ? value * 1000 : value;
+}
+
+function pruneHistoriesByRetention(histories, retentionDays, now = Date.now()) {
+  const cutoff = now - retentionDays * 24 * 60 * 60 * 1000;
+  return (Array.isArray(histories) ? histories : [])
+    .filter((item) => item?.id && historyTimestamp(item) >= cutoff)
+    .sort((a, b) => historyTimestamp(b) - historyTimestamp(a));
+}
+
 async function getHistory(request) {
   const authErr = await requireAuth(request);
   if (authErr) return authErr;
@@ -505,7 +529,15 @@ async function getHistory(request) {
   try {
     const raw = await HISTORY_KV.get('history:' + token);
     if (!raw) return json({ histories: [], hideRead: false, deleted: [], lastSync: 0 });
-    return json(JSON.parse(raw));
+    const state = JSON.parse(raw);
+    const retentionDays = await getHistoryRetentionDays();
+    const histories = pruneHistoriesByRetention(state.histories, retentionDays);
+    if (histories.length !== (Array.isArray(state.histories) ? state.histories.length : 0)) {
+      state.histories = histories;
+      state.lastSync = Date.now();
+      await HISTORY_KV.put('history:' + token, JSON.stringify(state));
+    }
+    return json(state);
   } catch (err) {
     return json({ error: 'KV read failed: ' + err.message }, 500);
   }
@@ -577,10 +609,9 @@ async function putHistory(request) {
     .sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0))
     .slice(0, 200);
 
+  const retentionDays = await getHistoryRetentionDays();
   const result = {
-    histories: Array.from(merged.values())
-      .sort((a, b) => (b.time || 0) - (a.time || 0))
-      .slice(0, 50),
+    histories: pruneHistoriesByRetention(Array.from(merged.values()), retentionDays),
     hideRead: hideRead !== undefined ? hideRead : existing.hideRead !== undefined ? existing.hideRead : false,
     deleted: normalizedDeleted,
     lastSync: Date.now(),
@@ -625,11 +656,13 @@ async function deleteHistory(request) {
   }
   ids.forEach((id) => deletedMap.set(id, now));
 
+  const retentionDays = await getHistoryRetentionDays();
   const result = {
-    histories: (Array.isArray(existing.histories) ? existing.histories : [])
-      .filter((item) => item?.id && !removeSet.has(item.id))
-      .sort((a, b) => (b.time || 0) - (a.time || 0))
-      .slice(0, 50),
+    histories: pruneHistoriesByRetention(
+      (Array.isArray(existing.histories) ? existing.histories : []).filter((item) => item?.id && !removeSet.has(item.id)),
+      retentionDays,
+      now,
+    ),
     hideRead: existing.hideRead !== undefined ? existing.hideRead : false,
     deleted: Array.from(deletedMap.entries())
       .map(([id, deletedAt]) => ({ id, deletedAt }))
