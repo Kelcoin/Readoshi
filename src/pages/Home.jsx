@@ -14,6 +14,7 @@ import ConfirmDialog from '../components/ConfirmDialog';
 import CustomSelect from '../components/CustomSelect';
 import TagSuggest from '../components/TagSuggest';
 import CacheSettings from '../components/CacheSettings';
+import EhFavoriteDeleteSwitch from '../components/EhFavoriteDeleteSwitch';
 import { HomeSectionGlyph, ThemeModeGlyph, getSectionGlyphColor } from '../components/AppGlyphs';
 import { getStoredCategories, loadCategories, startCategoriesUpdateTimer, stopCategoriesUpdateTimer } from '../lib/categories';
 import { clearImageCache } from '../lib/imageCache';
@@ -2444,15 +2445,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
       confirmDisabled={archiveDeleting}
     >
       {ehFavoriteDeleteSync && (
-        <label style={{ display: 'flex', alignItems: 'center', gap: '9px', fontSize: '13px', color: 'var(--text-main)' }}>
-          <input
-            type="checkbox"
-            checked={archiveDeleteSyncConfirmed}
-            onChange={(event) => setArchiveDeleteSyncConfirmed(event.target.checked)}
-            disabled={archiveDeleting}
-          />
-          <span>同时从 EH/EX 收藏夹移除</span>
-        </label>
+        <EhFavoriteDeleteSwitch checked={archiveDeleteSyncConfirmed} onChange={setArchiveDeleteSyncConfirmed} disabled={archiveDeleting} />
       )}
     </ConfirmDialog>
     <ConfirmDialog
@@ -2466,15 +2459,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
       confirmDisabled={archiveDeleting}
     >
       {ehFavoriteDeleteSync && (
-        <label style={{ display: 'flex', alignItems: 'center', gap: '9px', fontSize: '13px', color: 'var(--text-main)' }}>
-          <input
-            type="checkbox"
-            checked={bulkDeleteSyncConfirmed}
-            onChange={(event) => setBulkDeleteSyncConfirmed(event.target.checked)}
-            disabled={archiveDeleting}
-          />
-          <span>同时从 EH/EX 收藏夹移除</span>
-        </label>
+        <EhFavoriteDeleteSwitch checked={bulkDeleteSyncConfirmed} onChange={setBulkDeleteSyncConfirmed} disabled={archiveDeleting} />
       )}
     </ConfirmDialog>
     <ConfirmDialog

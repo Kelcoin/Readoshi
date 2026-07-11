@@ -7,7 +7,7 @@ import { getReaderArchiveListMeta } from '../lib/readerArchiveList';
 import { isArchiveMissingError } from '../lib/historyMaintenance';
 import { translateTag, categorizeTags } from '../lib/tags';
 import { getCachedImage, getImage, clearImageCache, primeImage } from '../lib/imageCache';
-import { DEFAULT_READER_SETTINGS, READER_SETTINGS_KEY, normalizeReaderSettings } from '../lib/readerSettings';
+import { DEFAULT_READER_SETTINGS, READER_SETTINGS_KEY, normalizeReaderSettings, prepareReaderSettingsForArchiveChange } from '../lib/readerSettings';
 import { computeContainedImageRect, rectsOverlap } from '../lib/pageIndicatorLayout';
 import { classifyWebtoonSeams, compareSeamPixels, sampleImageSeam } from '../lib/webtoonDetector';
 import { detectImageBorderInsets } from '../lib/readerImageTransform';
@@ -708,6 +708,7 @@ function ReaderStageSkeleton({ title = '', hasMeta = false, hasPages = false, is
           <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '6px' : '16px', flex: '1 0 0', minWidth: 0 }}>
             <div style={{ ...topBtnStyle, background: 'rgba(255,255,255,0.08)', borderColor: 'rgba(255,255,255,0.08)' }} />
             <div style={{ ...topBtnStyle, background: 'rgba(255,255,255,0.06)', borderColor: 'rgba(255,255,255,0.06)' }} />
+            <div style={{ ...topBtnStyle, background: 'rgba(255,255,255,0.06)', borderColor: 'rgba(255,255,255,0.06)' }} />
           </div>
           {!isMobile && (
             <div
@@ -732,6 +733,8 @@ function ReaderStageSkeleton({ title = '', hasMeta = false, hasPages = false, is
           )}
           {isMobile && <span style={{ flex: '0 0 0', minWidth: 0 }} />}
           <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: isMobile ? '6px' : '8px', flex: '1 0 0', minWidth: 0 }}>
+            <div style={{ ...topBtnStyle, background: 'rgba(255,255,255,0.06)', borderColor: 'rgba(255,255,255,0.06)' }} />
+            <div style={{ ...topBtnStyle, background: 'rgba(255,255,255,0.06)', borderColor: 'rgba(255,255,255,0.06)' }} />
             <div style={{ ...topBtnStyle, background: 'rgba(255,255,255,0.06)', borderColor: 'rgba(255,255,255,0.06)' }} />
             <div style={{ ...topBtnStyle, background: 'rgba(255,255,255,0.06)', borderColor: 'rgba(255,255,255,0.06)' }} />
             <div style={{ ...topBtnStyle, background: 'rgba(255,255,255,0.06)', borderColor: 'rgba(255,255,255,0.06)' }} />
@@ -979,6 +982,10 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    updateSettings(prepareReaderSettingsForArchiveChange);
+  }, [archiveId, updateSettings]);
 
   useEffect(() => {
     if (settings.readingLayout !== 'auto' || pages.length < 2) { setAutoWebtoon(false); return undefined; }
@@ -2395,8 +2402,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                 <button style={{ ...btnBase, padding: isMobile ? '8px 10px' : '8px 14px', fontSize: isMobile ? '16px' : '13px' }} data-panel-toggle onClick={() => { setShowSettingsPanel((v) => !v); setShowHistoryPanel(false); setShowWatchlistPanel(false); }}>
                   {isMobile ? <ToolbarGlyph name="settings" size={18} /> : '阅读设定'}
                 </button>
-                <button style={{ ...btnBase, padding: isMobile ? '8px 10px' : '8px 14px', fontSize: '13px' }} onClick={() => navigateToMetadata(archiveId)} title="编辑元数据">
-                  {isMobile ? '编辑' : '编辑元数据'}
+                <button style={{ ...btnBase, padding: isMobile ? '8px 10px' : '8px 14px', fontSize: isMobile ? '16px' : '13px' }} onClick={() => navigateToMetadata(archiveId)} title="编辑元数据" aria-label="编辑元数据">
+                  {isMobile ? <ToolbarGlyph name="metadata" size={18} /> : '编辑元数据'}
                 </button>
               </>
             )}

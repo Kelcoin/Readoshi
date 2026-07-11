@@ -167,6 +167,7 @@ textarea:focus-visible,
   border-radius: 999px;
   border: 3px solid transparent;
   background-clip: padding-box;
+  min-height: 48px;
 }
 
 .reader-drawer-scroll::-webkit-scrollbar-thumb:hover {
@@ -483,8 +484,8 @@ textarea:focus-visible,
     inset 0 1px 0 rgba(255,255,255,0.5);
 }
 
-:root { --watchlist-glow: #ffc85a; }
-:root[data-theme="light"] { --watchlist-glow: #d88720; }
+:root { --watchlist-glow: #9c7cff; }
+:root[data-theme="light"] { --watchlist-glow: #e38a1f; }
 
 .watchlist-card::before {
   content: '';
@@ -494,9 +495,33 @@ textarea:focus-visible,
   pointer-events: none;
   border-radius: 15px;
   box-shadow:
-    0 0 10px color-mix(in srgb, var(--watchlist-glow) 22%, transparent),
-    0 0 18px color-mix(in srgb, var(--watchlist-glow) 14%, transparent);
-  opacity: 0.82;
+    0 0 0 1px color-mix(in srgb, var(--watchlist-glow) 48%, transparent),
+    0 0 14px color-mix(in srgb, var(--watchlist-glow) 42%, transparent),
+    0 0 30px color-mix(in srgb, var(--watchlist-glow) 30%, transparent);
+  opacity: 0.96;
+}
+
+:root[data-theme="light"] .watchlist-card::before {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--watchlist-glow) 62%, transparent),
+    0 0 16px color-mix(in srgb, var(--watchlist-glow) 56%, transparent),
+    0 0 34px color-mix(in srgb, var(--watchlist-glow) 38%, transparent);
+  opacity: 1;
+}
+
+.watchlist-card:hover::before {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--watchlist-glow) 64%, transparent),
+    0 0 18px color-mix(in srgb, var(--watchlist-glow) 52%, transparent),
+    0 0 38px color-mix(in srgb, var(--watchlist-glow) 36%, transparent);
+  opacity: 1;
+}
+
+:root[data-theme="light"] .watchlist-card:hover::before {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--watchlist-glow) 72%, transparent),
+    0 0 20px color-mix(in srgb, var(--watchlist-glow) 64%, transparent),
+    0 0 42px color-mix(in srgb, var(--watchlist-glow) 44%, transparent);
 }
 
 .archive-cover-image {

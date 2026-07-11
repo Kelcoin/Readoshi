@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import ArchiveCard from '../components/ArchiveCard';
 import ConfirmDialog from '../components/ConfirmDialog';
+import EhFavoriteDeleteSwitch from '../components/EhFavoriteDeleteSwitch';
 import { lrrApi } from '../lib/api';
 import {
   buildDuplicateGroups,
@@ -886,15 +887,7 @@ export default function DeduplicatePage({ onBack }) {
         confirmDisabled={running}
       >
         {ehFavoriteDeleteSync && (
-          <label style={{ display: 'flex', alignItems: 'center', gap: '9px', fontSize: '13px', color: 'var(--text-main)' }}>
-            <input
-              type="checkbox"
-              checked={deleteSyncConfirmed}
-              onChange={(event) => setDeleteSyncConfirmed(event.target.checked)}
-              disabled={running}
-            />
-            <span>同时从 EH/EX 收藏夹移除</span>
-          </label>
+          <EhFavoriteDeleteSwitch checked={deleteSyncConfirmed} onChange={setDeleteSyncConfirmed} disabled={running} />
         )}
       </ConfirmDialog>
     </div>

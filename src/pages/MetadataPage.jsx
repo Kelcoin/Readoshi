@@ -5,6 +5,7 @@ import { navigateHome, navigateToArchive } from '../lib/navigation';
 import CustomSelect from '../components/CustomSelect';
 import TagSuggest from '../components/TagSuggest';
 import ConfirmDialog from '../components/ConfirmDialog';
+import EhFavoriteDeleteSwitch from '../components/EhFavoriteDeleteSwitch';
 import { getEhFavoriteDeleteSync } from '../lib/ehFavoriteSync';
 import { deleteArchiveWithFavoriteSync } from '../lib/archiveDeletion';
 import { translateTag } from '../lib/tags';
@@ -75,7 +76,7 @@ export default function MetadataPage({ archiveId }) {
       <div style={{ display: 'flex', justifyContent: 'center', flexWrap: 'wrap', gap: 14 }}><button className="btn" onClick={() => navigateToArchive(archiveId)}>阅读归档</button><button className="btn" onClick={() => { setDeleteSync(true); setDeleteOpen(true); }} style={{ color: '#ff9e9e' }}>删除归档</button><button className="btn" onClick={save}>保存元数据</button><button className="btn" onClick={() => { if (window.history.length > 1) window.history.back(); else navigateHome(); }}>返回</button></div>
     </section>
     <ConfirmDialog open={deleteOpen} title="确认删除归档" message={`将永久删除“${archive.title}”。`} confirmLabel={deleting ? '删除中…' : '确认删除'} confirmDisabled={deleting} onCancel={() => !deleting && setDeleteOpen(false)} onConfirm={async () => { setDeleting(true); try { await deleteArchiveWithFavoriteSync({ ...archive, id: archiveId }, { syncEnabled: getEhFavoriteDeleteSync(), confirmationEnabled: deleteSync }); navigateHome(); } catch (error) { setStatus(error.message); setDeleting(false); } }}>
-      {getEhFavoriteDeleteSync() && <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}><input type="checkbox" checked={deleteSync} onChange={event => setDeleteSync(event.target.checked)} />同步删除 EH 收藏夹（本次）</label>}
+      {getEhFavoriteDeleteSync() && <EhFavoriteDeleteSwitch checked={deleteSync} onChange={setDeleteSync} disabled={deleting} />}
     </ConfirmDialog>
   </main>;
 }

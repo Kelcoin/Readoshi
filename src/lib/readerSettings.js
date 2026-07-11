@@ -33,3 +33,7 @@ export function normalizeReaderSettings(value = {}) {
   if (next.splitWidePagesEnabled) next.rotateWidePagesEnabled = false;
   return next;
 }
+
+export function prepareReaderSettingsForArchiveChange(value = {}) {
+  return normalizeReaderSettings({ ...(value && typeof value === 'object' ? value : {}), autoTurnActive: false });
+}
