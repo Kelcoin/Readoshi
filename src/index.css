@@ -418,13 +418,51 @@ textarea:focus-visible,
   transform: translateY(-2px);
 }
 
-.secret-input {
-  filter: blur(4px);
-  transition: filter 0.16s ease;
+.secret-input-shell {
+  position: relative;
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 10px;
 }
-.secret-input:hover,
-.secret-input:focus {
-  filter: blur(0);
+
+.secret-input-shell::after {
+  content: attr(data-secret);
+  position: absolute;
+  inset: 3px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  padding: 0 10px;
+  pointer-events: none;
+  white-space: nowrap;
+  color: transparent;
+  border-radius: 7px;
+  text-shadow: 0 0 7px var(--text-main), 0 0 13px var(--text-main);
+  mask-image: radial-gradient(ellipse 100% 90% at center, #000 42%, rgba(0, 0, 0, 0.82) 64%, rgba(0, 0, 0, 0.34) 84%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 100% 90% at center, #000 42%, rgba(0, 0, 0, 0.82) 64%, rgba(0, 0, 0, 0.34) 84%, transparent 100%);
+  transition: opacity 0.16s ease;
+}
+
+.secret-input {
+  display: block;
+  width: 100%;
+  color: transparent;
+  caret-color: transparent;
+  text-shadow: none;
+  transition: color 0.16s ease;
+}
+
+.secret-input-shell:hover::after,
+.secret-input-shell:focus-within::after {
+  opacity: 0;
+}
+
+.secret-input-shell:hover .secret-input,
+.secret-input-shell:focus-within .secret-input {
+  color: var(--text-main);
+  caret-color: var(--text-main);
 }
 
 .login-shell {

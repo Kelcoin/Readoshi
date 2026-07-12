@@ -2319,12 +2319,14 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
               </label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <SettingHint className="settings-field-label" text="至少需要能访问目标画廊的 Cookie；同步删除收藏夹还需要 ipb_member_id 与 ipb_pass_hash。">EH Cookie</SettingHint>
-                <input type="text" className="input-glass secret-input"
-                  value={readerSettings.ehCookie || ''}
-                  onChange={(e) => updateReaderSettings((s) => ({ ...s, ehCookie: e.target.value }))}
-                  placeholder="igneous=...; ipb_member_id=...; ipb_pass_hash=..."
-                  style={{ padding: '8px 10px', fontSize: '12px', width: '100%', boxSizing: 'border-box' }}
-                />
+                <span className="secret-input-shell" data-secret={readerSettings.ehCookie || ''}>
+                  <input type="text" className="input-glass secret-input"
+                    value={readerSettings.ehCookie || ''}
+                    onChange={(e) => updateReaderSettings((s) => ({ ...s, ehCookie: e.target.value }))}
+                    placeholder="igneous=...; ipb_member_id=...; ipb_pass_hash=..."
+                    style={{ padding: '8px 10px', fontSize: '12px', width: '100%', boxSizing: 'border-box' }}
+                  />
+                </span>
               </div>
               <div
                 style={{
@@ -2403,12 +2405,14 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
 
               <div>
                 <SettingHint className="settings-field-label" text="同一 Token 下的设备会共享同步数据；Token 需要预先写入 Worker KV 的 tokens 字段。">访问 Token</SettingHint>
-                <input type="text" className="input-glass secret-input"
-                  value={cfgSyncToken}
-                  onChange={(e) => setCfgSyncToken(e.target.value)}
-                  placeholder="需与 KV 空间 tokens 字段中的 Token 保持一致"
-                  style={{ padding: '8px 12px', fontSize: '13px' }}
-                />
+                <span className="secret-input-shell" data-secret={cfgSyncToken}>
+                  <input type="text" className="input-glass secret-input"
+                    value={cfgSyncToken}
+                    onChange={(e) => setCfgSyncToken(e.target.value)}
+                    placeholder="需与 KV 空间 tokens 字段中的 Token 保持一致"
+                    style={{ padding: '8px 12px', fontSize: '13px' }}
+                  />
+                </span>
               </div>
             </div>
           </div>
