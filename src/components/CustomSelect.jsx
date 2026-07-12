@@ -81,7 +81,7 @@ export default function CustomSelect({ value, options, onChange, style, compact 
       {isOpen && createPortal(
         <div ref={dropdownRef} className="glass-panel dropdown-animate" data-select-dropdown="true" style={{
           position: 'fixed', top: pos.top, left: pos.left, width: pos.width || 'auto',
-          zIndex: 99999, padding: '8px 0', maxHeight: pos.maxHeight, overflowY: 'auto',
+          zIndex: 100100, padding: '8px 0', maxHeight: pos.maxHeight, overflowY: 'auto',
           boxShadow: '0 18px 52px rgba(0,0,0,0.46)',
           background: 'var(--dropdown-bg)'
         }}>
@@ -89,7 +89,7 @@ export default function CustomSelect({ value, options, onChange, style, compact 
             <div
               key={opt.value}
               style={{
-                padding: '10px 12px', margin: '2px 8px', borderRadius: '8px', cursor: 'pointer', fontSize: '14px',
+                minHeight: '40px', padding: '0 12px', margin: '3px 8px', borderRadius: '9px', cursor: 'pointer', fontSize: '14px',
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                 background: opt.value === value ? 'rgba(88, 183, 255, 0.16)' : 'transparent',
                 color: opt.value === value ? 'var(--accent-strong)' : 'var(--text-main)',

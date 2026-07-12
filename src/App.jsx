@@ -13,6 +13,7 @@ import { startHistoryExistenceCheckTimer, stopHistoryExistenceCheckTimer } from 
 import { getWorkerUrl, setWorkerUrl, getSyncToken, setSyncToken, exportConfig, importConfig } from './lib/worker-config';
 import { applyThemeMode, getNextThemeMode, readStoredThemeMode, watchSystemTheme, writeStoredThemeMode } from './lib/theme';
 import PwaStatus from './components/PwaStatus';
+import AppVersion from './components/AppVersion';
 import './index.css';
 
 export default function App() {
@@ -196,6 +197,7 @@ export default function App() {
                 {loginError}
               </div>
             )}
+            <AppVersion />
           </form>
         </div>
         <PwaStatus />

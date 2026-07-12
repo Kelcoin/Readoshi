@@ -1,5 +1,7 @@
 FROM node:18-alpine AS builder
 WORKDIR /app
+ARG VITE_GIT_SHA=
+ENV VITE_GIT_SHA=$VITE_GIT_SHA
 COPY package*.json ./
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 COPY . .

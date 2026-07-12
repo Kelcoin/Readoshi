@@ -15,6 +15,8 @@ import CustomSelect from '../components/CustomSelect';
 import TagSuggest from '../components/TagSuggest';
 import CacheSettings from '../components/CacheSettings';
 import EhFavoriteDeleteSwitch from '../components/EhFavoriteDeleteSwitch';
+import ToggleSwitch from '../components/ToggleSwitch';
+import AppVersion from '../components/AppVersion';
 import { HomeSectionGlyph, ThemeModeGlyph, getSectionGlyphColor } from '../components/AppGlyphs';
 import { getStoredCategories, loadCategories, startCategoriesUpdateTimer, stopCategoriesUpdateTimer } from '../lib/categories';
 import { clearImageCache } from '../lib/imageCache';
@@ -2164,94 +2166,36 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           setShowConfig(false);
         }} style={{
           padding: 0, display: 'flex', flexDirection: 'column', gap: 0,
-          width: '100%', maxWidth: '520px',
+          width: '100%', maxWidth: '640px',
           maxHeight: 'calc(100dvh - 32px)', overflow: 'hidden',
         }}>
           <div style={{ textAlign: 'center', padding: '28px 28px 12px' }}>
-            <h2 style={{ margin: '0 0 6px 0', fontSize: '22px' }}>设置</h2>
+            <h2 className="settings-title">设置</h2>
           </div>
 
           <div className="settings-panel-scroll" style={{ display: 'flex', flexDirection: 'column', gap: '18px', padding: '0 28px 18px', overflowY: 'auto', minHeight: 0 }}>
 
           <CacheSettings />
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
-            <div>
-              <div style={{ fontSize: '13px' }}>裁剪封面</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-sub)', marginTop: '2px' }}>
-                启用后将强制裁剪封面为竖向比例显示
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={handleToggleCropCover}
-              style={{
-                width: '36px', height: '20px', borderRadius: '10px',
-                background: cropCover ? 'var(--accent)' : 'rgba(255,255,255,0.2)',
-                border: 'none', cursor: 'pointer', position: 'relative',
-                transition: 'background 0.2s ease', flexShrink: 0,
-              }}
-            >
-              <span style={{
-                position: 'absolute', top: '2px',
-                left: cropCover ? '18px' : '2px',
-                width: '16px', height: '16px', borderRadius: '50%',
-                background: '#fff', transition: 'left 0.2s ease',
-              }} />
-            </button>
+          <div className="settings-row" title="让横版或方形封面按竖向卡片比例显示，书库网格会更整齐。">
+            <span className="settings-row-title">裁剪封面</span>
+            <ToggleSwitch checked={cropCover} onChange={handleToggleCropCover} label="裁剪封面" />
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
-            <div>
-              <div style={{ fontSize: '13px' }}>隐藏已读完</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-sub)', marginTop: '2px' }}>
-                启用后将在阅读历史中隐藏已完整阅读的归档
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={handleToggleHideRead}
-              style={{
-                width: '36px', height: '20px', borderRadius: '10px',
-                background: hideRead ? 'var(--accent)' : 'rgba(255,255,255,0.2)',
-                border: 'none', cursor: 'pointer', position: 'relative',
-                transition: 'background 0.2s ease', flexShrink: 0,
-              }}
-            >
-              <span style={{
-                position: 'absolute', top: '2px',
-                left: hideRead ? '18px' : '2px',
-                width: '16px', height: '16px', borderRadius: '50%',
-                background: '#fff', transition: 'left 0.2s ease',
-              }} />
-            </button>
+          <div className="settings-row" title="阅读历史中不显示已经读到最后一页的归档，继续阅读列表会更短。">
+            <span className="settings-row-title">隐藏已读完</span>
+            <ToggleSwitch checked={hideRead} onChange={handleToggleHideRead} label="隐藏已读完" />
           </div>
 
-          <div style={{ borderTop: '1px solid var(--glass-border)', paddingTop: '14px' }}>
-            <div style={{ fontSize: '12px', color: 'var(--accent)', fontWeight: 600, marginBottom: '10px', padding: '0 4px' }}>EH 评论区</div>
+          <div className="settings-section">
+            <div className="settings-section-title">EH 评论区</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              <label style={{ fontSize: '12px', color: 'var(--text-sub)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span>启用 EH 评论区</span>
-                <button
-                  type="button"
-                  onClick={() => updateReaderSettings((s) => ({ ...s, ehEnabled: !s.ehEnabled }))}
-                  style={{
-                    width: '36px', height: '20px', borderRadius: '10px',
-                    background: readerSettings.ehEnabled ? 'var(--accent)' : 'rgba(255,255,255,0.2)',
-                    border: 'none', cursor: 'pointer', position: 'relative',
-                    transition: 'background 0.2s ease', flexShrink: 0,
-                  }}
-                >
-                  <span style={{
-                    position: 'absolute', top: '2px',
-                    left: readerSettings.ehEnabled ? '18px' : '2px',
-                    width: '16px', height: '16px', borderRadius: '50%',
-                    background: '#fff', transition: 'left 0.2s ease',
-                  }} />
-                </button>
+              <label className="settings-row" title="在阅读器里加载来源画廊的评论，需要可访问 EH/EX 的 Cookie。">
+                <span className="settings-row-title">启用 EH 评论区</span>
+                <ToggleSwitch checked={readerSettings.ehEnabled} onChange={() => updateReaderSettings((s) => ({ ...s, ehEnabled: !s.ehEnabled }))} label="启用 EH 评论区" />
               </label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '11px', color: 'var(--text-sub)' }}>EH Cookie</label>
+                <label className="settings-field-label" title="至少需要能访问目标画廊的 Cookie；同步删除收藏夹还需要 ipb_member_id 与 ipb_pass_hash。">EH Cookie</label>
                 <input type="text" className="input-glass"
                   value={readerSettings.ehCookie || ''}
                   onChange={(e) => updateReaderSettings((s) => ({ ...s, ehCookie: e.target.value }))}
@@ -2261,8 +2205,8 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
               </div>
               {readerSettings.ehEnabled && (
                 <>
-                  <label style={{ fontSize: '12px', color: 'var(--text-sub)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span>最低展示分数</span>
+                  <label className="settings-row" title="低于这个分数的评论会被隐藏，填 0 表示不过滤。">
+                    <span className="settings-row-title">最低展示分数</span>
                     <input type="text" inputMode="numeric" pattern="-?[0-9]*" className="input-glass no-spinner"
                       value={String(readerSettings.ehMinScore)}
                       onChange={(e) => { const v = e.target.value; const n = parseInt(v, 10); if (!isNaN(n) && n >= -999) updateReaderSettings((s) => ({ ...s, ehMinScore: n })); else if (v === '' || v === '-') updateReaderSettings((s) => ({ ...s, ehMinScore: 0 })); }}
@@ -2270,8 +2214,8 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
                       style={{ width: '52px', padding: '5px 6px', fontSize: '12px', textAlign: 'center' }}
                     />
                   </label>
-                  <label style={{ fontSize: '12px', color: 'var(--text-sub)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span>最多展示数量</span>
+                  <label className="settings-row" title="单个归档最多显示的评论数量，范围 1 到 200。">
+                    <span className="settings-row-title">最多展示数量</span>
                     <input type="text" inputMode="numeric" pattern="[0-9]*" className="input-glass no-spinner"
                       value={String(readerSettings.ehMaxComments)}
                       onChange={(e) => { const v = e.target.value; const n = parseInt(v, 10); if (!isNaN(n) && n >= 1 && n <= 200) updateReaderSettings((s) => ({ ...s, ehMaxComments: n })); }}
@@ -2279,8 +2223,8 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
                       style={{ width: '52px', padding: '5px 6px', fontSize: '12px', textAlign: 'center' }}
                     />
                   </label>
-                  <label style={{ fontSize: '12px', color: 'var(--text-sub)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
-                    排序方式
+                  <label className="settings-row" title="按评论分数或发布时间排序。">
+                    <span className="settings-row-title">排序方式</span>
                     <div style={{ width: '110px', flexShrink: 0 }}>
                       <CustomSelect
                         value={readerSettings.ehSortMethod}
@@ -2290,8 +2234,8 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
                       />
                     </div>
                   </label>
-                  <label style={{ fontSize: '12px', color: 'var(--text-sub)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
-                    排序方向
+                  <label className="settings-row" title="倒序优先显示最高分或最新评论，正序则相反。">
+                    <span className="settings-row-title">排序方向</span>
                     <div style={{ width: '110px', flexShrink: 0 }}>
                       <CustomSelect
                         value={readerSettings.ehSortOrder}
@@ -2306,39 +2250,16 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
             </div>
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
-            <div style={{ paddingRight: '16px' }}>
-              <div style={{ fontSize: '13px' }}>同步删除 E 站收藏夹</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-sub)', marginTop: '2px', lineHeight: 1.5 }}>
-                启用后删除归档时，会通过 Worker 同步移除元数据 source 中的 EH/EX 收藏；需配置 Worker、访问 Token 与合法 EH Cookie，未配置合法 Cookie 时会保持关闭。
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={handleToggleEhFavoriteDeleteSync}
-              disabled={!ehFavoriteSyncReady}
-              style={{
-                width: '36px', height: '20px', borderRadius: '10px',
-                background: ehFavoriteDeleteSync && ehFavoriteSyncReady ? 'var(--accent)' : 'rgba(255,255,255,0.2)',
-                border: 'none', cursor: ehFavoriteSyncReady ? 'pointer' : 'not-allowed', position: 'relative',
-                transition: 'background 0.2s ease', flexShrink: 0, opacity: ehFavoriteSyncReady ? 1 : 0.48,
-              }}
-              title={ehFavoriteSyncReady ? '删除归档时同步删除 E 站收藏夹' : '需要先配置 Worker、访问 Token 与包含 ipb_member_id / ipb_pass_hash 的合法 EH Cookie'}
-            >
-              <span style={{
-                position: 'absolute', top: '2px',
-                left: ehFavoriteDeleteSync && ehFavoriteSyncReady ? '18px' : '2px',
-                width: '16px', height: '16px', borderRadius: '50%',
-                background: '#fff', transition: 'left 0.2s ease',
-              }} />
-            </button>
+          <div className="settings-row" title={ehFavoriteSyncReady ? '删除归档时同步移除 source 指向的 EH/EX 收藏；删除弹窗里仍可单次取消。' : '需要先配置 Worker、访问 Token，以及包含 ipb_member_id / ipb_pass_hash 的 EH Cookie。'}>
+            <span className="settings-row-title">同步删除 E 站收藏夹</span>
+            <ToggleSwitch checked={ehFavoriteDeleteSync && ehFavoriteSyncReady} onChange={handleToggleEhFavoriteDeleteSync} disabled={!ehFavoriteSyncReady} label="同步删除 E 站收藏夹" />
           </div>
 
-          <div style={{ borderTop: '1px solid var(--glass-border)', paddingTop: '14px' }}>
-            <div style={{ fontSize: '12px', color: 'var(--text-sub)', marginBottom: '12px', padding: '0 4px' }}>Worker 设置</div>
+          <div className="settings-section">
+            <div className="settings-section-title">Worker 设置</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               <div>
-                <label style={{ display: 'block', fontSize: '12px', marginBottom: '6px', color: 'var(--text-sub)' }}>
+                <label className="settings-field-label" title="用于多设备同步阅读历史、待看和删除收藏夹等 Worker 功能。">
                   Cloudflare Worker 端点
                 </label>
                 <input type="text" className="input-glass"
@@ -2350,7 +2271,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '12px', marginBottom: '6px', color: 'var(--text-sub)' }}>
+                <label className="settings-field-label" title="同一 Token 下的设备会共享同步数据；Token 需要预先写入 Worker KV 的 tokens 字段。">
                   访问 Token
                 </label>
                 <input type="password" className="input-glass"
@@ -2359,21 +2280,20 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
                   placeholder="需与 KV 空间 tokens 字段中的 Token 保持一致"
                   style={{ padding: '8px 12px', fontSize: '13px' }}
                 />
-                <div style={{ fontSize: '11px', color: 'var(--text-sub)', marginTop: '4px', lineHeight: 1.5 }}>
-                  同一 Token 的所有设备将自动共享阅读历史与隐藏已读完状态，Token 必须手动配置在 KV 空间的 tokens 字段中。
-                </div>
               </div>
             </div>
           </div>
 
-          <div style={{ borderTop: '1px solid var(--glass-border)', paddingTop: '14px' }}>
-            <div style={{ fontSize: '12px', color: 'var(--text-sub)', marginBottom: '10px', padding: '0 4px' }}>工具</div>
+          <div className="settings-section">
+            <div className="settings-section-title">工具</div>
             <div className="settings-tool-grid">
               <button type="button" className="btn" onClick={handleNavigateUpload} style={{ width: '100%', padding: '10px', fontSize: '13px' }}>上传归档</button>
               <button type="button" className="btn" onClick={handleNavigateDeduplicate} style={{ width: '100%', padding: '10px', fontSize: '13px' }}>重复归档检测</button>
             </div>
             <div style={{ borderTop: '1px solid var(--glass-border)', marginTop: '14px' }} />
           </div>
+
+          <AppVersion compact />
 
           </div>
 
