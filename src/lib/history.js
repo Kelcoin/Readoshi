@@ -5,6 +5,7 @@ const LOCAL_HIDE_READ_KEY = 'lrr_hide_read';
 const REMOTE_HISTORY_CACHE_KEY = 'lrr_history_remote_cache';
 const REMOTE_HIDE_READ_CACHE_KEY = 'lrr_hide_read_remote_cache';
 const CROP_COVER_KEY = 'lrr_crop_cover';
+const ARCHIVE_BROWSE_MODE_KEY = 'lrr_archive_browse_mode';
 
 function remoteConfig() {
   const workerUrl = getWorkerUrl();
@@ -204,4 +205,10 @@ export const getCropCover = () => localStorage.getItem(CROP_COVER_KEY) !== '0';
 
 export const setCropCover = (v) => {
   localStorage.setItem(CROP_COVER_KEY, v ? '1' : '0');
+};
+
+export const getArchiveBrowseMode = () => localStorage.getItem(ARCHIVE_BROWSE_MODE_KEY) === 'paged' ? 'paged' : 'scroll';
+
+export const setArchiveBrowseMode = (mode) => {
+  localStorage.setItem(ARCHIVE_BROWSE_MODE_KEY, mode === 'paged' ? 'paged' : 'scroll');
 };

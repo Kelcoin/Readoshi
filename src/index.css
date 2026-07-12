@@ -603,6 +603,33 @@ textarea:focus-visible,
   align-items: center;
 }
 
+.archive-pagination-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--text-sub);
+  font-size: 13px;
+}
+
+.archive-pagination-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.archive-pagination-jump input {
+  width: 64px;
+  padding: 7px 8px;
+  text-align: center;
+  font-size: 13px;
+}
+
+.archive-pagination-total {
+  color: var(--text-muted);
+}
+
 .archive-card-shell {
   background: var(--card-bg);
   border-color: rgba(174, 191, 214, 0.14);

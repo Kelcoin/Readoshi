@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { lrrApi } from '../lib/api';
-import { getHistory, getHideRead, setHideRead, getCropCover, setCropCover, removeHistoryItem, loadHistoryState, hasRemoteHistory } from '../lib/history';
+import { getHistory, getHideRead, setHideRead, getCropCover, setCropCover, getArchiveBrowseMode, setArchiveBrowseMode, removeHistoryItem, loadHistoryState, hasRemoteHistory } from '../lib/history';
 import { addWatchlistItem, getWatchlist, hasRemoteWatchlist, loadWatchlistState, removeWatchlistItem, removeWatchlistItems } from '../lib/watchlist';
 import { loadTagDB, startTagDBUpdateTimer, stopTagDBUpdateTimer } from '../lib/tags';
 import { getWorkerUrl, setWorkerUrl, getSyncToken, setSyncToken, exportConfig, importConfig } from '../lib/worker-config';
@@ -25,6 +25,7 @@ import { claimColdRestoreRoute, consumeHomeNavigationSnapshot, getBootState, loa
 import { getStoredServerInfo, loadServerInfo } from '../lib/serverInfoCache';
 import { useHorizontalScroller } from '../lib/horizontalScroller';
 import { navigateDeduplicate, navigateHistory, navigateHome, navigateToMetadata, navigateUpload, navigateWatchlist } from '../lib/navigation';
+import { ARCHIVE_BROWSE_MODES, ARCHIVE_PAGE_SIZE, clampArchivePage, getArchivePageCount, getArchivePageStart } from '../lib/archivePagination';
 
 const FILTER_KEY = 'lrr_filter';
 const PRESETS_KEY = 'lrr_filter_presets';
@@ -381,6 +382,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
   const [watchlist, setWatchlist] = useState([]);
   const [hideRead, setHideReadState] = useState(getHideRead);
   const [cropCover, setCropCoverState] = useState(getCropCover);
+  const [archiveBrowseMode, setArchiveBrowseModeState] = useState(() => getArchiveBrowseMode());
   const [showConfig, setShowConfig] = useState(false);
   const [historyDeleteTarget, setHistoryDeleteTarget] = useState(null);
   const [archiveMenu, setArchiveMenu] = useState(null);
@@ -429,6 +431,14 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
   const [archiveTotal, setArchiveTotal] = useState(() => {
     const ps = homeSnapshot;
     return Number.isFinite(Number(ps?.archiveTotal)) ? Number(ps.archiveTotal) : null;
+  });
+  const [archivePage, setArchivePage] = useState(() => {
+    const ps = homeSnapshot;
+    return Number.isFinite(Number(ps?.archivePage)) ? Math.max(0, Number(ps.archivePage)) : 0;
+  });
+  const [archivePageInput, setArchivePageInput] = useState(() => {
+    const ps = homeSnapshot;
+    return String((Number.isFinite(Number(ps?.archivePage)) ? Math.max(0, Number(ps.archivePage)) : 0) + 1);
   });
   const [loading, setLoading] = useState(false);
   const [archivesRefreshing, setArchivesRefreshing] = useState(false);
@@ -504,6 +514,8 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     startOffset,
     hasMore,
     archiveTotal,
+    archiveBrowseMode,
+    archivePage,
     filter,
     historyCollapsed,
     watchlistCollapsed,
@@ -513,7 +525,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     watchlistScrollLeft: getWatchlistScrollerNode?.()?.scrollLeft || 0,
     randomScrollLeft: getRandomScrollerNode?.()?.scrollLeft || 0,
     ...overrides,
-  }), [archiveTotal, filter, getHistoryScrollerNode, getRandomScrollerNode, getWatchlistScrollerNode, hasMore, historyCollapsed, randomCollapsed, randomsUpdatedAt, startOffset, watchlistCollapsed]);
+  }), [archiveBrowseMode, archivePage, archiveTotal, filter, getHistoryScrollerNode, getRandomScrollerNode, getWatchlistScrollerNode, hasMore, historyCollapsed, randomCollapsed, randomsUpdatedAt, startOffset, watchlistCollapsed]);
 
   const saveCurrentHomeForNavigation = useCallback(() => {
     const snapshot = buildHomeStateSnapshot();
@@ -633,7 +645,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
       archives,
       randoms,
     }));
-  }, [archives, buildHomeStateSnapshot, randoms, archiveTotal, filter, hasMore, historyCollapsed, randomCollapsed, randomsUpdatedAt, startOffset, watchlistCollapsed]);
+  }, [archives, buildHomeStateSnapshot, randoms, archiveBrowseMode, archivePage, archiveTotal, filter, hasMore, historyCollapsed, randomCollapsed, randomsUpdatedAt, startOffset, watchlistCollapsed]);
 
   const scrollToArchives = useCallback(() => {
     const run = () => {
@@ -927,11 +939,14 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
   }, []);
 
   const doFetch = useCallback(async (isReset, options = {}) => {
-    const { background = false, force = false, clearSearchCache = false, filterOverride = null } = options;
+    const mode = options.modeOverride || archiveBrowseMode;
+    const { background = false, force = false, clearSearchCache = false, filterOverride = null, pageIndex = mode === ARCHIVE_BROWSE_MODES.paged ? archivePage : 0 } = options;
     const effectiveFilter = filterOverride || filter;
     exitColdRestoreMode();
     const now = Date.now();
-    const filterKey = `${effectiveFilter.query}|${effectiveFilter.sortBy}|${effectiveFilter.order}|${effectiveFilter.active}`;
+    const isPagedMode = mode === ARCHIVE_BROWSE_MODES.paged;
+    const requestedPage = clampArchivePage(pageIndex, archiveTotal);
+    const filterKey = `${effectiveFilter.query}|${effectiveFilter.sortBy}|${effectiveFilter.order}|${effectiveFilter.active}|${mode}|${isPagedMode ? requestedPage : 'scroll'}`;
     if (isReset && !force && lastFetchedFilterRef.current === filterKey && now - lastFetchedRef.current < 2500) return;
 
     lastFetchedFilterRef.current = filterKey;
@@ -944,20 +959,29 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
         try { await lrrApi.clearSearchCache(); } catch (e) { console.warn('清理搜索缓存失败，继续刷新归档列表', e); }
       }
       const query = effectiveFilter.active ? (effectiveFilter.query || '').trim() : '';
-      const start = isReset ? 0 : startOffset;
+      const start = isPagedMode ? getArchivePageStart(requestedPage) : (isReset ? 0 : startOffset);
       const res = await lrrApi.search(query, start, effectiveFilter.sortBy, effectiveFilter.order);
       const data = res.data || [];
       if (fetchSeq !== archiveFetchSeqRef.current) return;
       const total = getSearchTotal(res, data.length, isReset ? null : archiveTotal);
       setArchiveTotal(total);
-      if (isReset) {
+      if (isPagedMode) {
+        const nextPage = clampArchivePage(requestedPage, total);
+        setArchivePage(nextPage);
+        setArchivePageInput(String(nextPage + 1));
+        setArchives(data);
+        setStartOffset(start + data.length);
+        setHasMore(Number.isFinite(Number(total)) ? nextPage < getArchivePageCount(total) - 1 : data.length >= ARCHIVE_PAGE_SIZE);
+      } else if (isReset) {
+        setArchivePage(0);
+        setArchivePageInput('1');
         setArchives(data);
         setStartOffset(data.length);
-        setHasMore(data.length > 0 && data.length >= 50);
+        setHasMore(data.length > 0 && data.length >= ARCHIVE_PAGE_SIZE);
       } else {
         setArchives(prev => [...prev, ...data]);
         setStartOffset(start + data.length);
-        setHasMore(data.length > 0 && data.length >= 50);
+        setHasMore(data.length > 0 && data.length >= ARCHIVE_PAGE_SIZE);
       }
     } catch (e) {
       console.error('获取归档列表失败', e);
@@ -969,7 +993,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
         setTimeout(scrollToArchives, 80);
       }
     }
-  }, [archiveTotal, exitColdRestoreMode, filter, scrollToArchives, startOffset]);
+  }, [archiveBrowseMode, archivePage, archiveTotal, exitColdRestoreMode, filter, scrollToArchives, startOffset]);
 
   // Sync state to refs for IntersectionObserver (avoids stale closures)
   useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
@@ -981,6 +1005,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
 
   useEffect(() => {
     const sentinel = sentinelRef.current;
+    if (archiveBrowseMode !== ARCHIVE_BROWSE_MODES.scroll) return undefined;
     if (!sentinel) return;
     const observer = new IntersectionObserver(
       ([entry]) => {
@@ -992,7 +1017,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [archives.length, filter.query, filter.sortBy, filter.order, filter.active]);
+  }, [archiveBrowseMode, archives.length, doFetch, filter.query, filter.sortBy, filter.order, filter.active]);
 
   // Watch for new filter arrivals from tag clicks (poll localStorage briefly)
   useEffect(() => {
@@ -1031,7 +1056,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     const firstFetch = !didFetchArchivesRef.current;
     didFetchArchivesRef.current = true;
     doFetch(true, { force: firstFetch });
-  }, [filter.query, filter.sortBy, filter.order, filter.active]);
+  }, [archiveBrowseMode, archivePage, doFetch, filter.query, filter.sortBy, filter.order, filter.active]);
 
   // Handle popstate (browser back/forward)
   useEffect(() => {
@@ -1345,6 +1370,13 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
 
   const archiveCountLabel = useMemo(() => {
     if (loading && archives.length === 0) return '正在获取结果...';
+    if (archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged) {
+      const pageText = `第 ${archivePage + 1} 页`;
+      if (Number.isFinite(Number(archiveTotal))) {
+        return `${pageText} / 共 ${getArchivePageCount(archiveTotal)} 页 · 共 ${Number(archiveTotal).toLocaleString()} 个档案`;
+      }
+      return archives.length > 0 ? `${pageText} · 当前页 ${archives.length} 个` : pageText;
+    }
     if (Number.isFinite(Number(archiveTotal))) {
       return filter.active
         ? `筛选结果 ${Number(archiveTotal).toLocaleString()} 个`
@@ -1356,7 +1388,21 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
         : `共 ${archives.length.toLocaleString()} 个档案`;
     }
     return filter.active ? '筛选结果 0 个' : '共 0 个档案';
-  }, [archiveTotal, archives.length, filter.active, hasMore, loading]);
+  }, [archiveBrowseMode, archivePage, archiveTotal, archives.length, filter.active, hasMore, loading]);
+
+  const archivePageCount = useMemo(() => getArchivePageCount(archiveTotal), [archiveTotal]);
+  const canGoPrevArchivePage = archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged && archivePage > 0 && !loading;
+  const canGoNextArchivePage = archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged && !loading && (Number.isFinite(Number(archiveTotal)) ? archivePage < archivePageCount - 1 : hasMore);
+  const goArchivePage = useCallback((page) => {
+    const nextPage = clampArchivePage(page, archiveTotal);
+    setArchivePage(nextPage);
+    setArchivePageInput(String(nextPage + 1));
+    pendingArchivesScrollRef.current = true;
+  }, [archiveTotal]);
+  const submitArchivePageInput = useCallback(() => {
+    const page = Math.max(1, Math.floor(Number(archivePageInput) || 1)) - 1;
+    goArchivePage(page);
+  }, [archivePageInput, goArchivePage]);
 
   const handleManualRefreshArchives = useCallback(() => {
     setShowPresets(false);
@@ -1430,8 +1476,10 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     setFilter(cleared);
     setSelectedCategory(null);
     setArchiveTotal(null);
+    setArchivePage(0);
+    setArchivePageInput('1');
     navigateHome({ replace: true });
-    doFetch(true, { force: true, filterOverride: cleared });
+    doFetch(true, { force: true, filterOverride: cleared, pageIndex: 0 });
   };
 
   const applyFilter = (q, s, o) => {
@@ -1441,8 +1489,10 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     writeFilter(next);
     setFilter(next);
     setArchiveTotal(null);
+    setArchivePage(0);
+    setArchivePageInput('1');
     navigateHome({ query: trimmedQuery, replace: true });
-    doFetch(true, { force: true, filterOverride: next });
+    doFetch(true, { force: true, filterOverride: next, pageIndex: 0 });
   };
 
   const handleSearch = () => {
@@ -1495,6 +1545,17 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
       return next;
     });
   }, []);
+
+  const handleArchiveBrowseModeChange = useCallback((mode) => {
+    const next = mode === ARCHIVE_BROWSE_MODES.paged ? ARCHIVE_BROWSE_MODES.paged : ARCHIVE_BROWSE_MODES.scroll;
+    setArchiveBrowseMode(next);
+    setArchiveBrowseModeState(next);
+    setArchivePage(0);
+    setArchivePageInput('1');
+    setStartOffset(0);
+    setHasMore(true);
+    doFetch(true, { force: true, pageIndex: 0, modeOverride: next });
+  }, [doFetch]);
 
   const ehFavoriteCookieValid = hasValidEhCookie(readerSettings.ehCookie || getEhCookie());
   const ehFavoriteSyncReady = ehFavoriteCookieValid && !!getWorkerUrl() && !!getSyncToken();
@@ -2141,16 +2202,32 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
         <div ref={sentinelRef} style={{ height: '1px' }} />
 
         <div style={{ textAlign: 'center', marginTop: '36px', paddingBottom: '12px' }}>
-          {hasMore ? (
+          {archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged ? (
+            <div className="archive-pagination-controls">
+              <button className="btn" style={{ padding: '8px 16px', fontSize: '13px' }} onClick={() => goArchivePage(archivePage - 1)} disabled={!canGoPrevArchivePage}>上一页</button>
+              <span className="archive-pagination-jump">
+                第
+                <input
+                  className="input-glass no-spinner"
+                  type="text"
+                  inputMode="numeric"
+                  value={archivePageInput}
+                  onChange={(event) => setArchivePageInput(event.target.value.replace(/[^\d]/g, ''))}
+                  onKeyDown={(event) => { if (event.key === 'Enter') submitArchivePageInput(); }}
+                />
+                页
+                {Number.isFinite(Number(archiveTotal)) && <span className="archive-pagination-total">/ {archivePageCount}</span>}
+              </span>
+              <button className="btn" style={{ padding: '8px 16px', fontSize: '13px' }} onClick={submitArchivePageInput} disabled={loading}>跳转</button>
+              <button className="btn" style={{ padding: '8px 16px', fontSize: '13px' }} onClick={() => goArchivePage(archivePage + 1)} disabled={!canGoNextArchivePage}>下一页</button>
+            </div>
+          ) : hasMore ? (
             <button className="btn" style={{ padding: '10px 40px' }} onClick={() => doFetch(false)} disabled={loading}>
               {loading ? '加载中...' : '加载更多'}
             </button>
           ) : (archives.length > 0 && (
             <div style={{ color: 'var(--text-sub)' }}>— 已经到底啦 —</div>
           ))}
-        </div>
-        <div style={{ padding: '6px 0 0' }}>
-          <AppVersion compact />
         </div>
       </section>
     </div>
@@ -2185,6 +2262,18 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
             <SettingHint text="让横版或方形封面按竖向卡片比例显示，书库网格会更整齐。">裁剪封面</SettingHint>
             <ToggleSwitch checked={cropCover} onChange={handleToggleCropCover} label="裁剪封面" />
           </div>
+
+          <label className="settings-row">
+            <SettingHint text="滚动模式会滑到底部自动加载更多；分页模式每次只显示一页档案，并用页码手动切换。">档案浏览模式</SettingHint>
+            <div style={{ width: 128 }}>
+              <CustomSelect
+                value={archiveBrowseMode}
+                onChange={handleArchiveBrowseModeChange}
+                options={[{ label: '滚动', value: ARCHIVE_BROWSE_MODES.scroll }, { label: '分页', value: ARCHIVE_BROWSE_MODES.paged }]}
+                compact
+              />
+            </div>
+          </label>
 
           <div className="settings-row">
             <SettingHint text="阅读历史中不显示已经读到最后一页的归档，继续阅读列表会更短。">隐藏已读完</SettingHint>

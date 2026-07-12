@@ -34,6 +34,7 @@ const CONFIG_KEYS = [
   'lrr_hide_read',
   'lrr_filter',
   'lrr_crop_cover',
+  'lrr_archive_browse_mode',
   'lrr_eh_favorite_delete_sync',
   'lrr_image_cache_limit',
   'lrr_theme_mode',
