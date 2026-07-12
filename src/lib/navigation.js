@@ -2,8 +2,8 @@ function dispatchRouteChange(detail) {
   window.dispatchEvent(new CustomEvent('lrr:navigate', { detail }));
 }
 
-export function parseRouteFromLocation() {
-  const params = new URLSearchParams(window.location.search);
+export function parseRouteSearch(search = '') {
+  const params = new URLSearchParams(search);
   const archiveId = params.get('id');
   const query = params.get('q');
   const view = params.get('view');
@@ -22,8 +22,15 @@ export function parseRouteFromLocation() {
   if (view === 'dedupe') {
     return { kind: 'dedupe' };
   }
+  if (view === 'upload') {
+    return { kind: 'upload' };
+  }
 
   return { kind: 'home', query: query || '' };
+}
+
+export function parseRouteFromLocation() {
+  return parseRouteSearch(window.location.search);
 }
 
 export function navigateToArchive(archiveId, { replace = false } = {}) {
@@ -72,4 +79,11 @@ export function navigateDeduplicate({ replace = false } = {}) {
   if (replace) window.history.replaceState({}, '', url);
   else window.history.pushState({}, '', url);
   dispatchRouteChange({ kind: 'dedupe' });
+}
+
+export function navigateUpload({ replace = false } = {}) {
+  const url = '/?view=upload';
+  if (replace) window.history.replaceState({}, '', url);
+  else window.history.pushState({}, '', url);
+  dispatchRouteChange({ kind: 'upload' });
 }

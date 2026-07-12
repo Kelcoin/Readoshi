@@ -21,7 +21,7 @@ import { clearImageCache } from '../lib/imageCache';
 import { claimColdRestoreRoute, consumeHomeNavigationSnapshot, getBootState, loadHomeSnapshot, markBackground, saveHomeNavigationSnapshot, saveHomeSnapshot } from '../lib/sessionState';
 import { getStoredServerInfo, loadServerInfo } from '../lib/serverInfoCache';
 import { useHorizontalScroller } from '../lib/horizontalScroller';
-import { navigateDeduplicate, navigateHistory, navigateHome, navigateToMetadata, navigateWatchlist } from '../lib/navigation';
+import { navigateDeduplicate, navigateHistory, navigateHome, navigateToMetadata, navigateUpload, navigateWatchlist } from '../lib/navigation';
 
 const FILTER_KEY = 'lrr_filter';
 const PRESETS_KEY = 'lrr_filter_presets';
@@ -537,6 +537,12 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     saveCurrentHomeForNavigation();
     setShowConfig(false);
     navigateDeduplicate();
+  }, [saveCurrentHomeForNavigation]);
+
+  const handleNavigateUpload = useCallback(() => {
+    saveCurrentHomeForNavigation();
+    setShowConfig(false);
+    navigateUpload();
   }, [saveCurrentHomeForNavigation]);
 
   const updateReaderSettings = useCallback((updater) => {
@@ -2362,14 +2368,10 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
 
           <div style={{ borderTop: '1px solid var(--glass-border)', paddingTop: '14px' }}>
             <div style={{ fontSize: '12px', color: 'var(--text-sub)', marginBottom: '10px', padding: '0 4px' }}>工具</div>
-            <button
-              type="button"
-              className="btn"
-              onClick={handleNavigateDeduplicate}
-              style={{ width: '100%', padding: '10px', fontSize: '13px' }}
-            >
-              打开重复归档检测
-            </button>
+            <div className="settings-tool-grid">
+              <button type="button" className="btn" onClick={handleNavigateUpload} style={{ width: '100%', padding: '10px', fontSize: '13px' }}>上传归档</button>
+              <button type="button" className="btn" onClick={handleNavigateDeduplicate} style={{ width: '100%', padding: '10px', fontSize: '13px' }}>重复归档检测</button>
+            </div>
             <div style={{ borderTop: '1px solid var(--glass-border)', marginTop: '14px' }} />
           </div>
 

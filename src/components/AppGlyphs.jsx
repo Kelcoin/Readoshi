@@ -222,6 +222,21 @@ function renderToolbarGlyph(name) {
           <path d="M15.6 14.85l2.05 2.05M16.1 14.35l-2.95 2.95-.45 1.65 1.65-.45 2.95-2.95a.86.86 0 0 0-1.2-1.2z" />
         </>
       );
+    case 'upload':
+      return (
+        <>
+          <path d="M12 3v12M7.5 7.5 12 3l4.5 4.5" />
+          <path d="M5 14.5v4A2.5 2.5 0 0 0 7.5 21h9a2.5 2.5 0 0 0 2.5-2.5v-4" />
+          <path d="M5 14.5h3l1.5 2h5l1.5-2h3" opacity="0.72" />
+        </>
+      );
+    case 'cloudDownload':
+      return (
+        <>
+          <path d="M7.5 18.5H6a4 4 0 0 1-.4-7.98A6.5 6.5 0 0 1 18.2 9a4.75 4.75 0 0 1-.7 9.5H16" />
+          <path d="M12 11.5v9M8.75 17.25 12 20.5l3.25-3.25" />
+        </>
+      );
     case 'cover':
       return (
         <>

@@ -21,6 +21,23 @@ function createApiError(status, message) {
   return err;
 }
 
+async function readResponse(res) {
+  if (!res.ok) {
+    if (res.status === 401) throw createApiError(res.status, 'API Error: 401 (API Key 错误或未授权)');
+    let message = '';
+    try { message = await res.text(); } catch {}
+    throw createApiError(res.status, message || `API Error: ${res.status}`);
+  }
+
+  const text = await res.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
 const request = async (endpoint, method = 'GET', body = null, options = {}) => {
   const base = getBaseUrl();
   if (!base) throw new Error('未配置服务器地址');
@@ -35,18 +52,7 @@ const request = async (endpoint, method = 'GET', body = null, options = {}) => {
     signal: options.signal,
   });
 
-  if (!res.ok) {
-    if (res.status === 401) throw createApiError(res.status, 'API Error: 401 (API Key 错误或未授权)');
-    throw createApiError(res.status, `API Error: ${res.status}`);
-  }
-
-  const text = await res.text();
-  if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
+  return readResponse(res);
 };
 
 export const lrrApi = {
@@ -61,9 +67,24 @@ export const lrrApi = {
     return request(`/archives/${encodeURIComponent(id)}/metadata?${params}`, 'PUT');
   },
   getMetadataPlugins: () => request('/plugins/metadata'),
+  getDownloadPlugins: () => request('/plugins/download'),
   useMetadataPlugin: (id, plugin, arg = '') => {
     const params = new URLSearchParams({ id, plugin, arg });
     return request(`/plugins/use?${params}`, 'POST');
+  },
+  useDownloadPlugin: (plugin, arg) => {
+    const params = new URLSearchParams({ plugin, arg });
+    return request(`/plugins/use?${params}`, 'POST');
+  },
+  uploadArchive: async (file) => {
+    const body = new FormData();
+    body.append('file', file, file.name);
+    const res = await fetch(getApiUrl('/archives/upload'), {
+      method: 'PUT',
+      headers: getAuthHeaders(),
+      body,
+    });
+    return readResponse(res);
   },
   getArchiveFiles: (id) => request(`/archives/${id}/files`),
   deleteArchive: (id) => request(`/archives/${encodeURIComponent(id)}`, 'DELETE'),

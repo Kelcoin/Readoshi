@@ -5,6 +5,7 @@ import HistoryPage from './pages/HistoryPage';
 import WatchlistPage from './pages/WatchlistPage';
 import DeduplicatePage from './pages/DeduplicatePage';
 import MetadataPage from './pages/MetadataPage';
+import UploadPage from './pages/UploadPage';
 import { loadTagDB } from './lib/tags';
 import { checkServerStatus } from './lib/api';
 import { navigateHome, navigateToArchive, parseRouteFromLocation } from './lib/navigation';
@@ -239,6 +240,8 @@ export default function App() {
       </>
     );
   }
+
+  if (route.kind === 'upload') return <><UploadPage /><PwaStatus /></>;
 
   return (
     <>
