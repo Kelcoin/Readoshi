@@ -45,6 +45,10 @@ let tokenLoadPromise = null;      // Promise that resolves once KV tokens are lo
 let cachedTokens = new Set();     // Set<string>; empty set means no token can pass
 let authEnabled = true;           // Worker auth is mandatory for sync and EH proxy routes
 let requestCount = 0;             // in-memory counter, seeded from KV on first load
+let statusSummaryCache = null;
+let statusSummaryLoadedAt = 0;
+let statusSummaryPromise = null;
+const STATUS_SUMMARY_TTL_MS = 5 * 60 * 1000;
 
 // ── IP Rate Limiter ────────────────────────────────────────────
 // In-memory only (resets on cold start).  Tracks failed auths per IP.
@@ -653,7 +657,7 @@ async function putHistory(request) {
     const deletedAt = deletedMap.get(h.id) || 0;
     if ((h.time || 0) <= deletedAt) continue;
     const old = merged.get(h.id);
-    if (!old || (h.time && h.time > (old.time || 0))) {
+    if (!old || (h.time && h.time > (old.time || 0)) || (h.time === old.time && h.page !== old.page)) {
       merged.set(h.id, h);
     }
   }
@@ -986,11 +990,60 @@ async function importKV(request) {
   }
 }
 
+async function getStatusSummary({ force = false } = {}) {
+  if (!force && statusSummaryCache && Date.now() - statusSummaryLoadedAt < STATUS_SUMMARY_TTL_MS) return statusSummaryCache;
+  if (statusSummaryPromise) return statusSummaryPromise;
+  statusSummaryPromise = (async () => {
+    if (typeof HISTORY_KV === 'undefined') {
+      return { totalArchives: 'N/A', userCount: 'N/A', watchlistCount: 'N/A', dedupeCount: 'N/A' };
+    }
+    try {
+      const [historyKeys, watchlistKeys, dedupeRaw] = await Promise.all([
+        HISTORY_KV.list({ prefix: 'history:' }),
+        HISTORY_KV.list({ prefix: 'watchlist:' }),
+        HISTORY_KV.get(DEDUPE_NON_DUP_KEY),
+      ]);
+      const allIds = new Set();
+      const historyValues = await Promise.all((historyKeys.keys || []).map((key) => HISTORY_KV.get(key.name).catch(() => null)));
+      historyValues.forEach((raw) => {
+        try {
+          const data = raw ? JSON.parse(raw) : null;
+          for (const item of Array.isArray(data?.histories) ? data.histories : []) if (item?.id) allIds.add(item.id);
+        } catch {}
+      });
+      const watchlistValues = await Promise.all((watchlistKeys.keys || []).map((key) => HISTORY_KV.get(key.name).catch(() => null)));
+      let watchlistCount = 0;
+      watchlistValues.forEach((raw) => {
+        try {
+          const data = raw ? JSON.parse(raw) : null;
+          watchlistCount += Array.isArray(data?.items) ? data.items.length : 0;
+        } catch {}
+      });
+      return {
+        totalArchives: allIds.size,
+        userCount: (historyKeys.keys || []).length,
+        watchlistCount,
+        dedupeCount: normalizePairKeys(dedupeRaw ? JSON.parse(dedupeRaw) : []).length,
+      };
+    } catch {
+      return { totalArchives: '错误', userCount: '错误', watchlistCount: '错误', dedupeCount: '错误' };
+    }
+  })();
+  try {
+    statusSummaryCache = await statusSummaryPromise;
+    statusSummaryLoadedAt = Date.now();
+    return statusSummaryCache;
+  } finally {
+    statusSummaryPromise = null;
+  }
+}
+
 // ── Status Page (GET /) ───────────────────────────────────────
 async function statusPage(request) {
   const reloadParam = new URL(request.url).searchParams.get('reload');
   if (reloadParam === '1') {
     await reloadTokens();
+    statusSummaryCache = null;
     const nextUrl = new URL(request.url);
     nextUrl.searchParams.delete('reload');
     return Response.redirect(nextUrl.toString(), 302);
@@ -999,43 +1052,9 @@ async function statusPage(request) {
   await ensureTokensLoaded();
   const kvOk = tokenLoadPromise ? (await tokenLoadPromise) : false;
   const reqCount = requestCount;
-  const { totalArchives, userCount, watchlistCount } = await (async () => {
-    if (typeof HISTORY_KV === 'undefined') return { totalArchives: 'N/A', userCount: 'N/A', watchlistCount: 'N/A' };
-    try {
-      const list = await HISTORY_KV.list({ prefix: 'history:' });
-      const watchlistKeys = await HISTORY_KV.list({ prefix: 'watchlist:' });
-      const allIds = new Set();
-      for (const key of list.keys) {
-        try {
-          const raw = await HISTORY_KV.get(key.name);
-          const data = raw ? JSON.parse(raw) : null;
-          if (data && Array.isArray(data.histories)) {
-            for (const h of data.histories) {
-              if (h.id) allIds.add(h.id);
-            }
-          }
-        } catch {}
-      }
-      let watchlistTotal = 0;
-      for (const key of watchlistKeys.keys) {
-        try {
-          const raw = await HISTORY_KV.get(key.name);
-          const data = raw ? JSON.parse(raw) : null;
-          if (data && Array.isArray(data.items)) watchlistTotal += data.items.length;
-        } catch {}
-      }
-      return { totalArchives: allIds.size, userCount: list.keys.length, watchlistCount: watchlistTotal };
-    } catch { return { totalArchives: '错误', userCount: '错误', watchlistCount: '错误' }; }
-  })();
+  const { totalArchives, userCount, watchlistCount, dedupeCount } = await getStatusSummary();
   const hasKV = typeof HISTORY_KV !== 'undefined';
   const tokenCount = cachedTokens ? cachedTokens.size : 0;
-  const dedupeCount = await (async () => {
-    if (!hasKV) return 'N/A';
-    try {
-      const raw = await HISTORY_KV.get(DEDUPE_NON_DUP_KEY);
-      return normalizePairKeys(raw ? JSON.parse(raw) : []).length;
-    } catch { return '错误'; }
-  })();
 
   const tokenStatusHtml = authEnabled
     ? (tokenCount > 0

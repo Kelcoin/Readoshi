@@ -3,6 +3,12 @@ import { decorateArchiveRecord, hydrateArchiveRecords, rememberArchiveMetadata }
 
 const LOCAL_WATCHLIST_KEY = 'lrr_watchlist';
 const REMOTE_WATCHLIST_CACHE_KEY = 'lrr_watchlist_remote_cache';
+const REMOTE_LOAD_TTL_MS = 30 * 1000;
+
+let remoteLoadPromise = null;
+let remoteLoadPromiseScope = '';
+let remoteLoadedAt = 0;
+let remoteLoadedScope = '';
 
 function remoteConfig() {
   const workerUrl = getWorkerUrl();
@@ -76,15 +82,19 @@ function getStoredWatchlist() {
 
 export const getWatchlist = () => getStoredWatchlist().map(decorateArchiveRecord).filter(Boolean);
 
-export async function loadWatchlistState() {
+async function loadWatchlistStateNow({ force = false } = {}) {
   const remote = hasRemoteWatchlist();
+  const cfg = remote ? remoteConfig() : null;
+  const scope = cfg ? `${cfg.base}|${cfg.token}` : '';
   let items;
   let lastSync = 0;
-  if (remote) {
+  if (remote && (force || remoteLoadedScope !== scope || !remoteLoadedAt || Date.now() - remoteLoadedAt >= REMOTE_LOAD_TTL_MS)) {
     const data = await workerJson('/watchlist');
     items = sortWatchlist(data?.items || []);
     lastSync = data?.lastSync || 0;
     localStorage.setItem(REMOTE_WATCHLIST_CACHE_KEY, JSON.stringify(items));
+    remoteLoadedAt = Date.now();
+    remoteLoadedScope = scope;
   } else {
     items = getStoredWatchlist();
     writeWatchlistCache(items, { notify: false });
@@ -93,6 +103,23 @@ export async function loadWatchlistState() {
   if (hydrated.missingIds.length > 0) await removeWatchlistItems(hydrated.missingIds);
   emitWatchlistChanged();
   return { items: hydrated.items, remote, lastSync };
+}
+
+export function loadWatchlistState(options = {}) {
+  const remote = hasRemoteWatchlist();
+  const cfg = remote ? remoteConfig() : null;
+  const scope = cfg ? `${cfg.base}|${cfg.token}` : '';
+  if (remote && !options.force && remoteLoadPromise && remoteLoadPromiseScope === scope) return remoteLoadPromise;
+  const task = loadWatchlistStateNow(options);
+  if (!remote) return task;
+  remoteLoadPromiseScope = scope;
+  const trackedPromise = task.finally(() => {
+    if (remoteLoadPromise !== trackedPromise) return;
+    remoteLoadPromise = null;
+    remoteLoadPromiseScope = '';
+  });
+  remoteLoadPromise = trackedPromise;
+  return trackedPromise;
 }
 
 export const addWatchlistItem = async (archive) => {

@@ -4,6 +4,25 @@ import { getConfigFingerprint } from './sessionState';
 const KEY = 'lrr_server_info_cache_v1';
 const TTL = 30 * 60 * 1000;
 
+const BOOLEAN_FIELDS = [
+  'has_password',
+  'debug_mode',
+  'nofun_mode',
+  'server_resizes_images',
+  'server_tracks_progress',
+  'authenticated_progress',
+];
+
+export function normalizeServerInfo(info) {
+  if (!info || typeof info !== 'object') return info;
+  const normalized = { ...info };
+  BOOLEAN_FIELDS.forEach((field) => {
+    if (normalized[field] === 0 || normalized[field] === 1) normalized[field] = normalized[field] === 1;
+  });
+  normalized.server_tracks_progress = normalized.server_tracks_progress === true;
+  return normalized;
+}
+
 function readCache() {
   try {
     const raw = localStorage.getItem(KEY);
@@ -16,21 +35,23 @@ function readCache() {
   }
 }
 
-function writeCache(data) {
+export function cacheServerInfo(data) {
+  const normalized = normalizeServerInfo(data);
   try {
     localStorage.setItem(KEY, JSON.stringify({
       configId: getConfigFingerprint(),
       ts: Date.now(),
-      data,
+      data: normalized,
     }));
   } catch {}
+  return normalized;
 }
 
 export function getStoredServerInfo({ allowStale = true } = {}) {
   const cached = readCache();
   if (!cached) return null;
   if (!allowStale && Date.now() - cached.ts > TTL) return null;
-  return cached.data || null;
+  return normalizeServerInfo(cached.data) || null;
 }
 
 export async function loadServerInfo({ cacheOnly = false, forceRefresh = false } = {}) {
@@ -38,6 +59,5 @@ export async function loadServerInfo({ cacheOnly = false, forceRefresh = false }
   if (cached) return cached;
   if (cacheOnly) return null;
   const info = await lrrApi.getServerInfo();
-  writeCache(info);
-  return info;
+  return cacheServerInfo(info);
 }

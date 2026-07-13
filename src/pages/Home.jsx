@@ -1614,7 +1614,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     if (!getWorkerUrl() || !getSyncToken() || historySyncing) return;
     setHistorySyncing(true);
     try {
-      const state = await loadHistoryState();
+      const state = await loadHistoryState({ force: true });
       setHistory(state.histories);
       setHideReadState(state.hideRead);
     } finally {

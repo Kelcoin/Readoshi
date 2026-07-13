@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { flushSync } from 'react-dom';
 import { lrrApi } from '../lib/api';
-import { getHistory, saveHistory, getHideRead, removeHistoryItem, loadHistoryState } from '../lib/history';
+import { flushHistorySync, getHistory, saveHistory, getHideRead, removeHistoryItem, loadHistoryState } from '../lib/history';
 import { getWatchlist, loadWatchlistState, removeWatchlistItem } from '../lib/watchlist';
 import { getReaderArchiveListMeta } from '../lib/readerArchiveList';
 import { isArchiveMissingError } from '../lib/historyMaintenance';
@@ -37,6 +37,20 @@ const isLanraragiAssetPath = (pathname) => (
   pathname.startsWith('/reader/') ||
   pathname.startsWith('/download/')
 );
+
+const archiveHasNewMarker = (archive) => {
+  const marker = archive?.isnew ?? archive?.is_new ?? archive?.isNew ?? archive?.new;
+  if (marker === true || marker === 1) return true;
+  return ['1', 'true', 'new'].includes(String(marker ?? '').trim().toLowerCase());
+};
+
+const clearArchiveNewMarker = (archive) => ({
+  ...archive,
+  isnew: false,
+  is_new: false,
+  isNew: false,
+  new: false,
+});
 
 const toLocalUrl = (url) => {
   if (!url) return url;
@@ -859,7 +873,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     if (stored && typeof stored.server_tracks_progress === 'boolean') {
       return stored.server_tracks_progress;
     }
-    return true;
+    return null;
   });
   const [pageLoadPhase, setPageLoadPhase] = useState(() => ({
     status: pages.length > 0 ? 'loading' : 'idle',
@@ -938,6 +952,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     return () => window.removeEventListener('lrr:history-changed', refreshHistory);
   }, []);
 
+  useEffect(() => () => { flushHistorySync().catch(() => {}); }, []);
+
   useEffect(() => {
     loadHistoryState().then((state) => setHistoryEntries(state.histories)).catch(() => {});
   }, []);
@@ -967,6 +983,18 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   useEffect(() => {
     serverInfoRef.current = { ...(serverInfoRef.current || {}), server_tracks_progress: serverTracksProgress };
   }, [serverTracksProgress]);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadServerInfo().then((info) => {
+      if (cancelled) return;
+      serverInfoRef.current = info;
+      if (typeof info?.server_tracks_progress === 'boolean') {
+        setServerTracksProgress(info.server_tracks_progress);
+      }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   const exitColdRestoreMode = useCallback(async () => {
     if (!coldRestoreRef.current) return serverInfoRef.current;
@@ -1121,6 +1149,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const rightDivRef = useRef(null);
   const immersiveLoadSeqRef = useRef(0);
   const watchlistAutoRemovedRef = useRef(new Set());
+  const lrrProgressSentRef = useRef(new Set());
   const commitPageTargetRef = useRef(null);
   const viewModeRef = useRef(viewMode);
   const currentIndexRef = useRef(0);
@@ -1455,7 +1484,19 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       const serverUrl = serverUrlRef.current;
 
       if (coldRestoreRef.current && readerSnapshot) {
-        setArchive(readerSnapshot.archive || null);
+        let restoredArchive = readerSnapshot.archive || null;
+        if (archiveHasNewMarker(restoredArchive)) {
+          const progressKey = `${archiveId}:1`;
+          lrrProgressSentRef.current.add(progressKey);
+          try {
+            await lrrApi.updateProgress(archiveId, 1);
+            restoredArchive = clearArchiveNewMarker(restoredArchive);
+          } catch {
+            lrrProgressSentRef.current.delete(progressKey);
+          }
+        }
+        if (cancelled) return;
+        setArchive(restoredArchive);
         setPages(Array.isArray(readerSnapshot.pages) ? readerSnapshot.pages : []);
         setCurrentIndex(typeof readerSnapshot.currentIndex === 'number' ? readerSnapshot.currentIndex : 0);
         setDisplayedIndex(typeof readerSnapshot.displayedIndex === 'number' ? readerSnapshot.displayedIndex : 0);
@@ -1481,7 +1522,17 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       setLoading(true);
       setLoadingPages(true);
       try {
-        const meta = await lrrApi.getArchive(archiveId);
+        let meta = await lrrApi.getArchive(archiveId);
+        if (archiveHasNewMarker(meta)) {
+          const progressKey = `${archiveId}:1`;
+          lrrProgressSentRef.current.add(progressKey);
+          try {
+            await lrrApi.updateProgress(archiveId, 1);
+            meta = { ...clearArchiveNewMarker(meta), progress: Math.max(1, Number.parseInt(meta.progress, 10) || 0) };
+          } catch {
+            lrrProgressSentRef.current.delete(progressKey);
+          }
+        }
         if (cancelled) return;
         setArchive(meta);
         setLoading(false);
@@ -1532,7 +1583,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   // ===== 2. Save progress =====
   useEffect(() => {
     if (archive && pages.length > 0) {
-      saveHistory(archive, currentIndex + 1).catch(() => {});
+      const page = currentIndex + 1;
+      saveHistory(archive, page, { deferRemote: serverTracksProgress !== false }).catch(() => {});
       setHistoryEntries(getHistory());
       const archiveId = archive.arcid || archive.id;
       const totalPages = Number(archive.pagecount || pages.length) || 0;
@@ -1540,14 +1592,17 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         watchlistAutoRemovedRef.current.add(archiveId);
         removeWatchlistItem(archiveId).catch(() => {});
       }
-      if (coldRestoreRef.current) return undefined;
-      const timer = setTimeout(() => {
-        if (serverTracksProgress) {
-          lrrApi.updateProgress(archive.arcid, currentIndex + 1).catch(() => {});
+      if (serverTracksProgress && archiveId) {
+        const progressKey = `${archiveId}:${page}`;
+        if (!lrrProgressSentRef.current.has(progressKey)) {
+          lrrProgressSentRef.current.add(progressKey);
+          lrrApi.updateProgress(archiveId, page).catch(() => {
+            lrrProgressSentRef.current.delete(progressKey);
+          });
         }
-      }, 300);
-      return () => clearTimeout(timer);
+      }
     }
+    return undefined;
   }, [currentIndex, archive, pages, serverTracksProgress]);
 
   // ===== Pointer down =====
@@ -2044,7 +2099,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       setViewMode('normal');
     } else {
       if (archive && pages.length > 0) {
-        saveHistory(archive, currentIndex + 1).catch(() => {});
+        saveHistory(archive, currentIndex + 1).then(() => flushHistorySync()).catch(() => {});
         setHistoryEntries(getHistory());
       }
       onBack();

@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 
 const commentsCache = new Map();
 const CACHE_TTL = 24 * 60 * 60 * 1000;
+const EMPTY_API_DATA = Object.freeze({ apiuid: null, apikey: null, gid: null, token: null, apiUrl: 'https://api.e-hentai.org/api.php' });
 
 const VoteIcon = ({ direction, active = false }) => (
   <svg
@@ -39,10 +40,10 @@ function getSafeCookie(raw) {
 
 function extractApiData(htmlText) {
   const apiuidMatch = htmlText.match(/var\s+apiuid\s*=\s*(\d+)/);
-  const apikeyMatch = htmlText.match(/var\s+apikey\s*=\s*"([^"]+)"/);
+  const apikeyMatch = htmlText.match(/var\s+apikey\s*=\s*["']([^"']+)["']/);
   const gidMatch = htmlText.match(/var\s+gid\s*=\s*(\d+)/);
-  const tokenMatch = htmlText.match(/var\s+token\s*=\s*"([^"]+)"/);
-  const apiUrlMatch = htmlText.match(/var\s+api_url\s*=\s*"([^"]+)"/);
+  const tokenMatch = htmlText.match(/var\s+token\s*=\s*["']([^"']+)["']/);
+  const apiUrlMatch = htmlText.match(/var\s+api_url\s*=\s*["']([^"']+)["']/);
 
   return {
     apiuid: apiuidMatch ? parseInt(apiuidMatch[1]) : null,
@@ -51,6 +52,10 @@ function extractApiData(htmlText) {
     token: tokenMatch ? tokenMatch[1] : null,
     apiUrl: apiUrlMatch ? apiUrlMatch[1] : 'https://api.e-hentai.org/api.php'
   };
+}
+
+function hasVotingApiData(value) {
+  return !!(value?.apiuid && value?.apikey && value?.gid && value?.token);
 }
 
 function parseEHCommentsFromDOM(htmlText) {
@@ -216,11 +221,14 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
   const [error, setError] = useState(null);
   const [needsCookie, setNeedsCookie] = useState(false);
   const [retryTick, setRetryTick] = useState(0);
+  const [shouldAutoLoad, setShouldAutoLoad] = useState(false);
+  const sectionRef = useRef(null);
+  const autoLoadSourceRef = useRef('');
   const hasAutoLoaded = useRef(false);
   const autoRetryTimerRef = useRef(null);
   const autoRetryCountRef = useRef(0);
 
-  const [apiData, setApiData] = useState({ apiuid: null, apikey: null, gid: null, token: null, apiUrl: 'https://api.e-hentai.org/api.php' });
+  const [apiData, setApiData] = useState(EMPTY_API_DATA);
   const [postText, setPostText] = useState('');
   const [posting, setPosting] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -230,14 +238,45 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
 
   const cookie = getSafeCookie(ehCookie);
 
+  useEffect(() => {
+    setComments([]);
+    setLoaded(false);
+    setError(null);
+    setNeedsCookie(false);
+    setApiData(EMPTY_API_DATA);
+    setShouldAutoLoad(false);
+    autoLoadSourceRef.current = '';
+    hasAutoLoaded.current = false;
+    autoRetryCountRef.current = 0;
+
+    if (!sourceUrl || !ehEnabled) return undefined;
+    const node = sectionRef.current;
+    if (!node || typeof IntersectionObserver === 'undefined') {
+      autoLoadSourceRef.current = sourceUrl;
+      setShouldAutoLoad(true);
+      return undefined;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        autoLoadSourceRef.current = sourceUrl;
+        setShouldAutoLoad(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: '600px 0px' });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [ehEnabled, sourceUrl]);
+
   const fetchComments = useCallback(async (forceRefresh) => {
     if (!sourceUrl) return;
 
     const cacheKey = `${sourceUrl}::${cookie}`;
     if (!forceRefresh) {
       const cached = commentsCache.get(cacheKey);
-      if (cached && Date.now() - cached.ts < CACHE_TTL) {
+      const cacheCanRestoreVoting = !ehWorker || !cookie || hasVotingApiData(cached?.apiData);
+      if (cached && cacheCanRestoreVoting && Date.now() - cached.ts < CACHE_TTL) {
         setComments(cached.data);
+        setApiData(cached.apiData || EMPTY_API_DATA);
         setLoading(false);
         setLoaded(true);
         return;
@@ -247,6 +286,7 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
     setLoading(true);
     setError(null);
     setNeedsCookie(false);
+    setApiData(EMPTY_API_DATA);
 
     try {
       const realUrl = normaliseEhUrl(sourceUrl);
@@ -380,7 +420,7 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
           setNeedsCookie(true);
         }
       }
-      commentsCache.set(cacheKey, { data: finalComments, ts: Date.now() });
+      commentsCache.set(cacheKey, { data: finalComments, apiData: parsedApi, ts: Date.now() });
       setLoaded(true);
     } catch (e) {
       if (e instanceof TypeError && e.message === 'Failed to fetch') {
@@ -459,17 +499,34 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
     } catch {}
   }, [editText, ehWorker, cookie, sourceUrl, fetchComments]);
 
+  const handleReload = useCallback(() => {
+    autoLoadSourceRef.current = sourceUrl;
+    hasAutoLoaded.current = true;
+    setShouldAutoLoad(true);
+    setRetryTick((value) => value + 1);
+  }, [sourceUrl]);
+
   useEffect(() => {
-    if (!sourceUrl || !ehEnabled) return;
+    if (!sourceUrl || !ehEnabled || !shouldAutoLoad || autoLoadSourceRef.current !== sourceUrl) return;
     fetchComments(!hasAutoLoaded.current ? false : true);
     hasAutoLoaded.current = true;
-  }, [sourceUrl, ehEnabled, fetchComments, retryTick]);
+  }, [sourceUrl, ehEnabled, fetchComments, retryTick, shouldAutoLoad]);
 
   useEffect(() => {
     if (!sourceUrl || !ehEnabled) return undefined;
     if (loading) return undefined;
     if (!loaded) return undefined;
     if (comments.length > 0) {
+      if (ehWorker && cookie && !hasVotingApiData(apiData) && autoRetryCountRef.current < 1) {
+        autoRetryTimerRef.current = setTimeout(() => {
+          commentsCache.delete(`${sourceUrl}::${cookie}`);
+          autoRetryCountRef.current += 1;
+          setRetryTick((value) => value + 1);
+        }, 900);
+        return () => {
+          if (autoRetryTimerRef.current) clearTimeout(autoRetryTimerRef.current);
+        };
+      }
       autoRetryCountRef.current = 0;
       return undefined;
     }
@@ -485,7 +542,7 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
     return () => {
       if (autoRetryTimerRef.current) clearTimeout(autoRetryTimerRef.current);
     };
-  }, [comments.length, cookie, ehEnabled, loaded, loading, needsCookie, sourceUrl]);
+  }, [apiData, comments.length, cookie, ehEnabled, ehWorker, loaded, loading, needsCookie, sourceUrl]);
 
   if (!ehEnabled) return null;
   if (!sourceUrl) return null;
@@ -512,7 +569,7 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
   const jumpUrl = normaliseEhUrl(sourceUrl);
 
   return (
-    <div data-lrr-eh-comments className="glass-panel section-reveal section-reveal-delay-3" style={{ padding: '20px', marginTop: '20px' }}>
+    <div ref={sectionRef} data-lrr-eh-comments className="glass-panel section-reveal section-reveal-delay-3" style={{ padding: '20px', marginTop: '20px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '12px' }}>
         <h3 style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span style={{ color: 'var(--accent)' }}>💬</span> EH 评论区
@@ -526,7 +583,7 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
           >
             跳转画廊
           </a>
-          <button className="btn" onClick={() => fetchComments(true)} disabled={loading} style={{ padding: '5px 12px', fontSize: '12px' }}>
+          <button className="btn" onClick={handleReload} disabled={loading} style={{ padding: '5px 12px', fontSize: '12px' }}>
             {loading ? '加载中...' : '重新加载'}
           </button>
         </div>

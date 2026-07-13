@@ -3,7 +3,7 @@ import { getWatchlist, loadWatchlistState } from './watchlist';
 import { getSyncToken, getWorkerUrl } from './worker-config';
 
 const HISTORY_EXISTENCE_CHECK_KEY = 'lrr_history_existence_checked_at';
-const HISTORY_EXISTENCE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+const HISTORY_EXISTENCE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 let checkTimer = null;
 let startupTimer = null;
@@ -63,10 +63,10 @@ export function startHistoryExistenceCheckTimer() {
   if (checkTimer) return;
   startupTimer = window.setTimeout(() => {
     startupTimer = null;
-    runHistoryExistenceCheck({ force: true }).catch(() => {});
+    if (document.visibilityState === 'visible') runHistoryExistenceCheck().catch(() => {});
   }, 5000);
   checkTimer = window.setInterval(() => {
-    runHistoryExistenceCheck({ force: true }).catch(() => {});
+    if (document.visibilityState === 'visible') runHistoryExistenceCheck().catch(() => {});
   }, HISTORY_EXISTENCE_CHECK_INTERVAL_MS);
 }
 

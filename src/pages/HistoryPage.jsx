@@ -141,7 +141,7 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
     if (!getWorkerUrl() || !getSyncToken() || syncing) return;
     setSyncing(true);
     try {
-      const state = await loadHistoryState();
+      const state = await loadHistoryState({ force: true });
       setHistoryState(state.histories);
       setHideReadState(state.hideRead);
     } finally {

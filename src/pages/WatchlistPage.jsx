@@ -57,7 +57,7 @@ export default function WatchlistPage({ onSelectArchive, onBack }) {
     if (!getWorkerUrl() || !getSyncToken() || syncing) return;
     setSyncing(true);
     try {
-      const state = await loadWatchlistState();
+      const state = await loadWatchlistState({ force: true });
       setItems(state.items);
     } finally {
       setSyncing(false);

@@ -1,5 +1,6 @@
 import { getSyncToken, getWorkerUrl } from './worker-config';
 import { decorateArchiveRecord, hydrateArchiveRecords, rememberArchiveMetadata } from './archiveMetadataCache';
+import { loadServerInfo } from './serverInfoCache';
 
 const LOCAL_HISTORY_KEY = 'lrr_history';
 const LOCAL_HIDE_READ_KEY = 'lrr_hide_read';
@@ -7,6 +8,18 @@ const REMOTE_HISTORY_CACHE_KEY = 'lrr_history_remote_cache';
 const REMOTE_HIDE_READ_CACHE_KEY = 'lrr_hide_read_remote_cache';
 const CROP_COVER_KEY = 'lrr_crop_cover';
 const ARCHIVE_BROWSE_MODE_KEY = 'lrr_archive_browse_mode';
+const REMOTE_LOAD_TTL_MS = 30 * 1000;
+const HISTORY_SYNC_DEBOUNCE_MS = 30 * 1000;
+const HISTORY_SYNC_RETRY_MS = 2 * 60 * 1000;
+
+let remoteLoadPromise = null;
+let remoteLoadPromiseScope = '';
+let remoteLoadedAt = 0;
+let remoteLoadedScope = '';
+let historyFlushTimer = null;
+let historyFlushPromise = null;
+let pendingHistoryScope = '';
+const pendingHistorySync = new Map();
 
 function remoteConfig() {
   const workerUrl = getWorkerUrl();
@@ -67,12 +80,13 @@ function writeHideReadCache(v) {
   emitHistoryChanged();
 }
 
-async function workerJson(endpoint, { method = 'GET', body = null } = {}) {
+async function workerJson(endpoint, { method = 'GET', body = null, keepalive = false } = {}) {
   const cfg = remoteConfig();
   if (!cfg) throw new Error('未配置 Worker');
   const init = {
     method,
     headers: { 'x-sync-token': cfg.token },
+    keepalive,
   };
   if (body) {
     init.headers['Content-Type'] = 'application/json';
@@ -82,6 +96,66 @@ async function workerJson(endpoint, { method = 'GET', body = null } = {}) {
   if (!res.ok) throw new Error(`Worker Error: ${res.status}`);
   const text = await res.text();
   return text ? JSON.parse(text) : null;
+}
+
+function scheduleHistoryFlush(delay = HISTORY_SYNC_DEBOUNCE_MS) {
+  if (historyFlushTimer) clearTimeout(historyFlushTimer);
+  historyFlushTimer = setTimeout(() => {
+    historyFlushTimer = null;
+    flushHistorySync().catch(() => {});
+  }, delay);
+}
+
+function queueHistorySync(item, { deferUntilExit = false } = {}) {
+  const cfg = remoteConfig();
+  if (!cfg) return;
+  const scope = `${cfg.base}|${cfg.token}`;
+  if (pendingHistoryScope && pendingHistoryScope !== scope) pendingHistorySync.clear();
+  pendingHistoryScope = scope;
+  pendingHistorySync.set(item.id, item);
+  if (deferUntilExit) {
+    if (historyFlushTimer) clearTimeout(historyFlushTimer);
+    historyFlushTimer = null;
+  } else {
+    scheduleHistoryFlush();
+  }
+}
+
+export async function flushHistorySync({ keepalive = false } = {}) {
+  const cfg = remoteConfig();
+  const scope = cfg ? `${cfg.base}|${cfg.token}` : '';
+  if (!cfg || (pendingHistoryScope && pendingHistoryScope !== scope)) {
+    pendingHistorySync.clear();
+    pendingHistoryScope = '';
+    if (historyFlushTimer) clearTimeout(historyFlushTimer);
+    historyFlushTimer = null;
+    return true;
+  }
+  if (pendingHistorySync.size === 0) return true;
+  if (historyFlushPromise) return historyFlushPromise;
+  if (historyFlushTimer) {
+    clearTimeout(historyFlushTimer);
+    historyFlushTimer = null;
+  }
+
+  const batch = Array.from(pendingHistorySync.values());
+  batch.forEach((item) => pendingHistorySync.delete(item.id));
+  historyFlushPromise = workerJson('/history', { method: 'PUT', body: { histories: batch }, keepalive })
+    .then(() => true)
+    .catch(() => {
+      batch.forEach((item) => {
+        const queued = pendingHistorySync.get(item.id);
+        if (!queued || item.time >= queued.time) pendingHistorySync.set(item.id, item);
+      });
+      scheduleHistoryFlush(HISTORY_SYNC_RETRY_MS);
+      return false;
+    })
+    .finally(() => {
+      historyFlushPromise = null;
+      if (pendingHistorySync.size === 0) pendingHistoryScope = '';
+      if (pendingHistorySync.size > 0 && !historyFlushTimer) scheduleHistoryFlush();
+    });
+  return historyFlushPromise;
 }
 
 function archiveToHistoryItem(archive, page) {
@@ -99,44 +173,84 @@ function getStoredHistory() {
 
 export const getHistory = () => getStoredHistory().map(decorateArchiveRecord).filter(Boolean);
 
-export async function loadHistoryState() {
+async function loadHistoryStateNow({ force = false } = {}) {
   const remote = hasRemoteHistory();
+  const cfg = remote ? remoteConfig() : null;
+  const scope = cfg ? `${cfg.base}|${cfg.token}` : '';
   let histories;
   let hideRead;
   let retentionDays = 0;
 
-  if (remote) {
+  if (remote && (force || remoteLoadedScope !== scope || !remoteLoadedAt || Date.now() - remoteLoadedAt >= REMOTE_LOAD_TTL_MS)) {
     const data = await workerJson('/history');
     histories = sortHistoryByTime(data?.histories || []);
     hideRead = !!data?.hideRead;
     retentionDays = data?.retentionDays || 0;
     localStorage.setItem(REMOTE_HISTORY_CACHE_KEY, JSON.stringify(histories));
     localStorage.setItem(REMOTE_HIDE_READ_CACHE_KEY, hideRead ? '1' : '0');
+    remoteLoadedAt = Date.now();
+    remoteLoadedScope = scope;
   } else {
     histories = getStoredHistory();
     hideRead = getHideRead();
     writeHistoryCache(histories, { notify: false });
   }
 
-  const hydrated = await hydrateArchiveRecords(histories);
+  const hydrated = await hydrateArchiveRecords(histories, { force });
   if (hydrated.missingIds.length > 0) await pruneHistoryItems(hydrated.missingIds);
+  let resultItems = hydrated.items;
+  try {
+    const serverInfo = await loadServerInfo({ forceRefresh: force });
+    if (serverInfo?.server_tracks_progress === true) {
+      const storedById = new Map(histories.map((item) => [item.id, item]));
+      const changed = [];
+      resultItems = hydrated.items.map((item) => {
+        if (item.progress === undefined || item.progress === null || item.progress === '') return item;
+        const lrrProgress = Math.max(0, Number.parseInt(item.progress, 10) || 0);
+        const stored = storedById.get(item.id);
+        if (!stored || stored.page === lrrProgress) return { ...item, page: lrrProgress };
+        const next = { id: item.id, page: lrrProgress, time: stored.time };
+        changed.push(next);
+        return { ...item, page: lrrProgress };
+      });
+      if (changed.length > 0) {
+        const changedById = new Map(changed.map((item) => [item.id, item]));
+        const reconciled = histories.map((item) => changedById.get(item.id) || item);
+        writeHistoryCache(reconciled, { notify: false });
+        if (remote) await workerJson('/history', { method: 'PUT', body: { histories: changed } }).catch(() => {});
+      }
+    }
+  } catch {}
   emitHistoryChanged();
-  return { histories: hydrated.items, hideRead, remote, retentionDays };
+  return { histories: resultItems, hideRead, remote, retentionDays };
 }
 
-export const saveHistory = async (archive, page) => {
+export function loadHistoryState(options = {}) {
+  const remote = hasRemoteHistory();
+  const cfg = remote ? remoteConfig() : null;
+  const scope = cfg ? `${cfg.base}|${cfg.token}` : '';
+  if (remote && !options.force && remoteLoadPromise && remoteLoadPromiseScope === scope) return remoteLoadPromise;
+  const task = loadHistoryStateNow(options);
+  if (!remote) return task;
+  remoteLoadPromiseScope = scope;
+  const trackedPromise = task.finally(() => {
+    if (remoteLoadPromise !== trackedPromise) return;
+    remoteLoadPromise = null;
+    remoteLoadPromiseScope = '';
+  });
+  remoteLoadPromise = trackedPromise;
+  return trackedPromise;
+}
+
+export const saveHistory = async (archive, page, { deferRemote = false } = {}) => {
   if (!archive?.arcid) return false;
   const item = archiveToHistoryItem(archive, page);
   const history = getStoredHistory().filter((h) => h.id !== item.id);
   writeHistoryCache([...history, item]);
 
   if (!hasRemoteHistory()) return true;
-  try {
-    await workerJson('/history', { method: 'PUT', body: { history: item } });
-    return true;
-  } catch {
-    return false;
-  }
+  queueHistorySync(item, { deferUntilExit: deferRemote });
+  return true;
 };
 
 export const getHideRead = () => localStorage.getItem(activeHideReadKey()) === '1';
@@ -210,3 +324,10 @@ export const getArchiveBrowseMode = () => localStorage.getItem(ARCHIVE_BROWSE_MO
 export const setArchiveBrowseMode = (mode) => {
   localStorage.setItem(ARCHIVE_BROWSE_MODE_KEY, mode === 'paged' ? 'paged' : 'scroll');
 };
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', () => { flushHistorySync({ keepalive: true }).catch(() => {}); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushHistorySync({ keepalive: true }).catch(() => {});
+  });
+}

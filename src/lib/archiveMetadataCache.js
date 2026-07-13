@@ -36,8 +36,8 @@ export function decorateArchiveRecord(record) {
   };
 }
 
-async function fetchArchiveMetadata(id) {
-  if (metadataCache.has(id)) return metadataCache.get(id);
+async function fetchArchiveMetadata(id, { force = false } = {}) {
+  if (!force && metadataCache.has(id)) return metadataCache.get(id);
   if (metadataRequests.has(id)) return metadataRequests.get(id);
   const request = lrrApi.getArchive(id)
     .then((metadata) => rememberArchiveMetadata({ ...metadata, id, arcid: id }))
@@ -46,7 +46,7 @@ async function fetchArchiveMetadata(id) {
   return request;
 }
 
-export async function hydrateArchiveRecords(records) {
+export async function hydrateArchiveRecords(records, { force = false } = {}) {
   const source = (Array.isArray(records) ? records : []).filter((item) => archiveId(item));
   const missingIds = [];
   const hydrated = new Map();
@@ -55,12 +55,12 @@ export async function hydrateArchiveRecords(records) {
     const batch = source.slice(index, index + HYDRATE_CONCURRENCY);
     await Promise.all(batch.map(async (record) => {
       const id = archiveId(record);
-      if (metadataCache.has(id)) {
+      if (!force && metadataCache.has(id)) {
         hydrated.set(id, decorateArchiveRecord(record));
         return;
       }
       try {
-        await fetchArchiveMetadata(id);
+        await fetchArchiveMetadata(id, { force });
         hydrated.set(id, decorateArchiveRecord(record));
       } catch (error) {
         if (isMissingArchiveError(error)) missingIds.push(id);

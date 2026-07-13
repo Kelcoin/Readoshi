@@ -14,6 +14,7 @@ import { getWorkerUrl, setWorkerUrl, getSyncToken, setSyncToken, exportConfig, i
 import { applyThemeMode, getNextThemeMode, readStoredThemeMode, watchSystemTheme, writeStoredThemeMode } from './lib/theme';
 import PwaStatus from './components/PwaStatus';
 import AppVersion from './components/AppVersion';
+import { cacheServerInfo } from './lib/serverInfoCache';
 import './index.css';
 
 export default function App() {
@@ -92,9 +93,10 @@ export default function App() {
     setLoginError('');
     setLoginLoading(true);
     try {
-      await checkServerStatus(tempConfig.url, tempConfig.key);
+      const serverInfo = await checkServerStatus(tempConfig.url, tempConfig.key);
       localStorage.setItem('lrr_server_url', tempConfig.url);
       localStorage.setItem('lrr_api_key', tempConfig.key);
+      cacheServerInfo(serverInfo);
       setWorkerUrl(tempConfig.workerUrl);
       setSyncToken(tempConfig.syncToken);
       setSavedConfig({ url: tempConfig.url, key: tempConfig.key });
