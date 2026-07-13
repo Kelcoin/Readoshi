@@ -330,7 +330,7 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
                     </div>
                   </div>
 
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gridAutoFlow: 'dense', gap: isNarrow ? '10px' : '16px', justifyItems: 'center' }}>
+                  <div className="archive-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: isNarrow ? '10px' : '16px', '--archive-grid-half-gap': isNarrow ? '5px' : '8px' }}>
                     {group.items.map((h) => {
                       const selected = selectedIds.has(h.id);
                       return (

@@ -20,7 +20,7 @@ export function setSyncToken(token) {
 }
 
 // ── Config Export / Import ─────────────────────────────────────
-const CONFIG_KEYS = [
+export const CONFIG_KEYS = [
   'lrr_server_url',
   'lrr_api_key',
   'lrr_worker_url',
@@ -41,19 +41,35 @@ const CONFIG_KEYS = [
   'lrr_filter_presets',
 ];
 
-export function exportConfig() {
+function encodeUtf8Base64(value) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function decodeUtf8Base64(value) {
+  const binary = atob(value);
+  const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+export function exportConfig(overrides = {}) {
   const cfg = {};
   for (const key of CONFIG_KEYS) {
     const val = localStorage.getItem(key);
     if (val) cfg[key] = val;
   }
-  return btoa(JSON.stringify(cfg));
+  for (const key of CONFIG_KEYS) {
+    if (overrides[key]) cfg[key] = overrides[key];
+  }
+  return encodeUtf8Base64(JSON.stringify(cfg));
 }
 
 export function importConfig(encoded) {
   let cfg;
   try {
-    cfg = JSON.parse(atob(encoded));
+    cfg = JSON.parse(decodeUtf8Base64(encoded));
   } catch {
     throw new Error('无效的配置数据：无法解码');
   }

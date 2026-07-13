@@ -17,6 +17,7 @@ let cleanupTimer = null;
 let diskCachePromise = null;
 let activeCount = 0;
 const waitQueue = [];
+const retiredObjectUrls = new Set();
 
 function getDiskCache() {
   if (!diskCachePromise) diskCachePromise = caches.open(DISK_CACHE);
@@ -82,7 +83,9 @@ function rememberBlob(key, blob) {
     const first = MEM_CACHE.keys().next().value;
     if (first) {
       const old = MEM_CACHE.get(first);
-      if (old?.objectUrl) URL.revokeObjectURL(old.objectUrl);
+      // An evicted URL may still be mounted by React. Revoking it here causes
+      // Chromium to report net::ERR_FILE_NOT_FOUND for otherwise valid images.
+      if (old?.objectUrl) retiredObjectUrls.add(old.objectUrl);
       MEM_CACHE.delete(first);
     }
   }
@@ -163,6 +166,8 @@ export async function clearImageCache({ disk = false } = {}) {
   for (const [, entry] of MEM_CACHE) {
     if (entry?.objectUrl) URL.revokeObjectURL(entry.objectUrl);
   }
+  for (const objectUrl of retiredObjectUrls) URL.revokeObjectURL(objectUrl);
+  retiredObjectUrls.clear();
   MEM_CACHE.clear();
   lastIndexTouch.clear();
   if (cleanupTimer) { clearTimeout(cleanupTimer); cleanupTimer = null; }

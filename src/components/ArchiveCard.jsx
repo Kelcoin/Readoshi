@@ -476,7 +476,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   return (
     <div
       ref={cardRef}
-      className={className}
+      className={['archive-card-wrap', isWide ? 'is-wide' : '', className].filter(Boolean).join(' ')}
       style={{
         position: 'relative',
         display: 'inline-block',

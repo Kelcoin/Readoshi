@@ -1,13 +1,19 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import TagSuggest from './TagSuggest';
+import ConfirmDialog from './ConfirmDialog';
+import TextInputDialog from './TextInputDialog';
+import { ToolbarGlyph } from './AppGlyphs';
 import { replaceCurrentArchiveSearchToken } from '../lib/archiveSearch';
-import { deleteFilterPreset, readFilterPresets, saveFilterPreset } from '../lib/filterPresets';
+import { deleteFilterPreset, readFilterPresets, renameFilterPreset, saveFilterPreset } from '../lib/filterPresets';
 
 export default function ArchiveSearchBox({ query, setQuery, placeholder }) {
   const searchBoxRef = useRef(null);
   const suggestActiveRef = useRef(false);
   const [presets, setPresets] = useState(readFilterPresets);
   const [showPresets, setShowPresets] = useState(false);
+  const [nameDialog, setNameDialog] = useState(null);
+  const [editingPreset, setEditingPreset] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState('');
   const presetMenuId = useId();
 
   const handleTagSelect = useCallback((tag) => {
@@ -16,12 +22,7 @@ export default function ArchiveSearchBox({ query, setQuery, placeholder }) {
     setTimeout(() => searchBoxRef.current?.querySelector('input')?.focus(), 50);
   }, [setQuery]);
 
-  const savePreset = useCallback(() => {
-    const name = prompt('为当前筛选方案命名:');
-    if (!name || !name.trim()) return;
-    setPresets(saveFilterPreset({ name, query }));
-    setShowPresets(false);
-  }, [query]);
+  const savePreset = useCallback(() => setNameDialog({ mode: 'create', value: '' }), []);
 
   useEffect(() => {
     if (!showPresets) return undefined;
@@ -38,6 +39,9 @@ export default function ArchiveSearchBox({ query, setQuery, placeholder }) {
         <div className="archive-search-input-wrap">
           <input
             className="input-glass"
+            name="archive-search"
+            autoComplete="off"
+            aria-label={placeholder}
             value={query}
             onChange={(event) => {
               if (showPresets) setShowPresets(false);
@@ -85,10 +89,18 @@ export default function ArchiveSearchBox({ query, setQuery, placeholder }) {
               </div>
               {presets.length > 0 ? <div className="archive-search-preset-list">{presets.map(preset => (
                 <div key={preset.name} className="archive-search-preset-row">
-                  <button type="button" onClick={() => { setQuery(preset.query || ''); setShowPresets(false); }} title={preset.query || preset.name}>
+                  <button className="archive-search-preset-apply" type="button" onClick={() => { setQuery(preset.query || ''); setShowPresets(false); }} title={preset.query || preset.name}>
                     {preset.name}
                   </button>
-                  <button type="button" aria-label={`删除 ${preset.name}`} onClick={() => setPresets(deleteFilterPreset(preset.name))}>✕</button>
+                  <button className="archive-search-preset-edit" type="button" aria-label={`编辑 ${preset.name}`} aria-expanded={editingPreset === preset.name} onClick={() => setEditingPreset(current => current === preset.name ? '' : preset.name)}>
+                    <ToolbarGlyph name="edit" size={16} />
+                  </button>
+                  {editingPreset === preset.name && (
+                    <div className="archive-search-preset-actions dropdown-animate">
+                      <button type="button" onClick={() => { setNameDialog({ mode: 'rename', value: preset.name }); setEditingPreset(''); }}>重命名</button>
+                      <button type="button" className="is-danger" onClick={() => { setDeleteTarget(preset.name); setEditingPreset(''); }}>删除</button>
+                    </div>
+                  )}
                 </div>
               ))}</div> : (
                 <div className="archive-search-empty">暂无预设。设置筛选条件后点击「保存当前筛选」。</div>
@@ -100,6 +112,19 @@ export default function ArchiveSearchBox({ query, setQuery, placeholder }) {
           筛选
         </button>
       </div>
+      <TextInputDialog
+        open={!!nameDialog}
+        title={nameDialog?.mode === 'rename' ? '重命名筛选方案' : '为当前筛选方案命名'}
+        initialValue={nameDialog?.value || ''}
+        onCancel={() => setNameDialog(null)}
+        onConfirm={(name) => {
+          setPresets(nameDialog?.mode === 'rename'
+            ? renameFilterPreset(nameDialog.value, name)
+            : saveFilterPreset({ name, query }));
+          setNameDialog(null);
+        }}
+      />
+      <ConfirmDialog open={!!deleteTarget} title="删除筛选方案" message={`将删除“${deleteTarget}”。`} confirmLabel="删除" cancelLabel="取消" onCancel={() => setDeleteTarget('')} onConfirm={() => { setPresets(deleteFilterPreset(deleteTarget)); setDeleteTarget(''); }} />
     </div>
   );
 }

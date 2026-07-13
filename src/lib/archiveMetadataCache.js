@@ -3,6 +3,40 @@ import { lrrApi } from './api';
 const metadataCache = new Map();
 const metadataRequests = new Map();
 const HYDRATE_CONCURRENCY = 6;
+const METADATA_STORAGE_KEY = 'lrr_archive_metadata_cache_v1';
+const METADATA_STORAGE_LIMIT = 300;
+let persistTimer = null;
+
+function metadataStorageKey() {
+  if (typeof localStorage === 'undefined') return METADATA_STORAGE_KEY;
+  return `${METADATA_STORAGE_KEY}:${localStorage.getItem('lrr_server_url') || 'default'}`;
+}
+
+function readPersistedMetadata() {
+  if (typeof localStorage === 'undefined') return [];
+  try {
+    const value = JSON.parse(localStorage.getItem(metadataStorageKey()) || '[]');
+    return Array.isArray(value) ? value : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistMetadataCache() {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    const entries = Array.from(metadataCache.values()).slice(-METADATA_STORAGE_LIMIT);
+    localStorage.setItem(metadataStorageKey(), JSON.stringify(entries));
+  } catch {}
+}
+
+function scheduleMetadataPersist() {
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    persistMetadataCache();
+  }, 80);
+}
 
 function archiveId(value) {
   return String(value?.id || value?.arcid || '').trim();
@@ -17,6 +51,8 @@ export function rememberArchiveMetadata(archive) {
   if (!id) return null;
   const metadata = { ...archive, id, arcid: id };
   metadataCache.set(id, metadata);
+  if (metadataCache.size > METADATA_STORAGE_LIMIT) metadataCache.delete(metadataCache.keys().next().value);
+  scheduleMetadataPersist();
   return metadata;
 }
 
@@ -35,6 +71,11 @@ export function decorateArchiveRecord(record) {
     total: Number(metadata.pagecount) || 0,
   };
 }
+
+readPersistedMetadata().forEach((archive) => {
+  const id = archiveId(archive);
+  if (id) metadataCache.set(id, { ...archive, id, arcid: id });
+});
 
 async function fetchArchiveMetadata(id, { force = false } = {}) {
   if (!force && metadataCache.has(id)) return metadataCache.get(id);

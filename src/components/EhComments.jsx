@@ -312,10 +312,10 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
           if (jsonErr && jsonErr.error) {
             const msgMap = {
               Unauthorized: 'Worker Token 无效或缺失。请在设定面板填入 KV tokens 中配置的 Token。',
-              EH_REQUIRES_LOGIN: 'EH/EX 需要有效 Cookie。请在设定面板填入 Cookie 后重试。',
-              EH_CLOUDFLARE_BLOCK: 'Worker 被 EH/EX 的 Cloudflare 防护拦截。请等待一段时间后重试，或更换 Worker 部署区域。',
-              EH_EMPTY_RESPONSE: 'EH 返回了异常响应。请检查画廊 URL 是否正确。',
-              EH_UNEXPECTED_PAGE: jsonErr.detail || 'EH 返回了非预期页面。Cookie 可能已过期，请更新。',
+              EH_REQUIRES_LOGIN: 'E-Hentai 需要有效 Cookie。请在设定面板填入 Cookie 后重试。',
+              EH_CLOUDFLARE_BLOCK: 'Worker 被 E-Hentai 的 Cloudflare 防护拦截。请等待一段时间后重试，或更换 Worker 部署区域。',
+              EH_EMPTY_RESPONSE: 'E-Hentai 返回了异常响应。请检查画廊 URL 是否正确。',
+              EH_UNEXPECTED_PAGE: jsonErr.detail || 'E-Hentai 返回了非预期页面。Cookie 可能已过期，请更新。',
             };
             throw new Error(msgMap[jsonErr.error] || (jsonErr.detail || `Worker 错误: ${jsonErr.error}`));
           }
@@ -333,10 +333,10 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
         if (jsonErr200 && jsonErr200.error) {
           const msgMap = {
             Unauthorized: 'Worker Token 无效或缺失。请在设定面板填入 KV tokens 中配置的 Token。',
-            EH_REQUIRES_LOGIN: 'EH/EX 需要有效 Cookie。请在设定面板填入 Cookie 后重试。',
-            EH_CLOUDFLARE_BLOCK: 'Worker 被 EH/EX 的 Cloudflare 防护拦截。',
-            EH_EMPTY_RESPONSE: 'EH 返回了异常响应。请检查画廊 URL。',
-            EH_UNEXPECTED_PAGE: jsonErr200.detail || 'EH 返回了非预期页面。Cookie 可能已过期。',
+            EH_REQUIRES_LOGIN: 'E-Hentai 需要有效 Cookie。请在设定面板填入 Cookie 后重试。',
+            EH_CLOUDFLARE_BLOCK: 'Worker 被 E-Hentai 的 Cloudflare 防护拦截。',
+            EH_EMPTY_RESPONSE: 'E-Hentai 返回了异常响应。请检查画廊 URL。',
+            EH_UNEXPECTED_PAGE: jsonErr200.detail || 'E-Hentai 返回了非预期页面。Cookie 可能已过期。',
           };
           throw new Error(msgMap[jsonErr200.error] || (jsonErr200.detail || `Worker 错误`));
         }
@@ -348,7 +348,7 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
         const galleryRes = await fetch(workerUrl, { headers, redirect: 'manual' });
 
         if (galleryRes.type === 'opaqueredirect') {
-          throw new Error('EH 请求被重定向到外部域名，请使用 Cloudflare Worker 代理。');
+          throw new Error('E-Hentai 请求被重定向到外部域名，请使用 Cloudflare Worker 代理。');
         }
 
         if (!galleryRes.ok) throw new Error(`请求失败 (${galleryRes.status})`);
@@ -363,8 +363,8 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
         setComments([]);
         setLoaded(true);
         setError(blockType === 'warning'
-          ? '遇到内容警告页。请在设定面板中填入有效的 EH Cookie 后重新加载。'
-          : '需要登录 E-Hentai。请在设定面板中配置 EH Cookie。');
+          ? '遇到内容警告页。请在设定面板中填入有效的 E-Hentai Cookie 后重新加载。'
+          : '需要登录 E-Hentai。请在设定面板中配置 E-Hentai Cookie。');
         setLoading(false);
         return;
       }
@@ -385,7 +385,7 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
         setNeedsCookie(true);
         setComments([]);
         setLoaded(true);
-        setError('遇到内容警告页。请在设定面板填入有效 EH Cookie（含 nw=1）后重试。');
+        setError('遇到内容警告页。请在设定面板填入有效 E-Hentai Cookie（含 nw=1）后重试。');
         setLoading(false);
         return;
       }
@@ -416,7 +416,7 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
       setComments(finalComments);
       if (finalComments.length === 0) {
         if (htmlText.includes('#cdiv') || htmlText.includes('commentthread')) {
-          setError('评论内容需要登录后可见。请在设定面板中填入 EH Cookie 后点击"重新加载"。');
+          setError('评论内容需要登录后可见。请在设定面板中填入 E-Hentai Cookie 后点击“重新加载”。');
           setNeedsCookie(true);
         }
       }
@@ -426,7 +426,7 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
       if (e instanceof TypeError && e.message === 'Failed to fetch') {
         setError(
           '无法直接访问 E-Hentai（浏览器 CORS 策略限制）。' +
-          (import.meta.env.DEV ? '请确认 Vite 代理配置正确。' : '生产环境需要部署反向代理来中转 EH 请求。')
+          (import.meta.env.DEV ? '请确认 Vite 代理配置正确。' : '生产环境需要部署反向代理来中转 E-Hentai 请求。')
         );
         setNeedsCookie(true);
       } else {
@@ -572,19 +572,19 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
     <div ref={sectionRef} data-lrr-eh-comments className="eh-comments glass-panel section-reveal section-reveal-delay-3" style={{ padding: '20px', marginTop: '20px' }}>
       <div className="eh-comments-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', paddingBottom: '12px' }}>
         <h3 style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ color: 'var(--accent)' }}>💬</span> EH 评论区
+          <span style={{ color: 'var(--accent)' }}>💬</span> E-Hentai 评论区
           {loaded && <span style={{ fontSize: '11px', color: 'var(--text-sub)', fontWeight: 400 }}>{comments.length} 条</span>}
         </h3>
         <div style={{ display: 'flex', gap: '8px' }}>
           <a
             href={jumpUrl} target="_blank" rel="noopener noreferrer"
             className="btn"
-            style={{ padding: '5px 12px', fontSize: '12px', textDecoration: 'none', background: 'var(--reader-control-bg)' }}
+            style={{ padding: '5px 12px', fontSize: '12px', textDecoration: 'none' }}
           >
             跳转画廊
           </a>
           <button className="btn" onClick={handleReload} disabled={loading} style={{ padding: '5px 12px', fontSize: '12px' }}>
-            {loading ? '加载中...' : '重新加载'}
+            {loading ? '加载中…' : '重新加载'}
           </button>
         </div>
       </div>
@@ -597,7 +597,7 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
 
       {loading && !loaded && (
         <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-sub)', fontSize: '13px' }}>
-          正在获取评论...
+          正在获取评论…
         </div>
       )}
 
@@ -617,7 +617,7 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
           该画廊暂无评论，或需要登录 E-Hentai 后可见。
           {!cookie && (
             <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--text-sub)' }}>
-              在设定面板填入 EH Cookie 后刷新即可加载需要登录才能看到的评论。
+              在设定面板填入 E-Hentai Cookie 后刷新即可加载需要登录才能看到的评论。
             </div>
           )}
         </div>

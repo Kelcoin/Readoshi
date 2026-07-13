@@ -1,5 +1,5 @@
 const DESKTOP_TOOLBAR = Object.freeze({
-  left: Object.freeze(['← 返回', '归档列表']),
+  left: Object.freeze(['← 返回', '快速跳转']),
   right: Object.freeze(['沉浸模式', '设为封面', '阅读设定', '缩略面板']),
 });
 
@@ -33,6 +33,15 @@ export function isIosWebKitPlatform(userAgent = '', platform = '', maxTouchPoint
 }
 
 export function getReaderArchivePanelModel(type, sources) {
+  if (type === 'random') {
+    return {
+      type,
+      title: '随机漫游',
+      items: sources.randomItems,
+      emptyMessage: sources.randomEmptyMessage,
+      onDelete: null,
+    };
+  }
   if (type === 'watchlist') {
     return {
       type,

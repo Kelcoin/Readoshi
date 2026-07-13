@@ -203,6 +203,23 @@ function renderToolbarGlyph(name) {
       return <path d="M19 12H5M12 19l-7-7 7-7" />;
     case 'history':
       return <path d="M12 8v4l3 3M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />;
+    case 'quickJump':
+      return (
+        <>
+          <circle cx="12" cy="12" r="8.25" />
+          <path d="M14.9 8.1 13.1 13.1 8.1 14.9l1.8-5 5-1.8z" />
+          <circle cx="12" cy="12" r="1.15" fill="currentColor" stroke="none" />
+        </>
+      );
+    case 'random':
+      return <path d="M4 7h2.2c5.6 0 5.6 10 11.6 10H20M17 14l3 3-3 3M4 17h2.2c2.3 0 3.7-1.7 4.9-3.6M14 7.6c1-0.4 2.2-0.6 3.8-0.6H20M17 4l3 3-3 3" />;
+    case 'edit':
+      return (
+        <>
+          <path d="M4.75 19.25h3.4L18.8 8.6a1.8 1.8 0 0 0 0-2.55l-.85-.85a1.8 1.8 0 0 0-2.55 0L4.75 15.85v3.4z" />
+          <path d="m13.9 6.7 3.4 3.4M4.75 15.85l3.4 3.4" opacity="0.72" />
+        </>
+      );
     case 'watchlist':
       return <path d="M6 4.5h12v16l-6-3-6 3v-16z" />;
     case 'play':

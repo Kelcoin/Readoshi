@@ -29,3 +29,17 @@ export function deleteFilterPreset(name) {
   writeFilterPresets(next);
   return next;
 }
+
+export function renameFilterPreset(name, nextName) {
+  const trimmed = String(nextName || '').trim();
+  if (!trimmed) return readFilterPresets();
+  const current = readFilterPresets();
+  const target = current.find(item => item.name === name);
+  if (!target) return current;
+  const next = [
+    ...current.filter(item => item.name !== name && item.name !== trimmed),
+    { ...target, name: trimmed },
+  ];
+  writeFilterPresets(next);
+  return next;
+}

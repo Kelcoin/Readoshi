@@ -30,8 +30,10 @@ export default function MetadataTagChip({ tag, translatedTag, revealed, onReveal
     return () => observer.disconnect();
   }, [revealed, textWidths]);
 
-  const preferredWidth = (revealed ? textWidths.original : textWidths.translated) + CHIP_CHROME_WIDTH;
-  const compressedWidth = Math.max(56, Math.round(preferredWidth * 0.76));
+  const preferredTextWidth = revealed
+    ? Math.max(textWidths.translated, textWidths.original)
+    : textWidths.translated;
+  const preferredWidth = preferredTextWidth + CHIP_CHROME_WIDTH;
 
   return (
     <span
@@ -39,7 +41,6 @@ export default function MetadataTagChip({ tag, translatedTag, revealed, onReveal
       className={`btn metadata-tag${revealed ? ' is-revealed' : ''}`}
       style={{
         '--metadata-tag-preferred-width': `${preferredWidth}px`,
-        '--metadata-tag-compressed-width': `${compressedWidth}px`,
         '--metadata-tag-font-scale': fontScale,
       }}
       onPointerDown={(event) => { lastPointerTypeRef.current = event.pointerType || ''; }}
@@ -50,6 +51,7 @@ export default function MetadataTagChip({ tag, translatedTag, revealed, onReveal
         type="button"
         className="metadata-tag-copy"
         aria-label={`复制标签 ${tag}`}
+        aria-pressed={revealed}
         title={revealed ? tag : translatedTag}
         onClick={async () => {
           const revealOnTap = !!lastPointerTypeRef.current && lastPointerTypeRef.current !== 'mouse';

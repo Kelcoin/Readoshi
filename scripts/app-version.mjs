@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const DEFAULT_VERSION = '1.0.0';
+const DEFAULT_VERSION = '1.1.0';
 
 function runGit(args, cwd) {
   try {
@@ -35,8 +35,8 @@ function readPackageVersion(cwd, ref = '') {
 export function classifySemverBump(files = [], messages = []) {
   const joinedMessages = messages.join('\n');
   if (/(BREAKING CHANGE|^[a-z]+(?:\([^)]+\))?!:)/m.test(joinedMessages)) return 'major';
-  if (files.some(file => /^(src\/|public\/|worker\.js$|vite\.config\.js$|Dockerfile$|nginx\.conf|scripts\/)/.test(file.replace(/\\/g, '/')))) return 'minor';
-  return files.length ? 'patch' : 'patch';
+  if (/^feat(?:\([^)]+\))?:/m.test(joinedMessages)) return 'minor';
+  return 'patch';
 }
 
 export function bumpVersion(version, bump) {

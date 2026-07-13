@@ -74,7 +74,7 @@ function isCacheableResponse(response) {
 
 function offlineAppShellResponse() {
   return new Response(
-    '<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>LRR 阅读器</title></head><body style="margin:0;background:#181a20;color:#e3e9f3;font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px;box-sizing:border-box"><main style="max-width:360px;text-align:center"><h1 style="font-size:20px;margin:0 0 10px">离线状态</h1><p style="font-size:14px;line-height:1.6;color:#a7b1c2;margin:0">暂时无法连接，也没有可用的缓存页面。恢复网络后请重新打开 LRR 阅读器。</p></main></body></html>',
+    '<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Lanraragi React Reader</title></head><body style="margin:0;background:#181a20;color:#e3e9f3;font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px;box-sizing:border-box"><main style="max-width:360px;text-align:center"><h1 style="font-size:20px;margin:0 0 10px">离线状态</h1><p style="font-size:14px;line-height:1.6;color:#a7b1c2;margin:0">暂时无法连接，也没有可用的缓存页面。恢复网络后请重新打开 Lanraragi React Reader。</p></main></body></html>',
     {
       status: 503,
       statusText: 'Service Unavailable',

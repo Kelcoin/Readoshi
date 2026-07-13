@@ -1,5 +1,5 @@
 export function getReaderArchiveListMeta(item, type) {
-  if (type === 'watchlist') {
+  if (type === 'watchlist' || type === 'random') {
     return { timestamp: Number(item?.addedAt) || 0, progress: '' };
   }
   return {

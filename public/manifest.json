@@ -1,6 +1,6 @@
 {
-  "name": "LRR Modern Reader",
-  "short_name": "LRR Reader",
+  "name": "Lanraragi React Reader",
+  "short_name": "Lanraragi Reader",
   "description": "Modern LANraragi reader with cloud sync & E-Hentai comments",
   "start_url": "/",
   "display": "standalone",

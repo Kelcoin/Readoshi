@@ -76,7 +76,7 @@ export async function removeEhFavorite({ galleryUrl, cookie, workerUrl, token })
   let data = null;
   try { data = await res.json(); } catch {}
   if (!res.ok || data?.ok === false) {
-    throw new Error(data?.detail || data?.error || `EH 收藏夹同步删除失败 (HTTP ${res.status})`);
+    throw new Error(data?.detail || data?.error || `E-Hentai 收藏夹同步删除失败 (HTTP ${res.status})`);
   }
   return data || { ok: true };
 }

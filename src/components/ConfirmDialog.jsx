@@ -11,6 +11,7 @@ export default function ConfirmDialog({
   onCancel,
   destructive = true,
   confirmDisabled = false,
+  initialFocusSelector = '[data-dialog-cancel]',
   children,
 }) {
   const titleId = useId();
@@ -27,7 +28,7 @@ export default function ConfirmDialog({
 
     document.body.style.overflow = 'hidden';
     window.addEventListener('keydown', handleKeyDown);
-    const focusFrame = requestAnimationFrame(() => dialogRef.current?.querySelector('[data-dialog-cancel]')?.focus());
+    const focusFrame = requestAnimationFrame(() => dialogRef.current?.querySelector(initialFocusSelector)?.focus());
 
     return () => {
       cancelAnimationFrame(focusFrame);
@@ -35,7 +36,7 @@ export default function ConfirmDialog({
       window.removeEventListener('keydown', handleKeyDown);
       if (previouslyFocused instanceof HTMLElement && document.contains(previouslyFocused)) previouslyFocused.focus();
     };
-  }, [onCancel, open]);
+  }, [initialFocusSelector, onCancel, open]);
 
   if (!open) return null;
 

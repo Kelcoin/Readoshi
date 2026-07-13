@@ -11,6 +11,7 @@ import { deleteArchiveWithFavoriteSync } from '../lib/archiveDeletion';
 import ArchiveCard from '../components/ArchiveCard';
 import ArchiveContextMenu from '../components/ArchiveContextMenu';
 import ConfirmDialog from '../components/ConfirmDialog';
+import TextInputDialog from '../components/TextInputDialog';
 import CustomSelect from '../components/CustomSelect';
 import TagSuggest from '../components/TagSuggest';
 import CacheSettings from '../components/CacheSettings';
@@ -18,9 +19,9 @@ import EhFavoriteDeleteSwitch from '../components/EhFavoriteDeleteSwitch';
 import ToggleSwitch from '../components/ToggleSwitch';
 import AppVersion from '../components/AppVersion';
 import SettingHint from '../components/SettingHint';
-import { HomeSectionGlyph, ThemeModeGlyph, getSectionGlyphColor } from '../components/AppGlyphs';
+import { HomeSectionGlyph, ThemeModeGlyph, ToolbarGlyph, getSectionGlyphColor } from '../components/AppGlyphs';
+import { deleteFilterPreset, readFilterPresets, renameFilterPreset, saveFilterPreset } from '../lib/filterPresets';
 import { getStoredCategories, loadCategories, startCategoriesUpdateTimer, stopCategoriesUpdateTimer } from '../lib/categories';
-import { clearImageCache } from '../lib/imageCache';
 import { claimColdRestoreRoute, consumeHomeNavigationSnapshot, getBootState, loadHomeSnapshot, markBackground, saveHomeNavigationSnapshot, saveHomeSnapshot } from '../lib/sessionState';
 import { getStoredServerInfo, loadServerInfo } from '../lib/serverInfoCache';
 import { useHorizontalScroller } from '../lib/horizontalScroller';
@@ -29,7 +30,6 @@ import { ARCHIVE_BROWSE_MODES, ARCHIVE_PAGE_SIZE, clampArchivePage, getArchivePa
 import { reduceArchiveRefreshPhase } from '../lib/archiveRefreshMotion';
 
 const FILTER_KEY = 'lrr_filter';
-const PRESETS_KEY = 'lrr_filter_presets';
 const RANDOMS_RECENT_KEY = 'lrr_random_recent_v1';
 const RANDOMS_BATCH_SIZE = 8;
 const RANDOMS_DEFAULT_BATCHES = 2;
@@ -104,15 +104,6 @@ function replaceCurrentFilterToken(query, token) {
   const tokens = tokenizeFilterQuery(prefix);
   tokens.push(trimmedToken);
   return formatFilterTokens(tokens, { trailingComma: true });
-}
-
-function readPresets() {
-  try {
-    return JSON.parse(localStorage.getItem(PRESETS_KEY)) || [];
-  } catch { return []; }
-}
-function writePresets(p) {
-  localStorage.setItem(PRESETS_KEY, JSON.stringify(p));
 }
 
 function readRecentRandomIds() {
@@ -297,9 +288,10 @@ function CollapseButton({ collapsed, onClick, title }) {
       type="button"
       onClick={onClick}
       title={title}
+      aria-label={title}
       style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-sub)', opacity: 0.8, padding: '4px', borderRadius: '4px', display: 'flex' }}
     >
-      <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" style={{ transition: 'transform 0.3s', transform: collapsed ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true" style={{ transition: 'transform 0.3s', transform: collapsed ? 'rotate(180deg)' : 'rotate(0deg)' }}>
         <path d="M6 15l6-6 6 6z" />
       </svg>
     </button>
@@ -448,8 +440,11 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
   const [loading, setLoading] = useState(false);
   const [archivesRefreshing, setArchivesRefreshing] = useState(false);
   const [archiveRefreshPhase, dispatchArchiveRefresh] = useReducer(reduceArchiveRefreshPhase, 'idle');
-  const [presets, setPresets] = useState(readPresets);
+  const [presets, setPresets] = useState(readFilterPresets);
   const [showPresets, setShowPresets] = useState(false);
+  const [presetNameDialog, setPresetNameDialog] = useState(null);
+  const [editingPreset, setEditingPreset] = useState('');
+  const [presetDeleteTarget, setPresetDeleteTarget] = useState('');
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [categories, setCategories] = useState([]);
   const [columnsPerRow, setColumnsPerRow] = useState(5);
@@ -902,8 +897,8 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
       stopTagDBUpdateTimer();
       stopCategoriesUpdateTimer();
       persistBackgroundSnapshot();
-      // Release image blob memory before iOS evaluates process for suspension
-      try { clearImageCache(); } catch {}
+      // Keep mounted Blob URLs valid across bfcache/background restores.
+      // The browser releases them with the document when the page is discarded.
     };
     const handleFocus = () => {
       if (document.visibilityState === 'visible') {
@@ -1545,19 +1540,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     }
   };
 
-  const savePreset = () => {
-    const name = prompt('为当前筛选方案命名:');
-    if (!name || !name.trim()) return;
-    const newPresets = [...presets.filter(p => p.name !== name.trim()), { name: name.trim(), query: filter.query, sortBy: filter.sortBy, order: filter.order }];
-    setPresets(newPresets);
-    writePresets(newPresets);
-  };
-
-  const deletePreset = (name) => {
-    const newPresets = presets.filter(p => p.name !== name);
-    setPresets(newPresets);
-    writePresets(newPresets);
-  };
+  const savePreset = () => setPresetNameDialog({ mode: 'create', value: '' });
 
   const loadPreset = (p) => {
     applyFilter(p.query, p.sortBy, p.order);
@@ -1714,8 +1697,8 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     <div style={{ padding: isNarrow ? '16px 10px' : '24px 20px', maxWidth: '1680px', margin: '0 auto' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: '18px', marginBottom: '32px', flexWrap: 'wrap' }}>
         <div>
-          <h1 style={{ fontWeight: 600, margin: '0 0 8px 0', fontSize: '28px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-            LRR 阅读器
+          <h1 translate="no" style={{ fontWeight: 600, margin: '0 0 8px 0', fontSize: '28px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+            Lanraragi React Reader
             {serverOnline !== null && (
               <button
                 type="button"
@@ -1794,7 +1777,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
 
       {history.length > 0 && (
         <section className="glass-panel section-reveal section-reveal-delay-1" style={{ marginBottom: '32px', padding: 0, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px 12px', position: 'relative', zIndex: 0 }}>
+          <div className="home-carousel-header">
             <SectionHeading glyph="continue" onClick={handleNavigateHistory} title="查看全部历史记录">继续阅读</SectionHeading>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <button
@@ -1863,7 +1846,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
 
       {!pageReady && history.length === 0 && (
         <section className="glass-panel section-reveal section-reveal-delay-1" style={{ marginBottom: '32px', padding: 0, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ padding: '16px 20px 12px', position: 'relative', zIndex: 0 }}>
+          <div className="home-carousel-header">
             <SectionHeading glyph="continue">继续阅读</SectionHeading>
           </div>
           <div style={{ display: 'flex', gap: '16px', overflowX: 'auto', overflowY: 'hidden', overscrollBehaviorX: 'contain', overscrollBehaviorY: 'contain', padding: isNarrow ? '8px 14px 16px' : '8px 20px 16px', position: 'relative', zIndex: 1 }} className="no-scrollbar">
@@ -1876,7 +1859,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
 
       {watchlist.length > 0 && (
         <section className="glass-panel section-reveal section-reveal-delay-1" style={{ marginBottom: '32px', padding: 0, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px 12px', position: 'relative', zIndex: 0 }}>
+          <div className="home-carousel-header">
             <SectionHeading glyph="watchlist" onClick={handleNavigateWatchlist} title="查看全部待看归档">待看归档</SectionHeading>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <button
@@ -1939,7 +1922,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
 
       {randomsLoading ? (
         <section className="glass-panel section-reveal section-reveal-delay-2" style={{ marginBottom: '40px', padding: 0, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: isNarrow ? '12px 14px' : '12px 20px', height: '50px', minHeight: '50px', boxSizing: 'border-box', position: 'relative', zIndex: 0 }}>
+          <div className="home-carousel-header">
             <SectionHeading glyph="random">随机漫游</SectionHeading>
             <button className="btn" onClick={() => fetchRandoms({ preferFresh: true })} disabled={randomsRefreshing} style={{ padding: '6px 14px', fontSize: '12px', opacity: randomsRefreshing ? 0.72 : 1 }}>刷新</button>
           </div>
@@ -1951,7 +1934,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
         </section>
       ) : randoms.length > 0 ? (
         <section className="glass-panel section-reveal section-reveal-delay-2" style={{ marginBottom: '40px', padding: 0, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: isNarrow ? '12px 14px' : '12px 20px', height: '50px', minHeight: '50px', boxSizing: 'border-box', position: 'relative', zIndex: 0 }}>
+          <div className="home-carousel-header">
             <SectionHeading glyph="random">随机漫游</SectionHeading>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <button className="btn" onClick={() => fetchRandoms({ preferFresh: true })} disabled={randomsRefreshing} style={{ padding: '6px 14px', fontSize: '12px', opacity: randomsRefreshing ? 0.72 : 1 }}>刷新</button>
@@ -1974,7 +1957,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
         </section>
       ) : (
         <section className="glass-panel section-reveal section-reveal-delay-2" style={{ marginBottom: '40px', padding: 0, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: isNarrow ? '12px 14px' : '12px 20px', height: '50px', minHeight: '50px', boxSizing: 'border-box', position: 'relative', zIndex: 0 }}>
+          <div className="home-carousel-header">
             <SectionHeading glyph="random">随机漫游</SectionHeading>
             <button className="btn" onClick={() => fetchRandoms({ preferFresh: true })} disabled={randomsRefreshing} style={{ padding: '6px 14px', fontSize: '12px', opacity: randomsRefreshing ? 0.72 : 1 }}>{randomsRefreshing ? '刷新中' : '刷新'}</button>
           </div>
@@ -2040,6 +2023,9 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
               <input
                 ref={filterInputRef}
                 type="text"
+                name="archive-search"
+                autoComplete="off"
+                aria-label="搜索标签或标题"
                 className="input-glass"
                 style={{ width: '100%', boxSizing: 'border-box', paddingRight: filter.query ? '66px' : '38px' }}
                 placeholder={filter.active ? `筛选: ${filter.query}` : '搜索标签或标题... 按回车筛选'}
@@ -2094,56 +2080,41 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
                 />
               )}
               {showPresets && (
-                <div className="dropdown-animate" style={{
-                  position: 'absolute',
-                  left: 0,
-                  right: 0,
-                  top: 'calc(100% + 8px)',
-                  zIndex: 50,
-                  background: 'var(--dropdown-bg)',
-                  backdropFilter: 'blur(18px)',
-                  WebkitBackdropFilter: 'blur(18px)',
-                  borderRadius: '10px',
-                  padding: '14px',
-                  border: '1px solid rgba(255,255,255,0.08)',
-                  boxShadow: '0 14px 42px rgba(0,0,0,0.42)',
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                    <span style={{ fontSize: '13px', color: 'var(--text-sub)' }}>已保存的筛选方案</span>
-                    <button className="btn" style={{ padding: '5px 10px', fontSize: '11px' }} onClick={savePreset}>
+                <div className="archive-search-presets dropdown-animate">
+                  <div className="archive-search-preset-heading">
+                    <span>已保存的筛选方案</span>
+                    <button className="btn" onClick={savePreset}>
                       + 保存当前筛选
                     </button>
                   </div>
                   {presets.length === 0 ? (
-                    <div style={{ fontSize: '12px', color: 'var(--text-sub)', padding: '8px 0' }}>
+                    <div className="archive-search-empty">
                       暂无预设。设置筛选条件后点击「保存当前筛选」。
                     </div>
                   ) : (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                    <div className="archive-search-preset-list">
                       {presets.map(p => (
-                        <div key={p.name} style={{
-                          display: 'flex', alignItems: 'center', gap: '4px',
-                          background: 'rgba(255,255,255,0.06)', borderRadius: '8px',
-                          padding: '6px 10px', border: '1px solid rgba(255,255,255,0.1)'
-                        }}>
+                        <div key={p.name} className="archive-search-preset-row">
                           <button
-                            className="btn"
-                            style={{ padding: '4px 10px', fontSize: '12px', border: 'none', background: 'transparent' }}
+                            className="archive-search-preset-apply"
                             onClick={() => loadPreset(p)}
                             title={`${p.query} / ${p.sortBy} / ${p.order}`}
                           >
                             {p.name}
                           </button>
                           <button
-                            onClick={() => deletePreset(p.name)}
-                            style={{
-                              background: 'transparent', border: 'none', color: '#888',
-                              cursor: 'pointer', fontSize: '14px', padding: '0 4px', lineHeight: 1
-                            }}
-                            title="删除此预设"
+                            type="button"
+                            className="archive-search-preset-edit"
+                            onClick={() => setEditingPreset(current => current === p.name ? '' : p.name)}
+                            aria-label={`编辑 ${p.name}`}
+                            aria-expanded={editingPreset === p.name}
                           >
-                            ✕
+                            <ToolbarGlyph name="edit" size={16} />
                           </button>
+                          {editingPreset === p.name && <div className="archive-search-preset-actions dropdown-animate">
+                            <button type="button" onClick={() => { setPresetNameDialog({ mode: 'rename', value: p.name }); setEditingPreset(''); }}>重命名</button>
+                            <button type="button" className="is-danger" onClick={() => { setPresetDeleteTarget(p.name); setEditingPreset(''); }}>删除</button>
+                          </div>}
                         </div>
                       ))}
                     </div>
@@ -2204,7 +2175,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           </div>
         )}
 
-        <div ref={gridRef} className="archive-grid" data-refresh-phase={archiveRefreshPhase} aria-busy={archivesRefreshing} style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: isNarrow ? '10px' : '16px' }}>
+        <div ref={gridRef} className="archive-grid" data-refresh-phase={archiveRefreshPhase} aria-busy={archivesRefreshing} style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: isNarrow ? '10px' : '16px', '--archive-grid-half-gap': isNarrow ? '5px' : '8px' }}>
           {archives.length === 0 && loading ? (
             Array.from({ length: 12 }).map((_, i) => <SkeletonCard key={`gsk-${i}`} />)
           ) : (
@@ -2302,19 +2273,19 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           </div>
 
           <div className="settings-section">
-            <div className="settings-section-title">EH 评论区</div>
+            <div className="settings-section-title">E-Hentai 评论区</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <label className="settings-row">
-                <SettingHint text="在阅读器里加载来源画廊的评论，需要可访问 EH/EX 的 Cookie。">启用 EH 评论区</SettingHint>
-                <ToggleSwitch checked={readerSettings.ehEnabled} onChange={() => updateReaderSettings((s) => ({ ...s, ehEnabled: !s.ehEnabled }))} label="启用 EH 评论区" />
+                <SettingHint text="在阅读器里加载来源画廊的评论，需要可访问 E-Hentai 的 Cookie。">启用 E-Hentai 评论区</SettingHint>
+                <ToggleSwitch checked={readerSettings.ehEnabled} onChange={() => updateReaderSettings((s) => ({ ...s, ehEnabled: !s.ehEnabled }))} label="启用 E-Hentai 评论区" />
               </label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <SettingHint className="settings-field-label" text="至少需要能访问目标画廊的 Cookie；同步删除收藏夹还需要 ipb_member_id 与 ipb_pass_hash。">EH Cookie</SettingHint>
+                <SettingHint className="settings-field-label" text="至少需要能访问目标画廊的 Cookie；同步删除收藏夹还需要 ipb_member_id 与 ipb_pass_hash。">E-Hentai Cookie</SettingHint>
                 <span className="secret-input-shell" data-secret={readerSettings.ehCookie || ''}>
-                  <input type="text" className="input-glass secret-input"
+                  <input type="text" name="e-hentai-cookie" autoComplete="off" spellCheck={false} aria-label="E-Hentai Cookie" className="input-glass secret-input"
                     value={readerSettings.ehCookie || ''}
                     onChange={(e) => updateReaderSettings((s) => ({ ...s, ehCookie: e.target.value }))}
-                    placeholder="igneous=...; ipb_member_id=...; ipb_pass_hash=..."
+                    placeholder="igneous=…; ipb_member_id=…; ipb_pass_hash=…"
                     style={{ padding: '8px 10px', fontSize: '12px', width: '100%', boxSizing: 'border-box' }}
                   />
                 </span>
@@ -2377,8 +2348,8 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           </div>
 
           <div className="settings-row">
-            <SettingHint text={ehFavoriteSyncReady ? '删除归档时同步移除 source 指向的 EH/EX 收藏；删除弹窗里仍可单次取消。' : '需要先配置 Worker、访问 Token，以及包含 ipb_member_id / ipb_pass_hash 的 EH Cookie。'}>同步删除 E 站收藏夹</SettingHint>
-            <ToggleSwitch checked={ehFavoriteDeleteSync && ehFavoriteSyncReady} onChange={handleToggleEhFavoriteDeleteSync} disabled={!ehFavoriteSyncReady} label="同步删除 E 站收藏夹" />
+            <SettingHint text={ehFavoriteSyncReady ? '删除归档时同步移除 source 指向的 E-Hentai 收藏；删除弹窗里仍可单次取消。' : '需要先配置 Worker、访问 Token，以及包含 ipb_member_id / ipb_pass_hash 的 E-Hentai Cookie。'}>同步删除 E-Hentai 收藏夹</SettingHint>
+            <ToggleSwitch checked={ehFavoriteDeleteSync && ehFavoriteSyncReady} onChange={handleToggleEhFavoriteDeleteSync} disabled={!ehFavoriteSyncReady} label="同步删除 E-Hentai 收藏夹" />
           </div>
 
           <div className="settings-section">
@@ -2386,10 +2357,10 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               <div>
                 <SettingHint className="settings-field-label" text="用于多设备同步阅读历史、待看和删除收藏夹等 Worker 功能。">Cloudflare Worker 端点</SettingHint>
-                <input type="text" className="input-glass"
+                <input type="url" inputMode="url" name="worker-url" autoComplete="off" spellCheck={false} aria-label="Cloudflare Worker 端点" className="input-glass"
                   value={cfgWorkerUrl}
                   onChange={(e) => setCfgWorkerUrl(e.target.value)}
-                  placeholder="https://lrr-sync.xxx.workers.dev"
+                  placeholder="https://lrr-sync.example.workers.dev"
                   style={{ padding: '8px 12px', fontSize: '13px' }}
                 />
               </div>
@@ -2397,7 +2368,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
               <div>
                 <SettingHint className="settings-field-label" text="同一 Token 下的设备会共享同步数据；Token 需要预先写入 Worker KV 的 tokens 字段。">访问 Token</SettingHint>
                 <span className="secret-input-shell" data-secret={cfgSyncToken}>
-                  <input type="text" className="input-glass secret-input"
+                  <input type="text" name="sync-token" autoComplete="off" spellCheck={false} aria-label="访问 Token" className="input-glass secret-input"
                     value={cfgSyncToken}
                     onChange={(e) => setCfgSyncToken(e.target.value)}
                     placeholder="需与 KV 空间 tokens 字段中的 Token 保持一致"
@@ -2443,6 +2414,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
                   setReaderSettings(readReaderSettings());
                   setEhFavoriteDeleteSyncState(getEhFavoriteDeleteSync());
                   alert(`已导入 ${count} 项配置`);
+                  window.location.reload();
                 } catch (e) {
                   alert(e.message || '导入失败');
                 }
@@ -2509,6 +2481,27 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
         <EhFavoriteDeleteSwitch checked={bulkDeleteSyncConfirmed} onChange={setBulkDeleteSyncConfirmed} disabled={archiveDeleting} />
       )}
     </ConfirmDialog>
+    <TextInputDialog
+      open={!!presetNameDialog}
+      title={presetNameDialog?.mode === 'rename' ? '重命名筛选方案' : '为当前筛选方案命名'}
+      initialValue={presetNameDialog?.value || ''}
+      onCancel={() => setPresetNameDialog(null)}
+      onConfirm={(name) => {
+        setPresets(presetNameDialog?.mode === 'rename'
+          ? renameFilterPreset(presetNameDialog.value, name)
+          : saveFilterPreset({ name, query: filter.query, sortBy: filter.sortBy, order: filter.order }));
+        setPresetNameDialog(null);
+      }}
+    />
+    <ConfirmDialog
+      open={!!presetDeleteTarget}
+      title="删除筛选方案"
+      message={presetDeleteTarget ? `将删除“${presetDeleteTarget}”。` : ''}
+      confirmLabel="删除"
+      cancelLabel="取消"
+      onCancel={() => setPresetDeleteTarget('')}
+      onConfirm={() => { setPresets(deleteFilterPreset(presetDeleteTarget)); setPresetDeleteTarget(''); }}
+    />
     <ConfirmDialog
       open={!!historyDeleteTarget}
       title="确认删除阅读记录"

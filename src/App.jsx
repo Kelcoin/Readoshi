@@ -108,13 +108,12 @@ export default function App() {
   };
 
   const handleExportConfig = () => {
-    let cfg = {};
-    try { cfg = JSON.parse(atob(exportConfig())); } catch {}
-    if (tempConfig.url) cfg.lrr_server_url = tempConfig.url;
-    if (tempConfig.key) cfg.lrr_api_key = tempConfig.key;
-    if (tempConfig.workerUrl) cfg.lrr_worker_url = tempConfig.workerUrl;
-    if (tempConfig.syncToken) cfg.lrr_sync_token = tempConfig.syncToken;
-    const encoded = btoa(JSON.stringify(cfg));
+    const encoded = exportConfig({
+      lrr_server_url: tempConfig.url,
+      lrr_api_key: tempConfig.key,
+      lrr_worker_url: tempConfig.workerUrl,
+      lrr_sync_token: tempConfig.syncToken,
+    });
     navigator.clipboard.writeText(encoded).then(() => {
       alert('配置已复制到剪贴板。在其他设备粘贴导入即可。');
     }).catch(() => {
@@ -136,6 +135,9 @@ export default function App() {
         syncToken: getSyncToken(),
       };
       setTempConfig(next);
+      const nextThemeMode = readStoredThemeMode();
+      applyThemeMode(nextThemeMode);
+      setThemeMode(nextThemeMode);
       alert(`已导入 ${count} 项配置`);
     } catch (err) {
       setLoginError(err.message || '导入失败');
@@ -154,27 +156,27 @@ export default function App() {
             </div>
             
             <div>
-              <label className="field-label">服务器地址 *</label>
-              <input type="text" className="input-glass" placeholder="如 http://192.168.1.10:3000" value={tempConfig.url} onChange={e => setTempConfig({...tempConfig, url: e.target.value})} required />
+              <label className="field-label" htmlFor="server-url">服务器地址 *</label>
+              <input id="server-url" name="server-url" type="url" inputMode="url" autoComplete="url" spellCheck={false} className="input-glass" placeholder="如 http://192.168.1.10:3000" value={tempConfig.url} onChange={e => setTempConfig({...tempConfig, url: e.target.value})} required />
             </div>
             
             <div>
-              <label className="field-label">API Key *</label>
-              <input type="password" className="input-glass" placeholder="在 LRR 设置页面获取" value={tempConfig.key} onChange={e => setTempConfig({...tempConfig, key: e.target.value})} required />
+              <label className="field-label" htmlFor="api-key">API Key *</label>
+              <input id="api-key" name="api-key" type="password" autoComplete="off" spellCheck={false} className="input-glass" placeholder="在 LRR 设置页面获取" value={tempConfig.key} onChange={e => setTempConfig({...tempConfig, key: e.target.value})} required />
             </div>
 
             <div style={{ borderTop: '1px solid var(--glass-border)', paddingTop: '14px' }}>
               <div style={{ fontSize: '13px', color: 'var(--text-sub)', marginBottom: '12px', padding: '0 4px' }}>Worker 设置</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                 <div>
-                  <label className="field-label">Cloudflare Worker 端点</label>
-                  <input type="text" className="input-glass" placeholder="https://lrr-sync.xxx.workers.dev" value={tempConfig.workerUrl} onChange={e => setTempConfig({...tempConfig, workerUrl: e.target.value})} />
+                  <label className="field-label" htmlFor="worker-url">Cloudflare Worker 端点</label>
+                  <input id="worker-url" name="worker-url" type="url" inputMode="url" autoComplete="off" spellCheck={false} className="input-glass" placeholder="https://lrr-sync.example.workers.dev" value={tempConfig.workerUrl} onChange={e => setTempConfig({...tempConfig, workerUrl: e.target.value})} />
                 </div>
 
                 <div>
-                  <label className="field-label">访问 Token</label>
+                  <label className="field-label" htmlFor="sync-token">访问 Token</label>
                   <span className="secret-input-shell" data-secret={tempConfig.syncToken}>
-                    <input type="text" className="input-glass secret-input" placeholder="需与 KV 空间 tokens 字段中的 Token 保持一致" value={tempConfig.syncToken} onChange={e => setTempConfig({...tempConfig, syncToken: e.target.value})} />
+                    <input id="sync-token" name="sync-token" type="text" autoComplete="off" spellCheck={false} className="input-glass secret-input" placeholder="需与 KV 空间 tokens 字段中的 Token 保持一致" value={tempConfig.syncToken} onChange={e => setTempConfig({...tempConfig, syncToken: e.target.value})} />
                   </span>
                 </div>
               </div>
@@ -190,7 +192,7 @@ export default function App() {
             </div>
 
             <button type="submit" className="btn" style={{ marginTop: '8px', padding: '12px', background: 'linear-gradient(180deg, rgba(88,183,255,0.36), rgba(88,183,255,0.18))', borderColor: 'rgba(141,216,255,0.58)' }} disabled={loginLoading}>
-              {loginLoading ? '正在验证连接...' : '开始阅读'}
+              {loginLoading ? '正在验证连接…' : '开始阅读'}
             </button>
 
             {loginError && (

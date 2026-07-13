@@ -510,6 +510,7 @@ function ReaderArchiveListPanel({ type, title, items, emptyMessage, cacheOnly, o
           {[
             ['history', '阅读历史'],
             ['watchlist', '待看归档'],
+            ['random', '随机漫游'],
           ].map(([value, label]) => (
             <button
               key={value}
@@ -546,6 +547,15 @@ function ReaderArchiveListPanel({ type, title, items, emptyMessage, cacheOnly, o
               <div
                 key={id}
                 onClick={() => navigateToArchive(id)}
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget) return;
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    navigateToArchive(id);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
                 className="reader-archive-list-item"
                 style={{
                   display: 'flex', gap: '10px', alignItems: 'center',
@@ -576,7 +586,7 @@ function ReaderArchiveListPanel({ type, title, items, emptyMessage, cacheOnly, o
                     <div style={{ fontSize: '10px', color: 'var(--accent)', marginTop: '2px' }}>{meta.progress}</div>
                   )}
                 </div>
-                <button
+                {onDelete && <button
                   type="button"
                   onClick={(event) => {
                     event.stopPropagation();
@@ -590,7 +600,7 @@ function ReaderArchiveListPanel({ type, title, items, emptyMessage, cacheOnly, o
                   aria-label={type === 'watchlist' ? `将${item.title || '归档'}移出待看` : `删除${item.title || '归档'}的历史记录`}
                 >
                   ×
-                </button>
+                </button>}
               </div>
             );
           })}
@@ -929,6 +939,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const [showSettingsPanel, setShowSettingsPanel] = useState(false);
   const [showArchivePanel, setShowArchivePanel] = useState(false);
   const [archivePanelType, setArchivePanelType] = useState('history');
+  const [randomEntries, setRandomEntries] = useState([]);
+  const [randomEntriesLoading, setRandomEntriesLoading] = useState(false);
   const [historyDeleteTarget, setHistoryDeleteTarget] = useState(null);
   const [coverSetting, setCoverSetting] = useState(false);
   const [coverSetPage, setCoverSetPage] = useState(0);
@@ -2217,11 +2229,30 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const archivePanel = getReaderArchivePanelModel(archivePanelType, {
     historyItems: historyList,
     watchlistItems: watchlistEntries,
+    randomItems: randomEntries,
     historyEmptyMessage: hideRead && historyEntries.length > 0 ? '所有归档均已读完' : '暂无阅读历史',
     watchlistEmptyMessage: '暂无待看归档',
+    randomEmptyMessage: randomEntriesLoading ? '正在获取随机归档…' : '暂无随机漫游结果',
     removeHistory: setHistoryDeleteTarget,
     removeWatchlist: handleRemoveWatchlist,
   });
+
+  useEffect(() => {
+    if (!showArchivePanel || archivePanelType !== 'random') return undefined;
+    let active = true;
+    setRandomEntriesLoading(true);
+    lrrApi.getRandom(16)
+      .then((response) => {
+        if (active) setRandomEntries(Array.isArray(response?.data) ? response.data : []);
+      })
+      .catch(() => {
+        if (active) setRandomEntries([]);
+      })
+      .finally(() => {
+        if (active) setRandomEntriesLoading(false);
+      });
+    return () => { active = false; };
+  }, [archivePanelType, showArchivePanel]);
 
   useEffect(() => {
     if (viewMode !== 'immersive') return;
@@ -2491,10 +2522,10 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                 style={{ ...btnBase, opacity: readerReady ? 1 : 0.45, cursor: readerReady ? 'pointer' : 'not-allowed' }}
                 data-panel-toggle
                 onClick={() => { if (readerReady) { setShowArchivePanel((visible) => !visible); setShowSettingsPanel(false); } }}
-                title="查看阅读历史和待看归档"
-                aria-label="查看阅读历史和待看归档"
+                title="快速跳转"
+                aria-label="打开快速跳转"
               >
-                <ReaderToolbarButtonContent icon="history" label="归档列表" />
+                <ReaderToolbarButtonContent icon="quickJump" label="快速跳转" />
               </button>
             )}
           </div>
@@ -2978,13 +3009,15 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid var(--reader-control-border)', paddingBottom: '12px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0 }}>
               <h3 style={{ margin: 0, fontSize: '18px' }}>归档信息</h3>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <button className="reader-drawer-icon-button" onClick={() => navigateToMetadata(archiveId)} title="编辑元数据" aria-label="编辑元数据">
                 <ToolbarGlyph name="metadata" size={18} />
               </button>
+              <button className="reader-drawer-icon-button" onClick={() => setShowDrawer(false)} aria-label="关闭缩略面板" title="关闭缩略面板" style={{ fontSize: '20px' }}>
+                ✕
+              </button>
             </div>
-            <button className="reader-drawer-icon-button" onClick={() => setShowDrawer(false)} aria-label="关闭缩略面板" title="关闭缩略面板" style={{ fontSize: '20px' }}>
-              ✕
-            </button>
           </div>
 
           <div style={{ marginBottom: '20px', background: 'var(--surface-2)', borderRadius: '8px', display: 'flex', flexDirection: 'column', maxHeight: '35%', flexShrink: 0 }}>
