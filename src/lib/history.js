@@ -1,11 +1,13 @@
 import { getSyncToken, getWorkerUrl } from './worker-config';
 import { decorateArchiveRecord, hydrateArchiveRecords, rememberArchiveMetadata } from './archiveMetadataCache';
 import { loadServerInfo } from './serverInfoCache';
+import { mergeCachedHistoryProgress, mergeHistoryProgressCache } from './historyProgressCache';
 
 const LOCAL_HISTORY_KEY = 'lrr_history';
 const LOCAL_HIDE_READ_KEY = 'lrr_hide_read';
 const REMOTE_HISTORY_CACHE_KEY = 'lrr_history_remote_cache';
 const REMOTE_HIDE_READ_CACHE_KEY = 'lrr_hide_read_remote_cache';
+const HISTORY_PROGRESS_CACHE_KEY = 'lrr_history_progress_cache';
 const CROP_COVER_KEY = 'lrr_crop_cover';
 const ARCHIVE_BROWSE_MODE_KEY = 'lrr_archive_browse_mode';
 const REMOTE_LOAD_TTL_MS = 30 * 1000;
@@ -71,8 +73,22 @@ function activeHideReadKey() {
 }
 
 function writeHistoryCache(list, { notify = true } = {}) {
-  localStorage.setItem(activeHistoryKey(), JSON.stringify(sortHistoryByTime(list)));
+  const histories = sortHistoryByTime(list);
+  localStorage.setItem(activeHistoryKey(), JSON.stringify(histories));
+  writeHistoryProgressCache(histories);
   if (notify) emitHistoryChanged();
+}
+
+function readHistoryProgressCache() {
+  return safeReadJson(HISTORY_PROGRESS_CACHE_KEY, {});
+}
+
+function writeHistoryProgressCache(items) {
+  const merged = mergeHistoryProgressCache(readHistoryProgressCache(), items);
+  const entries = Object.entries(merged)
+    .sort(([, a], [, b]) => (b.time || 0) - (a.time || 0))
+    .slice(0, 500);
+  localStorage.setItem(HISTORY_PROGRESS_CACHE_KEY, JSON.stringify(Object.fromEntries(entries)));
 }
 
 function writeHideReadCache(v) {
@@ -168,7 +184,8 @@ function archiveToHistoryItem(archive, page) {
 }
 
 function getStoredHistory() {
-  return sortHistoryByTime(safeReadJson(activeHistoryKey(), []));
+  const histories = sortHistoryByTime(safeReadJson(activeHistoryKey(), []));
+  return mergeCachedHistoryProgress(histories, readHistoryProgressCache());
 }
 
 export const getHistory = () => getStoredHistory().map(decorateArchiveRecord).filter(Boolean);
@@ -183,7 +200,7 @@ async function loadHistoryStateNow({ force = false } = {}) {
 
   if (remote && (force || remoteLoadedScope !== scope || !remoteLoadedAt || Date.now() - remoteLoadedAt >= REMOTE_LOAD_TTL_MS)) {
     const data = await workerJson('/history');
-    histories = sortHistoryByTime(data?.histories || []);
+    histories = mergeCachedHistoryProgress(sortHistoryByTime(data?.histories || []), readHistoryProgressCache());
     hideRead = !!data?.hideRead;
     retentionDays = data?.retentionDays || 0;
     localStorage.setItem(REMOTE_HISTORY_CACHE_KEY, JSON.stringify(histories));
@@ -221,6 +238,7 @@ async function loadHistoryStateNow({ force = false } = {}) {
       }
     }
   } catch {}
+  writeHistoryProgressCache(resultItems);
   emitHistoryChanged();
   return { histories: resultItems, hideRead, remote, retentionDays };
 }

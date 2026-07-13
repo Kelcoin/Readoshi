@@ -5,6 +5,7 @@ import { navigateHome, navigateToArchive } from '../lib/navigation';
 import CustomSelect from '../components/CustomSelect';
 import TagSuggest from '../components/TagSuggest';
 import ConfirmDialog from '../components/ConfirmDialog';
+import MetadataTagChip from '../components/MetadataTagChip';
 import EhFavoriteDeleteSwitch from '../components/EhFavoriteDeleteSwitch';
 import { getEhFavoriteDeleteSync } from '../lib/ehFavoriteSync';
 import { deleteArchiveWithFavoriteSync } from '../lib/archiveDeletion';
@@ -24,7 +25,7 @@ export default function MetadataPage({ archiveId }) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteSync, setDeleteSync] = useState(true);
   const [deleting, setDeleting] = useState(false);
-  const [hoveredTag, setHoveredTag] = useState('');
+  const [revealedTag, setRevealedTag] = useState('');
   const tagInputRef = useRef(null);
   const dirty = useMemo(() => baseline && metadataFingerprint({ ...form, tags: form.tags.join(',') }) !== baseline, [baseline, form]);
 
@@ -69,11 +70,11 @@ export default function MetadataPage({ archiveId }) {
       <label className="metadata-field">摘要<textarea className="input-glass" style={{ ...field, minHeight: 110 }} value={form.summary} onChange={e => setForm({ ...form, summary: e.target.value })} /></label>
       <div className="metadata-tag-field"><div style={{ marginBottom: 10 }}>标签</div>
         <div ref={tagInputRef} style={{ position: 'relative', marginBottom: 10 }}><input className="input-glass" style={field} value={tagInput} placeholder="输入中文、拼音或标签，按回车/逗号添加" onChange={e => { const value = e.target.value; if (value.includes(',')) addTags(value); else setTagInput(value); }} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addTags(tagInput); } else if (e.key === 'Backspace' && !tagInput && form.tags.length) setForm({ ...form, tags: form.tags.slice(0, -1) }); }} /><TagSuggest inputValue={tagInput} containerRef={tagInputRef} onSelectTag={(tag) => addTags(tag.replace(/\$$/, ''))} /></div>
-        <div className="metadata-tags-box">{form.tags.map(tag => <span key={tag} className="btn metadata-tag" onMouseEnter={() => setHoveredTag(tag)} onMouseLeave={() => setHoveredTag('')} onClick={async () => { try { await navigator.clipboard.writeText(tag); setStatus(`已复制标签：${tag}`); } catch { setStatus('复制标签失败'); } }} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', minHeight: 34, gap: 7, cursor: 'copy' }}><span style={{ display: 'grid', alignItems: 'center' }}><span style={{ gridArea: '1 / 1', visibility: hoveredTag === tag ? 'hidden' : 'visible' }}>{formatMetadataTag(tag, translateTag)}</span><span style={{ gridArea: '1 / 1', visibility: hoveredTag === tag ? 'visible' : 'hidden' }}>{tag}</span></span><button type="button" aria-label={`删除 ${tag}`} title="删除标签" onClick={(event) => { event.stopPropagation(); setForm({ ...form, tags: form.tags.filter(item => item !== tag) }); }} style={{ border: 0, background: 'transparent', color: 'var(--text-sub)', cursor: 'pointer', padding: 0, fontSize: 15 }}>×</button></span>)}</div>
+        <div className="metadata-tags-box">{form.tags.map(tag => <MetadataTagChip key={tag} tag={tag} translatedTag={formatMetadataTag(tag, translateTag)} revealed={revealedTag === tag} onReveal={() => setRevealedTag(tag)} onHide={() => setRevealedTag(current => current === tag ? '' : current)} onToggle={() => setRevealedTag(current => current === tag ? '' : tag)} onCopy={async () => { try { await navigator.clipboard.writeText(tag); setStatus(`已复制标签：${tag}`); } catch { setStatus('复制标签失败'); } }} onDelete={() => { setRevealedTag(current => current === tag ? '' : current); setForm({ ...form, tags: form.tags.filter(item => item !== tag) }); }} />)}</div>
       </div>
       <div className="metadata-plugin-row"><CustomSelect value={plugin} options={plugins} onChange={setPlugin} /><input className="input-glass" value={pluginArg} onChange={e => setPluginArg(e.target.value)} placeholder="插件参数或 URL" /><button className="btn" onClick={runPlugin}>执行插件</button></div>
       {status && <div style={{ color: 'var(--text-sub)' }}>{status}</div>}
-      <div style={{ display: 'flex', justifyContent: 'center', flexWrap: 'wrap', gap: 14 }}><button className="btn" onClick={() => navigateToArchive(archiveId)}>阅读归档</button><button className="btn" onClick={() => { setDeleteSync(true); setDeleteOpen(true); }} style={{ color: '#ff9e9e' }}>删除归档</button><button className="btn" onClick={save}>保存元数据</button><button className="btn" onClick={() => { if (window.history.length > 1) window.history.back(); else navigateHome(); }}>返回</button></div>
+      <div style={{ display: 'flex', justifyContent: 'center', flexWrap: 'wrap', gap: 14 }}><button className="btn" onClick={() => navigateToArchive(archiveId)}>阅读归档</button><button className="btn metadata-delete-button" onClick={() => { setDeleteSync(true); setDeleteOpen(true); }}>删除归档</button><button className="btn" onClick={save}>保存元数据</button><button className="btn" onClick={() => { if (window.history.length > 1) window.history.back(); else navigateHome(); }}>返回</button></div>
     </section>
     <ConfirmDialog open={deleteOpen} title="确认删除归档" message={`将永久删除“${archive.title}”。`} confirmLabel={deleting ? '删除中…' : '确认删除'} confirmDisabled={deleting} onCancel={() => !deleting && setDeleteOpen(false)} onConfirm={async () => { setDeleting(true); try { await deleteArchiveWithFavoriteSync({ ...archive, id: archiveId }, { syncEnabled: getEhFavoriteDeleteSync(), confirmationEnabled: deleteSync }); navigateHome(); } catch (error) { setStatus(error.message); setDeleting(false); } }}>
       {getEhFavoriteDeleteSync() && <EhFavoriteDeleteSwitch checked={deleteSync} onChange={setDeleteSync} disabled={deleting} />}

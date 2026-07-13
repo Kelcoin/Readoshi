@@ -626,8 +626,8 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
           )}
         </div>
         {showProgress && (
-          <div style={{ width: '100%', height: '3px', background: 'rgba(255,255,255,0.08)', borderRadius: '2px', marginTop: '4px' }}>
-            <div style={{ width: `${Math.min(progressPct, 100)}%`, height: '100%', background: 'var(--accent)', borderRadius: '2px', transition: 'width 0.3s ease' }} />
+          <div className="archive-card-progress" role="progressbar" aria-label="阅读进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.min(progressPct, 100)}>
+            <div className="archive-card-progress-fill" style={{ width: `${Math.min(progressPct, 100)}%` }} />
           </div>
         )}
         {/* 标题 */}

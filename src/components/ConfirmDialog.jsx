@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useId, useRef } from 'react';
 import { createPortal } from 'react-dom';
 
 export default function ConfirmDialog({
@@ -13,20 +13,27 @@ export default function ConfirmDialog({
   confirmDisabled = false,
   children,
 }) {
+  const titleId = useId();
+  const dialogRef = useRef(null);
+
   useEffect(() => {
     if (!open) return undefined;
 
     const prevOverflow = document.body.style.overflow;
+    const previouslyFocused = document.activeElement;
     const handleKeyDown = (event) => {
       if (event.key === 'Escape') onCancel?.();
     };
 
     document.body.style.overflow = 'hidden';
     window.addEventListener('keydown', handleKeyDown);
+    const focusFrame = requestAnimationFrame(() => dialogRef.current?.querySelector('[data-dialog-cancel]')?.focus());
 
     return () => {
+      cancelAnimationFrame(focusFrame);
       document.body.style.overflow = prevOverflow;
       window.removeEventListener('keydown', handleKeyDown);
+      if (previouslyFocused instanceof HTMLElement && document.contains(previouslyFocused)) previouslyFocused.focus();
     };
   }, [onCancel, open]);
 
@@ -34,74 +41,42 @@ export default function ConfirmDialog({
 
   return createPortal(
     <div
+      className="confirm-dialog-overlay"
       data-dialog-overlay
       onClick={onCancel}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 200000,
-        background: 'rgba(0,0,0,0.58)',
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '20px',
-        userSelect: 'none',
-        WebkitUserSelect: 'none',
-        WebkitTouchCallout: 'none',
-      }}
     >
       <div
-        className="glass-panel dropdown-animate"
+        ref={dialogRef}
+        className="glass-panel dropdown-animate confirm-dialog"
         data-dialog-root
-        role="dialog"
+        role={destructive ? 'alertdialog' : 'dialog'}
         aria-modal="true"
+        aria-labelledby={titleId}
         onClick={(event) => event.stopPropagation()}
-        style={{
-          width: '100%',
-          maxWidth: '420px',
-          padding: '26px 24px 22px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '14px',
-          userSelect: 'none',
-          WebkitUserSelect: 'none',
-          WebkitTouchCallout: 'none',
-        }}
       >
-        <div style={{ fontSize: '20px', fontWeight: 700, color: '#e3e9f3' }}>
+        <div className="confirm-dialog-title" id={titleId}>
           {title}
         </div>
         {message && (
-          <div style={{ fontSize: '13px', lineHeight: 1.7, color: 'var(--text-sub)', userSelect: 'none', WebkitUserSelect: 'none' }}>
+          <div className="confirm-dialog-message">
             {message}
           </div>
         )}
         {children}
-        <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
+        <div className="confirm-dialog-actions">
           <button
             type="button"
             className="btn"
+            data-dialog-cancel
             onClick={onCancel}
-            style={{ flex: 1, padding: '10px 14px' }}
           >
             {cancelLabel}
           </button>
           <button
             type="button"
-            className="btn"
+            className={`btn confirm-dialog-confirm${destructive ? ' is-destructive' : ''}`}
             onClick={onConfirm}
             disabled={confirmDisabled}
-            style={{
-              flex: 1,
-              padding: '10px 14px',
-              background: destructive ? 'rgba(244,67,54,0.18)' : undefined,
-              borderColor: destructive ? 'rgba(244,67,54,0.32)' : undefined,
-              color: destructive ? '#ffd2d0' : undefined,
-              opacity: confirmDisabled ? 0.55 : undefined,
-              cursor: confirmDisabled ? 'not-allowed' : undefined,
-            }}
           >
             {confirmLabel}
           </button>
