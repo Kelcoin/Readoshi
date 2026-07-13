@@ -48,6 +48,8 @@ const FILTER_INPUT_MIN_WIDTH = 400;
 const FILTER_ACTIONS_MIN_WIDTH = 320;
 const FILTER_LAYOUT_GAP = 12;
 const FILTER_STACK_BREAKPOINT = FILTER_INPUT_MIN_WIDTH + FILTER_ACTIONS_MIN_WIDTH + FILTER_LAYOUT_GAP;
+const UNTAGGED_CATEGORY_ID = '__untagged__';
+const UNTAGGED_CATEGORY = Object.freeze({ id: UNTAGGED_CATEGORY_ID, name: '无标签' });
 
 function readFilter() {
   try {
@@ -996,26 +998,65 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
 
   const doFetch = useCallback(async (isReset, options = {}) => {
     const mode = options.modeOverride || archiveBrowseMode;
-    const { background = false, force = false, clearSearchCache = false, filterOverride = null, pageIndex = mode === ARCHIVE_BROWSE_MODES.paged ? archivePage : 0 } = options;
+    const {
+      background = false,
+      force = false,
+      clearSearchCache = false,
+      filterOverride = null,
+      pageIndex = mode === ARCHIVE_BROWSE_MODES.paged ? archivePage : 0,
+      selectedCategoryOverride = selectedCategory,
+    } = options;
     const effectiveFilter = filterOverride || filter;
+    const isUntaggedMode = selectedCategoryOverride?.id === UNTAGGED_CATEGORY_ID;
     exitColdRestoreMode();
     const now = Date.now();
     const isPagedMode = mode === ARCHIVE_BROWSE_MODES.paged;
     const requestedPage = clampArchivePage(pageIndex, archiveTotal);
-    const filterKey = `${effectiveFilter.query}|${effectiveFilter.sortBy}|${effectiveFilter.order}|${effectiveFilter.active}|${mode}|${isPagedMode ? requestedPage : 'scroll'}`;
+    const filterKey = `${isUntaggedMode ? UNTAGGED_CATEGORY_ID : ''}|${effectiveFilter.query}|${effectiveFilter.sortBy}|${effectiveFilter.order}|${effectiveFilter.active}|${mode}|${isPagedMode ? requestedPage : 'scroll'}`;
     if (isReset && !force && lastFetchedFilterRef.current === filterKey && now - lastFetchedRef.current < 2500) return;
 
     lastFetchedFilterRef.current = filterKey;
     lastFetchedRef.current = now;
     const fetchSeq = ++archiveFetchSeqRef.current;
+    if (isReset && isUntaggedMode) {
+      setArchives([]);
+      setStartOffset(0);
+      setArchiveTotal(null);
+      setHasMore(false);
+    }
     if (background) setArchivesRefreshing(true);
     else setLoading(true);
     try {
       if (clearSearchCache) {
         try { await lrrApi.clearSearchCache(); } catch (e) { console.warn('清理搜索缓存失败，继续刷新归档列表', e); }
       }
-      const query = effectiveFilter.active ? (effectiveFilter.query || '').trim() : '';
       const pageSize = isPagedMode ? archivePageSize : ARCHIVE_PAGE_SIZE;
+      if (isUntaggedMode) {
+        const ids = await lrrApi.getUntaggedArchives();
+        if (fetchSeq !== archiveFetchSeqRef.current) return false;
+        if (ids.length === 0) {
+          setArchiveTotal(0);
+          setArchivePage(0);
+          setArchivePageInput('1');
+          setArchives([]);
+          setStartOffset(0);
+          setHasMore(false);
+          return true;
+        }
+        const data = await Promise.all(ids.map((id) => lrrApi.getArchive(id)));
+        if (fetchSeq !== archiveFetchSeqRef.current) return false;
+        const total = data.length;
+        const nextPage = isPagedMode ? clampArchivePage(requestedPage, total, pageSize) : 0;
+        const pageData = isPagedMode ? data.slice(nextPage * pageSize, nextPage * pageSize + pageSize) : data;
+        setArchiveTotal(total);
+        setArchivePage(nextPage);
+        setArchivePageInput(String(nextPage + 1));
+        setArchives(pageData);
+        setStartOffset(pageData.length);
+        setHasMore(isPagedMode ? nextPage < getArchivePageCount(total, pageSize) - 1 : false);
+        return true;
+      }
+      const query = effectiveFilter.active ? (effectiveFilter.query || '').trim() : '';
       const start = isPagedMode ? getArchivePageStart(requestedPage, pageSize) : (isReset ? 0 : startOffset);
       let res = await lrrApi.search(query, start, effectiveFilter.sortBy, effectiveFilter.order);
       let data = res.data || [];
@@ -1056,6 +1097,14 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
       return true;
     } catch (e) {
       console.error('获取归档列表失败', e);
+      if (isUntaggedMode && fetchSeq === archiveFetchSeqRef.current) {
+        setArchiveTotal(0);
+        setArchivePage(0);
+        setArchivePageInput('1');
+        setArchives([]);
+        setStartOffset(0);
+        setHasMore(false);
+      }
       return false;
     } finally {
       if (background) setArchivesRefreshing(false);
@@ -1065,7 +1114,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
         setTimeout(scrollToArchives, 80);
       }
     }
-  }, [archiveBrowseMode, archivePage, archivePageSize, archiveTotal, exitColdRestoreMode, filter, scrollToArchives, startOffset]);
+  }, [archiveBrowseMode, archivePage, archivePageSize, archiveTotal, exitColdRestoreMode, filter, scrollToArchives, selectedCategory, startOffset]);
 
   // Sync state to refs for IntersectionObserver (avoids stale closures)
   useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
@@ -1450,6 +1499,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
 
   const archiveCountLabel = useMemo(() => {
     if (loading && archives.length === 0) return '正在获取结果...';
+    if (selectedCategory?.id === UNTAGGED_CATEGORY_ID && Number.isFinite(Number(archiveTotal))) return `无标签 ${Number(archiveTotal).toLocaleString()} 个`;
     if (archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged) {
       if (Number.isFinite(Number(archiveTotal))) {
         return `${archivePage + 1}/${getArchivePageCount(archiveTotal, archivePageSize)}页 · ${Number(archiveTotal).toLocaleString()}个`;
@@ -1467,7 +1517,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
         : `共 ${archives.length.toLocaleString()} 个档案`;
     }
     return filter.active ? '筛选结果 0 个' : '共 0 个档案';
-  }, [archiveBrowseMode, archivePage, archivePageSize, archiveTotal, archives.length, filter.active, hasMore, loading]);
+  }, [archiveBrowseMode, archivePage, archivePageSize, archiveTotal, archives.length, filter.active, hasMore, loading, selectedCategory]);
 
   const archivePageCount = useMemo(() => getArchivePageCount(archiveTotal, archivePageSize), [archivePageSize, archiveTotal]);
   const canGoPrevArchivePage = archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged && archivePage > 0 && !loading;
@@ -1548,15 +1598,26 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
   const handleCategoryClick = useCallback((cat) => {
     const tag = cat.search || `category:${cat.name}$`;
     if (selectedCategory?.id === cat.id) {
-      setSelectedCategory(null);
       const newQuery = removeFilterToken(filter.query, tag);
-      applyFilter(newQuery, filter.sortBy, filter.order);
+      applyFilter(newQuery, filter.sortBy, filter.order, null);
     } else {
       const newQuery = appendFilterToken(filter.query, tag);
-      setSelectedCategory(cat);
-      applyFilter(newQuery, filter.sortBy, filter.order);
+      applyFilter(newQuery, filter.sortBy, filter.order, cat);
     }
   }, [filter.query, filter.sortBy, filter.order, selectedCategory]);
+
+  const handleUntaggedCategoryClick = useCallback(() => {
+    const nextCategory = selectedCategory?.id === UNTAGGED_CATEGORY_ID ? null : UNTAGGED_CATEGORY;
+    const cleared = { ...DEFAULT_FILTER };
+    writeFilter(cleared);
+    setFilter(cleared);
+    setSelectedCategory(nextCategory);
+    setArchiveTotal(null);
+    setArchivePage(0);
+    setArchivePageInput('1');
+    navigateHome({ replace: true });
+    doFetch(true, { force: true, filterOverride: cleared, pageIndex: 0, selectedCategoryOverride: nextCategory });
+  }, [doFetch, selectedCategory]);
 
   const clearFilter = () => {
     const cleared = { ...DEFAULT_FILTER };
@@ -1570,17 +1631,18 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     doFetch(true, { force: true, filterOverride: cleared, pageIndex: 0 });
   };
 
-  const applyFilter = (q, s, o) => {
+  const applyFilter = (q, s, o, categoryOverride = null) => {
     const query = q || '';
     const trimmedQuery = query.trim();
     const next = { query, sortBy: s, order: o, active: !!trimmedQuery };
     writeFilter(next);
     setFilter(next);
+    setSelectedCategory(categoryOverride);
     setArchiveTotal(null);
     setArchivePage(0);
     setArchivePageInput('1');
     navigateHome({ query: trimmedQuery, replace: true });
-    doFetch(true, { force: true, filterOverride: next, pageIndex: 0 });
+    doFetch(true, { force: true, filterOverride: next, pageIndex: 0, selectedCategoryOverride: categoryOverride });
   };
 
   const handleSearch = () => {
@@ -2200,36 +2262,59 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           </div>
         </div>
 
-        {categories.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '16px', alignItems: 'center', justifyContent: 'center' }}>
-            {categories.map(cat => {
-              const isActive = selectedCategory?.id === cat.id;
-              const label = cat.name || cat.id;
-              return (
-                <button
-                  key={cat.id}
-                  className="btn"
-                  onClick={() => handleCategoryClick(cat)}
-                  style={{
-                    padding: '4px 12px',
-                    fontSize: '12px',
-                    fontWeight: isActive ? 600 : 400,
-                    borderRadius: '18px',
-                    ...(isActive ? {
-                      background: 'var(--accent)',
-                      borderColor: 'var(--accent)',
-                      color: 'white',
-                      transform: 'translateY(-2px)',
-                    } : {}),
-                  }}
-                  title={label}
-                >
-                  {label.length > 12 ? label.slice(0, 12) + '...' : label}
-                </button>
-              );
-            })}
-          </div>
-        )}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '16px', alignItems: 'center', justifyContent: 'center' }}>
+          {categories.map(cat => {
+            const isActive = selectedCategory?.id === cat.id;
+            const label = cat.name || cat.id;
+            return (
+              <button
+                key={cat.id}
+                className="btn"
+                onClick={() => handleCategoryClick(cat)}
+                style={{
+                  padding: '4px 12px',
+                  fontSize: '12px',
+                  fontWeight: isActive ? 600 : 400,
+                  borderRadius: '18px',
+                  ...(isActive ? {
+                    background: 'var(--accent)',
+                    borderColor: 'var(--accent)',
+                    color: 'white',
+                    transform: 'translateY(-2px)',
+                  } : {}),
+                }}
+                title={label}
+              >
+                {label.length > 12 ? label.slice(0, 12) + '...' : label}
+              </button>
+            );
+          })}
+          {(() => {
+            const isActive = selectedCategory?.id === UNTAGGED_CATEGORY_ID;
+            return (
+              <button
+                key={UNTAGGED_CATEGORY_ID}
+                className="btn"
+                onClick={handleUntaggedCategoryClick}
+                style={{
+                  padding: '4px 12px',
+                  fontSize: '12px',
+                  fontWeight: isActive ? 600 : 400,
+                  borderRadius: '18px',
+                  ...(isActive ? {
+                    background: 'var(--accent)',
+                    borderColor: 'var(--accent)',
+                    color: 'white',
+                    transform: 'translateY(-2px)',
+                  } : {}),
+                }}
+                title="无标签"
+              >
+                无标签
+              </button>
+            );
+          })()}
+        </div>
 
         <div ref={gridRef} className={`archive-grid${archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged ? ' is-paged' : ''}`} data-refresh-phase={archiveRefreshPhase} aria-busy={archivesRefreshing} style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: isNarrow ? '10px' : '16px', '--archive-grid-half-gap': isNarrow ? '5px' : '8px' }}>
           {archives.length === 0 && loading ? (
@@ -2243,7 +2328,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
 
         {archives.length === 0 && !loading && (
           <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-sub)', fontSize: '14px' }}>
-            {filter.active ? '没有匹配的归档，请尝试其他筛选条件' : '仓库为空，请先在 LANraragi 中添加归档'}
+            {selectedCategory?.id === UNTAGGED_CATEGORY_ID ? '没有无标签归档' : (filter.active ? '没有匹配的归档，请尝试其他筛选条件' : '仓库为空，请先在 LANraragi 中添加归档')}
           </div>
         )}
 

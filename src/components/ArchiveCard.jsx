@@ -684,7 +684,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
       {isPanelVisible && categorizedTags.length > 0 && ReactDOM.createPortal(
         <div
           ref={panelRef}
-          className="no-scrollbar"
+          className="no-scrollbar archive-tag-panel"
           onMouseEnter={keepPanel}
           onMouseLeave={hidePanelImmediately}
           style={{
@@ -692,7 +692,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
             top: `${panelPos.top}px`,
             left: `${panelPos.left}px`,
             zIndex: 9999,
-            background: 'var(--dropdown-bg)',
+            background: 'var(--tag-panel-bg)',
             backdropFilter: 'blur(24px)',
             WebkitBackdropFilter: 'blur(24px)',
             border: '1px solid rgba(140, 160, 190, 0.25)',

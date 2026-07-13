@@ -9,6 +9,12 @@ export function parseTags(value) {
 export function mergeTags(current, incoming) { return parseTags([...current, ...parseTags(incoming)].join(',')); }
 export function metadataFingerprint(value = {}) { return JSON.stringify([value.title || '', value.summary || '', parseTags(value.tags).join(',')]); }
 
+export function readMetadataPluginResult(result) {
+  if (!result || typeof result !== 'object') throw new Error('插件返回了无效结果');
+  if (Number(result.success) === 0) throw new Error(result.error || '插件执行失败');
+  return { tags: result?.data?.new_tags || result?.new_tags || '' };
+}
+
 export function normalizeMetadataPlugins(list) {
   const source = Array.isArray(list) ? list : (list?.data || list?.plugins || []);
   const seen = new Set();

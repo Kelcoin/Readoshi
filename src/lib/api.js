@@ -55,12 +55,24 @@ const request = async (endpoint, method = 'GET', body = null, options = {}) => {
   return readResponse(res);
 };
 
+export function normalizeUntaggedArchiveIds(response) {
+  const items = Array.isArray(response)
+    ? response
+    : (Array.isArray(response?.data)
+      ? response.data
+      : (Array.isArray(response?.archives) ? response.archives : response?.ids));
+  return (Array.isArray(items) ? items : [])
+    .map((item) => (typeof item === 'string' ? item : (item?.arcid || item?.id)))
+    .filter(Boolean);
+}
+
 export const lrrApi = {
   search: (filter = '', start = 0, sortby = 'date_added', order = 'desc') =>
     request(`/search?filter=${encodeURIComponent(filter)}&start=${start}&sortby=${sortby}&order=${order}`),
   clearSearchCache: () => request('/search/cache', 'DELETE'),
 
   getRandom: (count = 10, options = {}) => request(`/search/random?count=${count}`, 'GET', null, options),
+  getUntaggedArchives: async () => normalizeUntaggedArchiveIds(await request('/archives/untagged')),
   getArchive: (id) => request(`/archives/${id}/metadata`),
   updateArchiveMetadata: (id, { title = '', tags = '', summary = '' }) => {
     const params = new URLSearchParams({ title, tags, summary });

@@ -33,6 +33,7 @@
   --cover-bg: rgba(255, 255, 255, 0.05);
   --toolbar-bg: rgba(15, 17, 21, 0.9);
   --dropdown-bg: rgba(28, 30, 36, 0.96);
+  --tag-panel-bg: rgba(28, 30, 36, 0.9);
   --scrollbar-thumb: rgba(137, 155, 178, 0.42);
   --scrollbar-thumb-hover: rgba(163, 182, 205, 0.58);
   --reader-toolbar-bg: rgba(15, 18, 25, 0.9);
@@ -93,6 +94,7 @@
   --cover-bg: rgba(215, 225, 235, 0.5);
   --toolbar-bg: rgba(245, 248, 251, 0.92);
   --dropdown-bg: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(243,247,251,0.96));
+  --tag-panel-bg: rgba(247, 250, 253, 0.9);
   --scrollbar-thumb: rgba(120, 138, 160, 0.25);
   --scrollbar-thumb-hover: rgba(100, 120, 145, 0.45);
   --reader-toolbar-bg: rgba(248, 250, 253, 0.94);
@@ -918,6 +920,58 @@ textarea:focus-visible,
   grid-template-columns: minmax(180px, 280px) minmax(220px, 1fr) auto;
   gap: 10px;
   align-items: center;
+}
+
+.metadata-status-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.26s ease;
+}
+
+.metadata-status-wrap[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+
+.metadata-status-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.metadata-status-card {
+  width: fit-content;
+  max-width: min(100%, 560px);
+  margin: 0 auto;
+  padding: 10px 16px;
+  border: 1px solid var(--glass-border-hover);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text-sub);
+  text-align: center;
+  line-height: 1.55;
+  animation: metadata-status-enter 0.22s ease both;
+  transition: opacity 0.22s ease, transform 0.22s ease, background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.metadata-status-card.is-success {
+  border-color: rgba(95, 207, 139, 0.32);
+  background: rgba(95, 207, 139, 0.1);
+  color: #80dca2;
+}
+
+.metadata-status-card.is-error {
+  border-color: var(--danger-border);
+  background: var(--danger-surface);
+  color: var(--danger-text);
+}
+
+.metadata-status-card.is-closing {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+@keyframes metadata-status-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .metadata-field {
@@ -1895,6 +1949,8 @@ textarea:focus-visible,
 @media (prefers-reduced-motion: reduce) {
   .archive-grid,
   .archive-selection-actions-inner,
+  .metadata-status-wrap,
+  .metadata-status-card,
   .reader-toolbar-button,
   .reader-toolbar-icon,
   .reader-toolbar-label,
