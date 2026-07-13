@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo, useReducer } from 'react';
 import { createPortal } from 'react-dom';
 import { lrrApi } from '../lib/api';
 import { getHistory, getHideRead, setHideRead, getCropCover, setCropCover, getArchiveBrowseMode, setArchiveBrowseMode, removeHistoryItem, loadHistoryState } from '../lib/history';
@@ -26,6 +26,7 @@ import { getStoredServerInfo, loadServerInfo } from '../lib/serverInfoCache';
 import { useHorizontalScroller } from '../lib/horizontalScroller';
 import { navigateDeduplicate, navigateHistory, navigateHome, navigateToMetadata, navigateUpload, navigateWatchlist } from '../lib/navigation';
 import { ARCHIVE_BROWSE_MODES, ARCHIVE_PAGE_SIZE, clampArchivePage, getArchivePageCount, getArchivePageStart, getSmartArchivePageSize } from '../lib/archivePagination';
+import { reduceArchiveRefreshPhase } from '../lib/archiveRefreshMotion';
 
 const FILTER_KEY = 'lrr_filter';
 const PRESETS_KEY = 'lrr_filter_presets';
@@ -389,6 +390,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
   const [archiveDeleteTarget, setArchiveDeleteTarget] = useState(null);
   const [archiveDeleteSyncConfirmed, setArchiveDeleteSyncConfirmed] = useState(true);
   const [archiveSelectionMode, setArchiveSelectionMode] = useState(false);
+  const [archiveSelectionActionsMounted, setArchiveSelectionActionsMounted] = useState(false);
   const [selectedArchiveIds, setSelectedArchiveIds] = useState(() => new Set());
   const [bulkDeletePending, setBulkDeletePending] = useState(false);
   const [bulkDeleteSyncConfirmed, setBulkDeleteSyncConfirmed] = useState(true);
@@ -445,6 +447,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
   ));
   const [loading, setLoading] = useState(false);
   const [archivesRefreshing, setArchivesRefreshing] = useState(false);
+  const [archiveRefreshPhase, dispatchArchiveRefresh] = useReducer(reduceArchiveRefreshPhase, 'idle');
   const [presets, setPresets] = useState(readPresets);
   const [showPresets, setShowPresets] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState(null);
@@ -991,7 +994,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           if (nextData.length < ARCHIVE_PAGE_SIZE) break;
         }
       }
-      if (fetchSeq !== archiveFetchSeqRef.current) return;
+      if (fetchSeq !== archiveFetchSeqRef.current) return false;
       const total = getSearchTotal(res, data.length, isReset ? null : archiveTotal);
       setArchiveTotal(total);
       if (isPagedMode) {
@@ -1012,8 +1015,10 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
         setStartOffset(start + data.length);
         setHasMore(data.length > 0 && data.length >= ARCHIVE_PAGE_SIZE);
       }
+      return true;
     } catch (e) {
       console.error('获取归档列表失败', e);
+      return false;
     } finally {
       if (background) setArchivesRefreshing(false);
       else setLoading(false);
@@ -1331,9 +1336,16 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     setArchiveMenu(null);
     setArchiveSelectionMode((prev) => {
       if (prev) setSelectedArchiveIds(new Set());
+      else setArchiveSelectionActionsMounted(true);
       return !prev;
     });
   }, []);
+
+  useEffect(() => {
+    if (archiveSelectionMode || !archiveSelectionActionsMounted) return undefined;
+    const timer = setTimeout(() => setArchiveSelectionActionsMounted(false), 260);
+    return () => clearTimeout(timer);
+  }, [archiveSelectionActionsMounted, archiveSelectionMode]);
 
   const toggleArchiveSelection = useCallback((archive) => {
     const archiveId = archive?.arcid || archive?.id;
@@ -1434,9 +1446,16 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     goArchivePage(page);
   }, [archivePageInput, goArchivePage]);
 
-  const handleManualRefreshArchives = useCallback(() => {
+  const handleManualRefreshArchives = useCallback(async () => {
     setShowPresets(false);
-    doFetch(true, { force: true, clearSearchCache: true });
+    dispatchArchiveRefresh('start');
+    const refreshed = await doFetch(true, { background: true, force: true, clearSearchCache: true });
+    if (!refreshed) {
+      dispatchArchiveRefresh('fail');
+      return;
+    }
+    dispatchArchiveRefresh('replace');
+    requestAnimationFrame(() => dispatchArchiveRefresh('finish'));
   }, [doFetch]);
 
   useEffect(() => {
@@ -1977,39 +1996,14 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
 
       <section ref={archivesSectionRef} className="glass-panel section-reveal section-reveal-delay-3" style={{ padding: isNarrow ? '20px 14px' : '24px' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginBottom: '24px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+          <div className="archive-toolbar-primary" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
             <div style={{ display: 'flex', alignItems: 'flex-end', gap: '10px', minWidth: 0, flexWrap: 'wrap' }}>
               <SectionHeading glyph="archives" style={{ lineHeight: 1 }}>全部档案</SectionHeading>
               <span style={{ color: 'var(--text-sub)', fontSize: '12px', lineHeight: 1, paddingBottom: '1px' }}>
                 {archiveCountLabel}
               </span>
-              {archiveSelectionMode && (
-                <span style={{ color: 'var(--accent)', fontSize: '12px', lineHeight: 1, paddingBottom: '1px', whiteSpace: 'nowrap' }}>
-                  已选 {selectedArchiveIds.size} 个
-                </span>
-              )}
             </div>
             <div style={{ display: 'flex', gap: isNarrow ? '4px' : '8px', flexShrink: 0, alignItems: 'center', justifyContent: 'flex-end' }}>
-              {archiveSelectionMode && (
-                <>
-                  <button
-                    className="btn"
-                    style={{ padding: '6px 12px', fontSize: '12px' }}
-                    onClick={toggleSelectAllVisibleArchives}
-                    disabled={visibleArchiveIds.length === 0 || archiveDeleting}
-                  >
-                    {allVisibleSelected ? '取消全选' : '全选当前'}
-                  </button>
-                  <button
-                    className="btn"
-                    style={{ padding: '6px 12px', fontSize: '12px', background: 'rgba(244,67,54,0.16)', borderColor: 'rgba(244,67,54,0.32)', color: '#ffd2d0', opacity: selectedArchiveIds.size === 0 || archiveDeleting ? 0.55 : 1 }}
-                    onClick={requestBulkArchiveDelete}
-                    disabled={selectedArchiveIds.size === 0 || archiveDeleting}
-                  >
-                    {archiveDeleting ? '删除中' : '删除所选'}
-                  </button>
-                </>
-              )}
               <button
                 className="btn"
                 style={{ padding: '6px 12px', fontSize: '12px' }}
@@ -2030,16 +2024,16 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
             </div>
           </div>
 
-          <div
-            style={{
-              maxHeight: '0px',
-              opacity: archiveSelectionMode ? 1 : 0,
-              overflow: 'hidden',
-              transform: archiveSelectionMode ? 'translateY(0)' : 'translateY(-6px)',
-              transition: 'max-height 0.26s cubic-bezier(0.4,0,0.2,1), opacity 0.2s ease, transform 0.26s cubic-bezier(0.4,0,0.2,1)',
-            }}
-          >
-            <div />
+          <div className="archive-selection-actions" data-mounted={archiveSelectionActionsMounted ? 'true' : 'false'} data-open={archiveSelectionMode ? 'true' : 'false'} aria-hidden={!archiveSelectionMode}>
+            <div className="archive-selection-actions-inner">
+              <span aria-live="polite" style={{ color: 'var(--accent)', fontSize: '12px', whiteSpace: 'nowrap' }}>已选 {selectedArchiveIds.size} 个</span>
+              <button className="btn" tabIndex={archiveSelectionMode ? 0 : -1} style={{ padding: '6px 12px', fontSize: '12px' }} onClick={toggleSelectAllVisibleArchives} disabled={visibleArchiveIds.length === 0 || archiveDeleting}>
+                {allVisibleSelected ? '取消全选' : '全选当前'}
+              </button>
+              <button className="btn archive-selection-delete" tabIndex={archiveSelectionMode ? 0 : -1} onClick={requestBulkArchiveDelete} disabled={selectedArchiveIds.size === 0 || archiveDeleting}>
+                {archiveDeleting ? '删除中…' : '删除所选'}
+              </button>
+            </div>
           </div>
 
           <div
@@ -2220,7 +2214,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           </div>
         )}
 
-        <div ref={gridRef} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gridAutoFlow: 'dense', gap: isNarrow ? '10px' : '16px', justifyItems: 'center' }}>
+        <div ref={gridRef} className="archive-grid" data-refresh-phase={archiveRefreshPhase} aria-busy={archivesRefreshing} style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: isNarrow ? '10px' : '16px' }}>
           {archives.length === 0 && loading ? (
             Array.from({ length: 12 }).map((_, i) => <SkeletonCard key={`gsk-${i}`} />)
           ) : (

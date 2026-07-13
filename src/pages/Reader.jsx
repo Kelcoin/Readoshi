@@ -9,6 +9,7 @@ import { translateTag, categorizeTags } from '../lib/tags';
 import { getCachedImage, getImage, clearImageCache, primeImage } from '../lib/imageCache';
 import { DEFAULT_READER_SETTINGS, READER_SETTINGS_KEY, normalizeReaderSettings, prepareReaderSettingsForArchiveChange } from '../lib/readerSettings';
 import { getReaderSkeletonToolbarGroups } from '../lib/readerSkeletonLayout';
+import { getReaderArchivePanelModel, isReaderMobileViewport } from '../lib/readerUiState';
 import { computeContainedImageRect, rectsOverlap } from '../lib/pageIndicatorLayout';
 import { classifyWebtoonSeams, compareSeamPixels, sampleImageSeam } from '../lib/webtoonDetector';
 import { detectImageBorderInsets } from '../lib/readerImageTransform';
@@ -481,7 +482,7 @@ const ReaderArchiveThumb = ({ archiveId, cacheOnly = false }) => {
   );
 };
 
-function ReaderArchiveListPanel({ type, title, items, emptyMessage, cacheOnly, onDelete }) {
+function ReaderArchiveListPanel({ type, title, items, emptyMessage, cacheOnly, onDelete, activeType, onTypeChange }) {
   return (
     <div
       data-panel={type}
@@ -493,15 +494,32 @@ function ReaderArchiveListPanel({ type, title, items, emptyMessage, cacheOnly, o
         zIndex: 110,
         padding: '18px',
         borderRadius: '14px',
-        width: '360px',
+        width: 'min(360px, calc(100vw - 40px))',
+        boxSizing: 'border-box',
         maxHeight: '70vh',
         overflowY: 'auto',
         boxShadow: '0 12px 40px rgba(0,0,0,0.55)',
         border: '1px solid rgba(255,255,255,0.1)',
       }}
     >
-      <div style={{ fontSize: '13px', color: 'var(--accent)', fontWeight: 600, marginBottom: '12px', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '8px' }}>
-        {title}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '12px', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '8px' }}>
+        <span style={{ fontSize: '13px', color: 'var(--accent)', fontWeight: 600 }}>{title}</span>
+        <div className="reader-panel-tabs" role="group" aria-label="归档列表类型">
+          {[
+            ['history', '阅读历史'],
+            ['watchlist', '待看归档'],
+          ].map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              className="reader-panel-tab"
+              aria-pressed={activeType === value}
+              onClick={() => onTypeChange(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
       {items.length === 0 ? (
         <div style={{ fontSize: '12px', color: 'var(--text-sub)', padding: '8px 0' }}>{emptyMessage}</div>
@@ -531,7 +549,7 @@ function ReaderArchiveListPanel({ type, title, items, emptyMessage, cacheOnly, o
                   padding: '8px 10px', borderRadius: '8px', cursor: 'pointer',
                   background: 'rgba(255,255,255,0.04)',
                   border: '1px solid rgba(255,255,255,0.06)',
-                  transition: 'all 0.15s',
+                  transition: 'background-color 0.15s ease, border-color 0.15s ease',
                 }}
                 onMouseEnter={(event) => { event.currentTarget.style.background = 'rgba(255,255,255,0.1)'; }}
                 onMouseLeave={(event) => { event.currentTarget.style.background = 'rgba(255,255,255,0.04)'; }}
@@ -568,6 +586,7 @@ function ReaderArchiveListPanel({ type, title, items, emptyMessage, cacheOnly, o
                     fontSize: '16px', lineHeight: 1, padding: '2px 4px', borderRadius: '4px', flexShrink: 0,
                   }}
                   title={type === 'watchlist' ? '移出待看' : '删除历史'}
+                  aria-label={type === 'watchlist' ? `将${item.title || '归档'}移出待看` : `删除${item.title || '归档'}的历史记录`}
                 >
                   ×
                 </button>
@@ -678,7 +697,7 @@ function getTopBarButtonStyle(isMobile, disabled = false) {
     alignItems: 'center',
     justifyContent: 'center',
     gap: isMobile ? '0' : '6px',
-    transition: 'all 0.2s ease',
+    transition: 'background-color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease, transform 0.2s ease',
     opacity: disabled ? 0.45 : 1,
     flexShrink: 0,
   };
@@ -697,7 +716,7 @@ function getPageNavButtonStyle(isMobile) {
     display: 'flex',
     justifyContent: 'center',
     alignItems: 'center',
-    transition: 'all 0.2s ease',
+    transition: 'background-color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease, transform 0.2s ease',
     flexShrink: 0,
   };
 }
@@ -711,6 +730,8 @@ function ReaderStageSkeleton({ title = '', hasMeta = false, hasPages = false, is
     <div style={{ minHeight: '100vh', background: 'transparent', color: '#fff' }}>
       <div style={skeletonViewportStyle}>
         <div
+          data-reader-toolbar
+          data-mobile={isMobile ? 'true' : 'false'}
           style={{
             padding: '14px 24px',
             background: 'rgba(15, 18, 25, 0.9)',
@@ -725,6 +746,7 @@ function ReaderStageSkeleton({ title = '', hasMeta = false, hasPages = false, is
             {toolbarGroups.left.map((label, index) => (
               <div
                 key={index}
+                className="reader-toolbar-button reader-toolbar-skeleton"
                 style={{
                   ...topBtnStyle,
                   ...(isMobile ? { width: '40px', height: '40px', padding: 0 } : {}),
@@ -763,6 +785,7 @@ function ReaderStageSkeleton({ title = '', hasMeta = false, hasPages = false, is
             {toolbarGroups.right.map((label, index) => (
               <div
                 key={index}
+                className="reader-toolbar-button reader-toolbar-skeleton"
                 style={{
                   ...topBtnStyle,
                   ...(isMobile ? { width: '40px', height: '40px', padding: 0 } : {}),
@@ -854,8 +877,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const [showHeader, setShowHeader] = useState(() => readerSnapshot?.showHeader ?? true);
   const [showDrawer, setShowDrawer] = useState(false);
   const [showSettingsPanel, setShowSettingsPanel] = useState(false);
-  const [showHistoryPanel, setShowHistoryPanel] = useState(false);
-  const [showWatchlistPanel, setShowWatchlistPanel] = useState(false);
+  const [showArchivePanel, setShowArchivePanel] = useState(false);
+  const [archivePanelType, setArchivePanelType] = useState('history');
   const [historyDeleteTarget, setHistoryDeleteTarget] = useState(null);
   const [coverSetting, setCoverSetting] = useState(false);
   const [coverSetPage, setCoverSetPage] = useState(0);
@@ -867,7 +890,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const [historyEntries, setHistoryEntries] = useState(() => getHistory());
   const [watchlistEntries, setWatchlistEntries] = useState(() => getWatchlist());
   const [hideRead] = useState(getHideRead);
-  const [isMobile, setIsMobile] = useState(false);
+  const [isMobile, setIsMobile] = useState(() => isReaderMobileViewport(window.innerWidth, 'ontouchstart' in window));
   const [serverTracksProgress, setServerTracksProgress] = useState(() => {
     const stored = getStoredServerInfo();
     if (stored && typeof stored.server_tracks_progress === 'boolean') {
@@ -1224,7 +1247,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
 
   // ===== isMobile detection =====
   useEffect(() => {
-    const check = () => setIsMobile(window.innerWidth < 768 || ('ontouchstart' in window));
+    const check = () => setIsMobile(isReaderMobileViewport(window.innerWidth, 'ontouchstart' in window));
     check();
     window.addEventListener('resize', check);
     return () => window.removeEventListener('resize', check);
@@ -2135,12 +2158,19 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const historyList = useMemo(() => {
     return hideRead ? historyEntries.filter(h => !(h.total > 0 && h.page >= h.total)) : historyEntries;
   }, [hideRead, historyEntries]);
+  const archivePanel = getReaderArchivePanelModel(archivePanelType, {
+    historyItems: historyList,
+    watchlistItems: watchlistEntries,
+    historyEmptyMessage: hideRead && historyEntries.length > 0 ? '所有归档均已读完' : '暂无阅读历史',
+    watchlistEmptyMessage: '暂无待看归档',
+    removeHistory: setHistoryDeleteTarget,
+    removeWatchlist: handleRemoveWatchlist,
+  });
 
   useEffect(() => {
     if (viewMode !== 'immersive') return;
     setShowSettingsPanel(false);
-    setShowHistoryPanel(false);
-    setShowWatchlistPanel(false);
+    setShowArchivePanel(false);
   }, [viewMode]);
 
   const drawerGridWidth = Math.max(0, drawerViewport.width || (isMobile ? 0 : 372));
@@ -2303,18 +2333,17 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
 
   // ===== Outside-click to close panels =====
   useEffect(() => {
-    if (!showSettingsPanel && !showHistoryPanel && !showWatchlistPanel) return;
+    if (!showSettingsPanel && !showArchivePanel) return;
     if (!readerReady) return undefined;
     const handler = (e) => {
       const t = e.target;
       if (t?.closest?.('[data-panel]') || t?.closest?.('[data-panel-toggle]') || t?.closest?.('[data-select-dropdown]') || t?.closest?.('[data-dialog-root]') || t?.closest?.('[data-dialog-overlay]')) return;
       setShowSettingsPanel(false);
-      setShowHistoryPanel(false);
-      setShowWatchlistPanel(false);
+      setShowArchivePanel(false);
     };
     window.addEventListener('mousedown', handler, { passive: true });
     return () => window.removeEventListener('mousedown', handler);
-  }, [readerReady, showHistoryPanel, showSettingsPanel, showWatchlistPanel]);
+  }, [readerReady, showArchivePanel, showSettingsPanel]);
 
   if (loading) {
     return <ReaderStageSkeleton title={archive?.title || ''} hasMeta={false} hasPages={false} isMobile={isMobile} />;
@@ -2342,7 +2371,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     display: 'flex',
     alignItems: 'center',
     gap: '6px',
-    transition: 'all 0.2s ease',
+    transition: 'background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, opacity 0.2s ease, transform 0.2s ease',
+    flexShrink: 0,
   };
 
   const navBtnBase = getPageNavButtonStyle(isMobile);
@@ -2389,6 +2419,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       >
         {/* ===== Top Bar ===== */}
         <div
+          data-reader-toolbar
+          data-mobile={isMobile ? 'true' : 'false'}
           style={{
             padding: '14px 24px',
             background: 'rgba(15, 18, 25, 0.9)',
@@ -2404,18 +2436,21 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '6px' : '16px', flex: '1 0 0', minWidth: 0 }}>
-            <button style={{ ...btnBase, padding: isMobile ? '8px 8px' : '8px 14px', fontSize: isMobile ? '16px' : '13px' }} onClick={handleGoBack}>
+            <button className="reader-toolbar-button" style={btnBase} onClick={handleGoBack} title="返回" aria-label="返回">
               {isMobile ? <ToolbarGlyph name="back" size={20} /> : '← 返回'}
             </button>
             {viewMode !== 'immersive' && (
-              <>
-                <button disabled={!readerReady} style={{ ...btnBase, padding: isMobile ? '8px 8px' : '8px 14px', fontSize: isMobile ? '16px' : '13px', opacity: readerReady ? 1 : 0.45, cursor: readerReady ? 'pointer' : 'not-allowed' }} data-panel-toggle onClick={() => { if (!readerReady) return; setShowHistoryPanel((v) => !v); setShowWatchlistPanel(false); setShowSettingsPanel(false); }}>
-                  {isMobile ? <ToolbarGlyph name="history" size={20} /> : '阅读历史'}
-                </button>
-                <button disabled={!readerReady} style={{ ...btnBase, padding: isMobile ? '8px 8px' : '8px 14px', fontSize: isMobile ? '16px' : '13px', opacity: readerReady ? 1 : 0.45, cursor: readerReady ? 'pointer' : 'not-allowed' }} data-panel-toggle onClick={() => { if (!readerReady) return; setShowWatchlistPanel((v) => !v); setShowHistoryPanel(false); setShowSettingsPanel(false); }}>
-                  {isMobile ? <ToolbarGlyph name="watchlist" size={20} /> : '待看归档'}
-                </button>
-              </>
+              <button
+                className="reader-toolbar-button"
+                disabled={!readerReady}
+                style={{ ...btnBase, opacity: readerReady ? 1 : 0.45, cursor: readerReady ? 'pointer' : 'not-allowed' }}
+                data-panel-toggle
+                onClick={() => { if (readerReady) { setShowArchivePanel((visible) => !visible); setShowSettingsPanel(false); } }}
+                title="查看阅读历史和待看归档"
+                aria-label="查看阅读历史和待看归档"
+              >
+                {isMobile ? <ToolbarGlyph name="history" size={18} /> : '归档列表'}
+              </button>
             )}
           </div>
 
@@ -2440,15 +2475,18 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '6px' : '8px', flex: '1 0 0', justifyContent: 'flex-end', minWidth: 0 }}>
             {viewMode === 'immersive' && (
-              <button style={{ ...btnBase, padding: isMobile ? '8px 8px' : '8px 14px', fontSize: isMobile ? '14px' : '13px' }} onClick={() => updateSettings((s) => ({ ...s, autoTurnActive: !s.autoTurnActive }))}>
+              <button className="reader-toolbar-button" style={btnBase} onClick={() => updateSettings((s) => ({ ...s, autoTurnActive: !s.autoTurnActive }))} title={settings.autoTurnActive ? '停止翻页' : '自动翻页'} aria-label={settings.autoTurnActive ? '停止翻页' : '自动翻页'}>
                 {isMobile
                   ? <ToolbarGlyph name={settings.autoTurnActive ? 'pause' : 'play'} size={18} />
                   : (settings.autoTurnActive ? '停止翻页' : '自动翻页')}
               </button>
             )}
             <button
-              style={{ ...btnBase, padding: isMobile ? '8px 10px' : '8px 14px', fontSize: isMobile ? '16px' : '13px' }}
+              className="reader-toolbar-button"
+              style={btnBase}
               onClick={() => { setViewMode(viewMode === 'normal' ? 'immersive' : 'normal'); }}
+              title={viewMode === 'normal' ? '沉浸模式' : '退出沉浸'}
+              aria-label={viewMode === 'normal' ? '沉浸模式' : '退出沉浸'}
             >
               {isMobile
                 ? <ToolbarGlyph name={viewMode === 'normal' ? 'fullscreen' : 'fullscreenExit'} size={18} />
@@ -2457,11 +2495,10 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             {viewMode !== 'immersive' && (
               <>
                 <button
+                  className="reader-toolbar-button"
                   disabled={!readerReady || pages.length === 0 || coverSetting}
                   style={{
                     ...btnBase,
-                    padding: isMobile ? '8px 10px' : '8px 14px',
-                    fontSize: isMobile ? '16px' : '13px',
                     opacity: (!readerReady || pages.length === 0 || coverSetting) ? 0.45 : 1,
                     cursor: (!readerReady || pages.length === 0 || coverSetting) ? 'not-allowed' : 'pointer',
                   }}
@@ -2473,15 +2510,12 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                     ? <ToolbarGlyph name="cover" size={18} />
                     : (coverSetting ? '设置中...' : coverSetPage === currentIndex + 1 ? '已设为封面' : '设为封面')}
                 </button>
-                <button style={{ ...btnBase, padding: isMobile ? '8px 10px' : '8px 14px', fontSize: isMobile ? '16px' : '13px' }} data-panel-toggle onClick={() => { setShowSettingsPanel((v) => !v); setShowHistoryPanel(false); setShowWatchlistPanel(false); }}>
+                <button className="reader-toolbar-button" style={btnBase} data-panel-toggle onClick={() => { setShowSettingsPanel((v) => !v); setShowArchivePanel(false); }} title="阅读设定" aria-label="阅读设定">
                   {isMobile ? <ToolbarGlyph name="settings" size={18} /> : '阅读设定'}
-                </button>
-                <button style={{ ...btnBase, padding: isMobile ? '8px 10px' : '8px 14px', fontSize: isMobile ? '16px' : '13px' }} onClick={() => navigateToMetadata(archiveId)} title="编辑元数据" aria-label="编辑元数据">
-                  {isMobile ? <ToolbarGlyph name="metadata" size={18} /> : '编辑元数据'}
                 </button>
               </>
             )}
-            <button style={{ ...btnBase, padding: isMobile ? '8px 10px' : '8px 14px', fontSize: isMobile ? '16px' : '13px' }} onClick={() => setShowDrawer(true)}>
+            <button className="reader-toolbar-button" style={btnBase} onClick={() => setShowDrawer(true)} title="缩略面板" aria-label="缩略面板">
               {isMobile ? <ToolbarGlyph name="grid" size={18} /> : '缩略面板'}
             </button>
           </div>
@@ -2567,24 +2601,16 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
           </div>
         )}
 
-        {viewMode !== 'immersive' && showHistoryPanel && (
+        {viewMode !== 'immersive' && showArchivePanel && (
           <ReaderArchiveListPanel
-            type="history"
-            title="阅读历史"
-            items={historyList}
-            emptyMessage={hideRead && getHistory().length > 0 ? '所有归档均已读完' : '暂无阅读历史'}
+            type={archivePanel.type}
+            title={archivePanel.title}
+            items={archivePanel.items}
+            emptyMessage={archivePanel.emptyMessage}
             cacheOnly={assetCacheOnly}
-            onDelete={setHistoryDeleteTarget}
-          />
-        )}
-        {viewMode !== 'immersive' && showWatchlistPanel && (
-          <ReaderArchiveListPanel
-            type="watchlist"
-            title="待看归档"
-            items={watchlistEntries}
-            emptyMessage="暂无待看归档"
-            cacheOnly={assetCacheOnly}
-            onDelete={handleRemoveWatchlist}
+            onDelete={archivePanel.onDelete}
+            activeType={archivePanelType}
+            onTypeChange={setArchivePanelType}
           />
         )}
 
@@ -2901,8 +2927,13 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
           onClick={(e) => e.stopPropagation()}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '12px' }}>
-            <h3 style={{ margin: '0', fontSize: '18px' }}>归档信息</h3>
-            <button onClick={() => setShowDrawer(false)} style={{ background: 'transparent', border: 'none', color: '#aaa', fontSize: '20px', cursor: 'pointer' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0 }}>
+              <h3 style={{ margin: 0, fontSize: '18px' }}>归档信息</h3>
+              <button className="reader-drawer-icon-button" onClick={() => navigateToMetadata(archiveId)} title="编辑元数据" aria-label="编辑元数据">
+                <ToolbarGlyph name="metadata" size={18} />
+              </button>
+            </div>
+            <button className="reader-drawer-icon-button" onClick={() => setShowDrawer(false)} aria-label="关闭缩略面板" title="关闭缩略面板" style={{ fontSize: '20px' }}>
               ✕
             </button>
           </div>
@@ -2955,7 +2986,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                           whiteSpace: 'nowrap',
                           lineHeight: '1.5',
                           cursor: 'pointer',
-                          transition: 'all 0.15s',
+                          transition: 'background-color 0.15s ease, border-color 0.15s ease',
                         }}
                         onMouseEnter={(e) => {
                           e.currentTarget.style.background = `${group.color}30`;
