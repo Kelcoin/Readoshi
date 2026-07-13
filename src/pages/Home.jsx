@@ -960,12 +960,21 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
       frame = requestAnimationFrame(() => {
         const items = Array.from(grid.children);
         items.forEach((item) => { item.style.translate = ''; });
-        const { indexes, offset } = getLastArchiveRowCentering(
+        const { translations } = getLastArchiveRowCentering(
           grid.getBoundingClientRect(),
-          items.map((item) => item.getBoundingClientRect()),
+          items.map((item) => {
+            const rect = item.getBoundingClientRect();
+            return {
+              left: rect.left,
+              right: rect.right,
+              top: rect.top,
+              isWide: item.classList.contains('is-wide'),
+            };
+          }),
         );
-        if (Math.abs(offset) < 1) return;
-        indexes.forEach((index) => { items[index].style.translate = `${offset}px 0`; });
+        translations.forEach(({ index, offset }) => {
+          if (Math.abs(offset) >= 1) items[index].style.translate = `${offset}px 0`;
+        });
       });
     };
 

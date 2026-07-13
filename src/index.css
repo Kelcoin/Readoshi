@@ -809,7 +809,7 @@ textarea:focus-visible,
   padding: 8px 10px;
   border-radius: 9px;
   border: 1px solid var(--glass-border-hover);
-  background: var(--dropdown-bg);
+  background: rgba(28, 30, 36, 0.78);
   color: var(--text-main);
   box-shadow: 0 16px 42px rgba(0,0,0,0.34);
   font-size: 12px;
@@ -820,6 +820,10 @@ textarea:focus-visible,
   opacity: 0;
   transform: translateY(4px);
   transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+:root[data-theme="light"] .settings-hint-bubble {
+  background: rgba(255, 255, 255, 0.82);
 }
 
 .settings-hint-wrap:hover .settings-hint-bubble,

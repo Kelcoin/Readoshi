@@ -149,7 +149,7 @@ npm run build
 
 ### 版本规则
 
-当前版本为 `1.2.0`。项目遵循 SemVer：`fix:` 与文档/维护更新提升 patch，`feat:` 提升 minor，提交主题含 `!` 或正文含 `BREAKING CHANGE` 时提升 major。页面版本号附带 7 位 Git Hash，便于确认实际构建。
+当前版本为 `1.2.1`。项目遵循 SemVer：`fix:` 与文档/维护更新提升 patch，`feat:` 提升 minor，提交主题含 `!` 或正文含 `BREAKING CHANGE` 时提升 major。页面版本号附带 7 位 Git Hash，便于确认实际构建。
 
 ## Cloudflare Worker
 

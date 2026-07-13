@@ -40,22 +40,43 @@ export function getArchivePageAfterResize(page, oldSize, newSize) {
 
 export function getLastArchiveRowCentering(containerRect, itemRects, tolerance = 2) {
   if (!containerRect || !Array.isArray(itemRects) || itemRects.length === 0) {
-    return { indexes: [], offset: 0 };
+    return { indexes: [], offset: 0, translations: [] };
   }
   const usableItems = itemRects
     .map((rect, index) => ({ rect, index }))
     .filter(({ rect }) => rect && Number.isFinite(rect.top) && Number.isFinite(rect.left) && Number.isFinite(rect.right));
-  if (usableItems.length === 0) return { indexes: [], offset: 0 };
+  if (usableItems.length === 0) return { indexes: [], offset: 0, translations: [] };
 
-  const lastTop = Math.max(...usableItems.map(({ rect }) => rect.top));
-  const lastRow = usableItems.filter(({ rect }) => Math.abs(rect.top - lastTop) <= tolerance);
-  const groupLeft = Math.min(...lastRow.map(({ rect }) => rect.left));
-  const groupRight = Math.max(...lastRow.map(({ rect }) => rect.right));
   const containerCenter = containerRect.left + containerRect.width / 2;
-  const rowCenter = (groupLeft + groupRight) / 2;
+  const rows = [];
+  usableItems.forEach((item) => {
+    const row = rows.find((candidate) => Math.abs(candidate.top - item.rect.top) <= tolerance);
+    if (row) row.items.push(item);
+    else rows.push({ top: item.rect.top, items: [item] });
+  });
+  rows.sort((a, b) => a.top - b.top);
+
+  const lastRow = rows.at(-1).items;
+  const rowsToCenter = [lastRow];
+  if (lastRow.length === 1 && lastRow[0].rect.isWide) {
+    for (let index = rows.length - 2; index >= 0; index--) {
+      const row = rows[index].items;
+      if (row.length !== 1 || !row[0].rect.isWide) break;
+      rowsToCenter.unshift(row);
+    }
+  }
+
+  const translations = rowsToCenter.flatMap((row) => {
+    const groupLeft = Math.min(...row.map(({ rect }) => rect.left));
+    const groupRight = Math.max(...row.map(({ rect }) => rect.right));
+    const offset = Math.round(containerCenter - (groupLeft + groupRight) / 2);
+    return row.map(({ index }) => ({ index, offset }));
+  });
+  const lastOffset = translations.at(-1)?.offset || 0;
 
   return {
     indexes: lastRow.map(({ index }) => index),
-    offset: Math.round(containerCenter - rowCenter),
+    offset: lastOffset,
+    translations,
   };
 }
