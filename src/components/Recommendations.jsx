@@ -391,8 +391,14 @@ export default function Recommendations({ currentArchive }) {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
-            <button onClick={refreshCache} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ccc', opacity: 0.7, padding: '4px', borderRadius: '4px', display: 'flex' }} title="清理缓存并刷新">
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+            <button
+              className="btn"
+              onClick={refreshCache}
+              disabled={loading}
+              style={{ padding: '6px 12px', fontSize: '12px', opacity: loading ? 0.72 : 1 }}
+              title="清理缓存并刷新"
+            >
+              {loading ? '刷新中' : '刷新'}
             </button>
             <button onClick={toggleCollapse} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ccc', opacity: 0.8, padding: '4px', borderRadius: '4px', display: 'flex' }}>
               <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" style={{ transition: 'transform 0.3s', transform: collapsed ? 'rotate(180deg)' : 'rotate(0deg)' }}><path d="M6 15l6-6 6 6z"/></svg>
