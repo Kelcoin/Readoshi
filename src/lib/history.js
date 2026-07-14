@@ -1,7 +1,7 @@
 import { getSyncToken, getWorkerUrl } from './worker-config';
 import { decorateArchiveRecord, hydrateArchiveRecords, rememberArchiveMetadata } from './archiveMetadataCache';
 import { loadServerInfo } from './serverInfoCache';
-import { mergeCachedHistoryProgress, mergeHistoryProgressCache } from './historyProgressCache';
+import { mergeCachedHistoryProgress, mergeHistoryProgressCache, mergeMonotonicHistoryItems } from './historyProgressCache';
 
 const LOCAL_HISTORY_KEY = 'lrr_history';
 const LOCAL_HIDE_READ_KEY = 'lrr_hide_read';
@@ -11,7 +11,7 @@ const HISTORY_PROGRESS_CACHE_KEY = 'lrr_history_progress_cache';
 const CROP_COVER_KEY = 'lrr_crop_cover';
 const ARCHIVE_BROWSE_MODE_KEY = 'lrr_archive_browse_mode';
 const REMOTE_LOAD_TTL_MS = 30 * 1000;
-const HISTORY_SYNC_DEBOUNCE_MS = 30 * 1000;
+const HISTORY_SYNC_INTERVAL_MS = 8 * 1000;
 const HISTORY_SYNC_RETRY_MS = 2 * 60 * 1000;
 
 let remoteLoadPromise = null;
@@ -114,27 +114,23 @@ async function workerJson(endpoint, { method = 'GET', body = null, keepalive = f
   return text ? JSON.parse(text) : null;
 }
 
-function scheduleHistoryFlush(delay = HISTORY_SYNC_DEBOUNCE_MS) {
-  if (historyFlushTimer) clearTimeout(historyFlushTimer);
+function scheduleHistoryFlush(delay = HISTORY_SYNC_INTERVAL_MS) {
+  if (historyFlushTimer) return;
   historyFlushTimer = setTimeout(() => {
     historyFlushTimer = null;
     flushHistorySync().catch(() => {});
   }, delay);
 }
 
-function queueHistorySync(item, { deferUntilExit = false } = {}) {
+function queueHistorySync(item) {
   const cfg = remoteConfig();
   if (!cfg) return;
   const scope = `${cfg.base}|${cfg.token}`;
   if (pendingHistoryScope && pendingHistoryScope !== scope) pendingHistorySync.clear();
   pendingHistoryScope = scope;
-  pendingHistorySync.set(item.id, item);
-  if (deferUntilExit) {
-    if (historyFlushTimer) clearTimeout(historyFlushTimer);
-    historyFlushTimer = null;
-  } else {
-    scheduleHistoryFlush();
-  }
+  const queued = pendingHistorySync.get(item.id);
+  pendingHistorySync.set(item.id, mergeMonotonicHistoryItems(queued ? [queued] : [], [item])[0]);
+  scheduleHistoryFlush();
 }
 
 export async function flushHistorySync({ keepalive = false } = {}) {
@@ -161,7 +157,7 @@ export async function flushHistorySync({ keepalive = false } = {}) {
     .catch(() => {
       batch.forEach((item) => {
         const queued = pendingHistorySync.get(item.id);
-        if (!queued || item.time >= queued.time) pendingHistorySync.set(item.id, item);
+        pendingHistorySync.set(item.id, mergeMonotonicHistoryItems(queued ? [queued] : [], [item])[0]);
       });
       scheduleHistoryFlush(HISTORY_SYNC_RETRY_MS);
       return false;
@@ -199,8 +195,13 @@ async function loadHistoryStateNow({ force = false } = {}) {
   let retentionDays = 0;
 
   if (remote && (force || remoteLoadedScope !== scope || !remoteLoadedAt || Date.now() - remoteLoadedAt >= REMOTE_LOAD_TTL_MS)) {
+    await flushHistorySync();
     const data = await workerJson('/history');
-    histories = mergeCachedHistoryProgress(sortHistoryByTime(data?.histories || []), readHistoryProgressCache());
+    const remoteHistories = sortHistoryByTime(data?.histories || []);
+    histories = mergeCachedHistoryProgress(
+      mergeMonotonicHistoryItems(remoteHistories, getStoredHistory()),
+      readHistoryProgressCache(),
+    );
     hideRead = !!data?.hideRead;
     retentionDays = data?.retentionDays || 0;
     localStorage.setItem(REMOTE_HISTORY_CACHE_KEY, JSON.stringify(histories));
@@ -225,10 +226,11 @@ async function loadHistoryStateNow({ force = false } = {}) {
         if (item.progress === undefined || item.progress === null || item.progress === '') return item;
         const lrrProgress = Math.max(0, Number.parseInt(item.progress, 10) || 0);
         const stored = storedById.get(item.id);
-        if (!stored || stored.page === lrrProgress) return { ...item, page: lrrProgress };
-        const next = { id: item.id, page: lrrProgress, time: stored.time };
+        const nextPage = Math.max(stored?.page || 0, lrrProgress);
+        if (!stored || stored.page === nextPage) return { ...item, page: nextPage };
+        const next = { id: item.id, page: nextPage, time: stored.time };
         changed.push(next);
-        return { ...item, page: lrrProgress };
+        return { ...item, page: nextPage };
       });
       if (changed.length > 0) {
         const changedById = new Map(changed.map((item) => [item.id, item]));
@@ -260,14 +262,14 @@ export function loadHistoryState(options = {}) {
   return trackedPromise;
 }
 
-export const saveHistory = async (archive, page, { deferRemote = false } = {}) => {
+export const saveHistory = async (archive, page) => {
   if (!archive?.arcid) return false;
   const item = archiveToHistoryItem(archive, page);
-  const history = getStoredHistory().filter((h) => h.id !== item.id);
-  writeHistoryCache([...history, item]);
+  const history = mergeMonotonicHistoryItems(getStoredHistory(), [item]);
+  writeHistoryCache(history);
 
   if (!hasRemoteHistory()) return true;
-  queueHistorySync(item, { deferUntilExit: deferRemote });
+  queueHistorySync(history.find((entry) => entry.id === item.id));
   return true;
 };
 

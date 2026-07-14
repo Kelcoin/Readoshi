@@ -31,4 +31,10 @@ assert.deepEqual(
 const historySource = fs.readFileSync(new URL('../src/lib/history.js', import.meta.url), 'utf8');
 const readerSource = fs.readFileSync(new URL('../src/pages/Reader.jsx', import.meta.url), 'utf8');
 
+assert.match(historySource, /const HISTORY_SYNC_INTERVAL_MS = 8 \* 1000/);
+assert.match(historySource, /function scheduleHistoryFlush[\s\S]*if \(historyFlushTimer\) return/);
+assert.match(historySource, /await flushHistorySync\(\);[\s\S]*workerJson\('\/history'\)/);
+assert.match(historySource, /mergeMonotonicHistoryItems\(remoteHistories, getStoredHistory\(\)\)/);
+assert.doesNotMatch(historySource, /deferUntilExit/);
+
 export { historySource, readerSource };
