@@ -25,6 +25,8 @@ assert.doesNotMatch(section('const handleArchiveBrowseModeChange', 'const ehFavo
 
 assert.match(home, /archiveBrowseStateRef\.current = \{/);
 assert.match(home, /selectedCategory\?\.id/);
+assert.match(home, /const \[selectedCategory, setSelectedCategory\] = useState\(\(\) => homeSnapshot\?\.selectedCategory \|\| null\)/);
+assert.match(section('const buildHomeStateSnapshot', 'const saveCurrentHomeForNavigation'), /selectedCategory,/);
 assert.match(home, /archiveLoadError/);
 assert.match(home, /\|\$\{mode\}\|\$\{pageSize\}\|\$\{isPagedMode \? requestedPage : 'scroll'\}/);
 assert.match(home, /const batchStart = isPagedMode \? getArchivePageStart\(nextPage, pageSize\) : \(isReset \? 0 : current\.startOffset\)/);

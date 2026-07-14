@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { readMetadataPluginResult } from '../src/lib/metadataEditor.js';
 
 const metadataPage = fs.readFileSync(new URL('../src/pages/MetadataPage.jsx', import.meta.url), 'utf8');
+const pwaStatus = fs.readFileSync(new URL('../src/components/PwaStatus.jsx', import.meta.url), 'utf8');
 
 assert.throws(
   () => readMetadataPluginResult({ operation: 'use_plugin', success: 0, error: '登录失败' }),
@@ -25,3 +26,6 @@ assert.match(
   'plugin completion status must auto-hide',
 );
 assert.match(metadataPage, /catch \(error\) \{ showStatus\(error\.message, 'error'\); \}/);
+assert.match(metadataPage, /data-open=\{status && !status\.closing \? 'true' : 'false'\}/);
+assert.match(pwaStatus, /textAlign:\s*'center'/);
+assert.match(pwaStatus, /padding:\s*'8px 14px'/);

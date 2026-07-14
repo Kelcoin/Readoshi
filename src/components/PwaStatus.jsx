@@ -90,7 +90,7 @@ export default function PwaStatus() {
         style={{
           width: 'min(420px, 100%)',
           minHeight: '44px',
-          padding: '8px 10px 8px 14px',
+          padding: '8px 14px',
           borderRadius: '8px',
           border: '1px solid rgba(255,255,255,0.14)',
           background: 'rgba(16,18,24,0.92)',
@@ -104,7 +104,7 @@ export default function PwaStatus() {
           pointerEvents: 'auto',
         }}
       >
-        <span style={{ flex: 1, minWidth: 0, fontSize: '13px', fontWeight: 600 }}>
+        <span style={{ flex: 1, minWidth: 0, fontSize: '13px', fontWeight: 600, textAlign: 'center' }}>
           {primary.message}
         </span>
       </div>

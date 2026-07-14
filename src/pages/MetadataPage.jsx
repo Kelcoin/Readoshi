@@ -95,7 +95,7 @@ export default function MetadataPage({ archiveId }) {
         <div className="metadata-tags-box">{form.tags.map(tag => <MetadataTagChip key={tag} tag={tag} translatedTag={formatMetadataTag(tag, translateTag)} revealed={revealedTag === tag} onReveal={() => setRevealedTag(tag)} onHide={() => setRevealedTag(current => current === tag ? '' : current)} onToggle={() => setRevealedTag(current => current === tag ? '' : tag)} onCopy={async () => { try { await navigator.clipboard.writeText(tag); showStatus(`已复制标签：${tag}`, 'success'); } catch { showStatus('复制标签失败', 'error'); } }} onDelete={() => { setRevealedTag(current => current === tag ? '' : current); setForm({ ...form, tags: form.tags.filter(item => item !== tag) }); }} />)}</div>
       </div>
       <div className="metadata-plugin-row"><CustomSelect value={plugin} options={plugins} onChange={setPlugin} /><input className="input-glass" value={pluginArg} onChange={e => setPluginArg(e.target.value)} placeholder="插件参数或 URL" /><button className="btn" onClick={runPlugin}>执行插件</button></div>
-      <div className="metadata-status-wrap" data-open={status ? 'true' : 'false'} aria-live="polite">
+      <div className="metadata-status-wrap" data-open={status && !status.closing ? 'true' : 'false'} aria-live="polite">
         <div className="metadata-status-clip">
           {status && <div key={status.id} className={`metadata-status-card is-${status.type}${status.closing ? ' is-closing' : ''}`}>{status.text}</div>}
         </div>

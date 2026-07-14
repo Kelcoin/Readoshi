@@ -451,7 +451,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
   const [presetNameDialog, setPresetNameDialog] = useState(null);
   const [editingPreset, setEditingPreset] = useState('');
   const [presetDeleteTarget, setPresetDeleteTarget] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState(null);
+  const [selectedCategory, setSelectedCategory] = useState(() => homeSnapshot?.selectedCategory || null);
   const [categories, setCategories] = useState([]);
   const [columnsPerRow, setColumnsPerRow] = useState(5);
   const [stackFilterControls, setStackFilterControls] = useState(window.innerWidth < FILTER_STACK_BREAKPOINT);
@@ -542,6 +542,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     archivePage,
     archivePageSize,
     filter,
+    selectedCategory,
     historyCollapsed,
     watchlistCollapsed,
     randomCollapsed,
@@ -550,7 +551,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     watchlistScrollLeft: getWatchlistScrollerNode?.()?.scrollLeft || 0,
     randomScrollLeft: getRandomScrollerNode?.()?.scrollLeft || 0,
     ...overrides,
-  }), [archiveBrowseMode, archivePage, archivePageSize, archiveTotal, filter, getHistoryScrollerNode, getRandomScrollerNode, getWatchlistScrollerNode, hasMore, historyCollapsed, randomCollapsed, randomsUpdatedAt, startOffset, watchlistCollapsed]);
+  }), [archiveBrowseMode, archivePage, archivePageSize, archiveTotal, filter, getHistoryScrollerNode, getRandomScrollerNode, getWatchlistScrollerNode, hasMore, historyCollapsed, randomCollapsed, randomsUpdatedAt, selectedCategory, startOffset, watchlistCollapsed]);
 
   const saveCurrentHomeForNavigation = useCallback(() => {
     const snapshot = buildHomeStateSnapshot();
