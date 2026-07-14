@@ -1049,9 +1049,11 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     if (isReset && !force && lastFetchedFilterRef.current === filterKey && now - lastFetchedRef.current < 2500) return;
     if (!isReset && archiveRequestInFlightRef.current) return false;
 
-    lastFetchedFilterRef.current = filterKey;
-    lastFetchedRef.current = now;
     archiveRequestInFlightRef.current = true;
+    const markArchiveFetchCompleted = () => {
+      lastFetchedFilterRef.current = filterKey;
+      lastFetchedRef.current = Date.now();
+    };
     archiveAbortControllerRef.current?.abort();
     const controller = new AbortController();
     archiveAbortControllerRef.current = controller;
@@ -1084,6 +1086,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           setArchives([]);
           setStartOffset(0);
           setHasMore(false);
+          markArchiveFetchCompleted();
           return true;
         }
         const total = ids.length;
@@ -1102,6 +1105,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
         setArchives((prev) => (isPagedMode || isReset ? data : [...prev, ...data]));
         setStartOffset(batchStart + batchIds.length);
         setHasMore(batchStart + batchIds.length < total);
+        markArchiveFetchCompleted();
         return true;
       }
       const query = effectiveFilter.active ? (effectiveFilter.query || '').trim() : '';
@@ -1142,6 +1146,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
         setStartOffset(start + data.length);
         setHasMore(data.length > 0 && data.length >= ARCHIVE_PAGE_SIZE);
       }
+      markArchiveFetchCompleted();
       return true;
     } catch (e) {
       if (e?.name === 'AbortError') return false;
