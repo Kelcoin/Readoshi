@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
+  clampProgressPage,
   mergeCachedHistoryProgress,
   mergeHistoryProgressCache,
   mergeMonotonicHistoryItems,
 } from '../src/lib/historyProgressCache.js';
+
+assert.equal(clampProgressPage(80, 20), 20);
+assert.equal(clampProgressPage(80, 100), 80);
+assert.equal(clampProgressPage(80, 0), 80);
 
 assert.deepEqual(
   mergeMonotonicHistoryItems(
@@ -35,6 +40,19 @@ assert.match(historySource, /const HISTORY_SYNC_INTERVAL_MS = 8 \* 1000/);
 assert.match(historySource, /function scheduleHistoryFlush[\s\S]*if \(historyFlushTimer\) return/);
 assert.match(historySource, /await flushHistorySync\(\);[\s\S]*workerJson\('\/history'\)/);
 assert.match(historySource, /mergeMonotonicHistoryItems\(remoteHistories, getStoredHistory\(\)\)/);
+assert.match(historySource, /clampProgressPage\(entry\.page, archive\.pagecount\)/);
+assert.match(historySource, /clampHistoryProgressForArchive\(item\.id, archive\.pagecount\)/);
+assert.match(historySource, /const storedPage = clampProgressPage\(stored\?\.page, pageCap\)/);
+assert.match(historySource, /const boundedQueued = queued[\s\S]*clampProgressPage\(queued\.page, pageCap\)/);
+assert.match(historySource, /const boundedItem = \{ \.\.\.item, page: clampProgressPage\(item\.page, pageCap\) \}/);
 assert.doesNotMatch(historySource, /deferUntilExit/);
+
+assert.doesNotMatch(readerSource, /lrrProgressSentRef/);
+assert.doesNotMatch(readerSource, /deferRemote/);
+assert.match(readerSource, /highestObservedPageRef/);
+assert.match(readerSource, /highestLrrSyncedPageRef/);
+assert.match(readerSource, /Math\.max\(lrrProgress, localProgress\)/);
+assert.match(readerSource, /enqueueLrrProgressSync\(archiveId, highestPage\)/);
+assert.match(readerSource, /clampProgressPage\(Math\.max\(observedPage, page\), pages\.length\)/);
 
 export { historySource, readerSource };

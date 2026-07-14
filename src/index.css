@@ -1790,12 +1790,15 @@ textarea:focus-visible,
 
 .archive-grid {
   display: grid;
-  grid-auto-flow: dense;
   justify-items: center;
   opacity: 1;
   transform: scale(1);
   transform-origin: center top;
   transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.archive-grid:not(.is-paged) {
+  grid-auto-flow: dense;
 }
 
 .archive-grid > .archive-card-wrap.is-wide {

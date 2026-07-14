@@ -2,6 +2,7 @@ import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMe
 import { flushSync } from 'react-dom';
 import { lrrApi } from '../lib/api';
 import { flushHistorySync, getHistory, saveHistory, getHideRead, removeHistoryItem, loadHistoryState } from '../lib/history';
+import { clampProgressPage } from '../lib/historyProgressCache';
 import { getWatchlist, loadWatchlistState, removeWatchlistItem } from '../lib/watchlist';
 import { getReaderArchiveListMeta } from '../lib/readerArchiveList';
 import { isArchiveMissingError } from '../lib/historyMaintenance';
@@ -1296,11 +1297,69 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const rightDivRef = useRef(null);
   const immersiveLoadSeqRef = useRef(0);
   const watchlistAutoRemovedRef = useRef(new Set());
-  const lrrProgressSentRef = useRef(new Set());
+  const highestObservedPageRef = useRef(new Map());
+  const highestLrrSyncedPageRef = useRef(new Map());
+  const highestLrrQueuedPageRef = useRef(new Map());
+  const lrrProgressChainRef = useRef(new Map());
   const commitPageTargetRef = useRef(null);
   const viewModeRef = useRef(viewMode);
   const currentIndexRef = useRef(0);
   const pagesLenRef = useRef(0);
+
+  const enqueueLrrProgressSync = useCallback((id, page) => {
+    const targetPage = Math.max(0, Number.parseInt(page, 10) || 0);
+    if (!id || targetPage <= 0) return Promise.resolve();
+
+    const syncedPage = highestLrrSyncedPageRef.current.get(id) || 0;
+    const queuedPage = highestLrrQueuedPageRef.current.get(id) || 0;
+    if (targetPage <= Math.max(syncedPage, queuedPage)) {
+      return lrrProgressChainRef.current.get(id) || Promise.resolve();
+    }
+
+    highestLrrQueuedPageRef.current.set(id, targetPage);
+    const previous = lrrProgressChainRef.current.get(id) || Promise.resolve();
+    const next = previous
+      .catch(() => {})
+      .then(async () => {
+        const latestSyncedPage = highestLrrSyncedPageRef.current.get(id) || 0;
+        if (targetPage <= latestSyncedPage) return;
+        await lrrApi.updateProgress(id, targetPage);
+        highestLrrSyncedPageRef.current.set(id, targetPage);
+      })
+      .catch(() => {
+        if ((highestLrrQueuedPageRef.current.get(id) || 0) === targetPage) {
+          highestLrrQueuedPageRef.current.set(id, highestLrrSyncedPageRef.current.get(id) || 0);
+        }
+      });
+
+    lrrProgressChainRef.current.set(id, next);
+    next.finally(() => {
+      if (lrrProgressChainRef.current.get(id) === next) {
+        lrrProgressChainRef.current.delete(id);
+      }
+    });
+    return next;
+  }, []);
+
+  useEffect(() => {
+    const flushProgress = () => {
+      if (!serverTracksProgress || !archiveId) return;
+      enqueueLrrProgressSync(
+        archiveId,
+        clampProgressPage(highestObservedPageRef.current.get(archiveId) || 0, pages.length),
+      );
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') flushProgress();
+    };
+    window.addEventListener('pagehide', flushProgress);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('pagehide', flushProgress);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      flushProgress();
+    };
+  }, [archiveId, enqueueLrrProgressSync, pages.length, serverTracksProgress]);
 
   // ===== Zoom refs =====
   const zoomScaleRef = useRef(1.0);
@@ -1481,8 +1540,10 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const pageIndicatorVisibilityMode = settings.pageIndicatorVisibilityMode;
   const [pageNumVisible, setPageNumVisible] = useState(true);
   const [pageIndicatorMode, setPageIndicatorMode] = useState('pinned');
+  const pageIndicatorModeRef = useRef('pinned');
   const pageNumTimerRef = useRef(null);
   const pageIndicatorTransientActiveRef = useRef(false);
+  pageIndicatorModeRef.current = pageIndicatorMode;
 
 
   const showTransientPageIndicator = useCallback((duration = 1400) => {
@@ -1502,29 +1563,18 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     const imgEl = imgCurrRef.current;
     if (!indicator || !imgEl) return;
 
-    const baseGap = window.innerWidth < 960 ? 12 : 8;
-    const loweredGap = window.innerWidth < 960 ? 2 : 0;
-
     const imageRect = imgEl.getBoundingClientRect();
     const renderRect = computeContainedImageRect(imageRect, imgEl.naturalWidth, imgEl.naturalHeight);
     const doesOverlap = (rect) => rectsOverlap(renderRect, rect, 6);
-
-    const measureRectForBottom = (bottomGapPx) => {
-      const width = indicator.offsetWidth || indicator.getBoundingClientRect().width;
-      const height = indicator.offsetHeight || indicator.getBoundingClientRect().height;
-      const left = isMobile
-        ? (window.innerWidth - width) / 2
-        : window.innerWidth - 20 - width;
-      const bottom = window.innerHeight - bottomGapPx;
-      return {
-        left,
-        right: left + width,
-        top: bottom - height,
-        bottom,
-      };
+    const measuredRect = indicator.getBoundingClientRect();
+    const loweredShift = isMobile ? 10 : 8;
+    const currentShift = pageIndicatorModeRef.current === 'lowered' ? loweredShift : 0;
+    const baseRect = {
+      left: measuredRect.left,
+      right: measuredRect.right,
+      top: measuredRect.top - currentShift,
+      bottom: measuredRect.bottom - currentShift,
     };
-
-    const baseRect = measureRectForBottom(baseGap);
     if (!doesOverlap(baseRect)) {
       if (pageNumTimerRef.current) clearTimeout(pageNumTimerRef.current);
       pageNumTimerRef.current = null;
@@ -1534,7 +1584,11 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       return;
     }
 
-    const loweredRect = measureRectForBottom(loweredGap);
+    const loweredRect = {
+      ...baseRect,
+      top: baseRect.top + loweredShift,
+      bottom: baseRect.bottom + loweredShift,
+    };
     if (!doesOverlap(loweredRect)) {
       if (pageNumTimerRef.current) clearTimeout(pageNumTimerRef.current);
       pageNumTimerRef.current = null;
@@ -1575,7 +1629,6 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     pageIndicatorTransientActiveRef.current = false;
     setPageNumVisible(true);
     setPageIndicatorMode('pinned');
-    requestAnimationFrame(() => checkIndicatorOverlap(true));
 
     let overlapFrame = 0;
     const scheduleOverlapCheck = () => {
@@ -1585,12 +1638,23 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         checkIndicatorOverlap();
       });
     };
+    overlapFrame = requestAnimationFrame(() => {
+      overlapFrame = 0;
+      checkIndicatorOverlap(true);
+    });
     const ro = new ResizeObserver(scheduleOverlapCheck);
     resizeObserverRef.current = ro;
 
     const imgEl = imgCurrRef.current;
-    if (imgEl) ro.observe(imgEl);
-    if (indicatorRef.current) ro.observe(indicatorRef.current);
+    if (imgEl) {
+      ro.observe(imgEl);
+      imgEl.addEventListener('load', scheduleOverlapCheck);
+    }
+    const indicatorEl = indicatorRef.current;
+    if (indicatorEl) {
+      ro.observe(indicatorEl);
+      indicatorEl.addEventListener('transitionend', scheduleOverlapCheck);
+    }
     window.addEventListener('resize', scheduleOverlapCheck, { passive: true });
     window.visualViewport?.addEventListener('resize', scheduleOverlapCheck, { passive: true });
     window.visualViewport?.addEventListener('scroll', scheduleOverlapCheck, { passive: true });
@@ -1601,6 +1665,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       pageIndicatorTransientActiveRef.current = false;
       ro.disconnect();
       if (overlapFrame) cancelAnimationFrame(overlapFrame);
+      if (imgEl) imgEl.removeEventListener('load', scheduleOverlapCheck);
+      if (indicatorEl) indicatorEl.removeEventListener('transitionend', scheduleOverlapCheck);
       window.removeEventListener('resize', scheduleOverlapCheck);
       window.visualViewport?.removeEventListener('resize', scheduleOverlapCheck);
       window.visualViewport?.removeEventListener('scroll', scheduleOverlapCheck);
@@ -1633,25 +1699,39 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       if (coldRestoreRef.current && readerSnapshot) {
         let restoredArchive = readerSnapshot.archive || null;
         if (archiveHasNewMarker(restoredArchive)) {
-          const progressKey = `${archiveId}:1`;
-          lrrProgressSentRef.current.add(progressKey);
           try {
             await lrrApi.updateProgress(archiveId, 1);
+            highestLrrSyncedPageRef.current.set(archiveId, Math.max(1, highestLrrSyncedPageRef.current.get(archiveId) || 0));
             restoredArchive = clearArchiveNewMarker(restoredArchive);
-          } catch {
-            lrrProgressSentRef.current.delete(progressKey);
-          }
+          } catch {}
         }
         if (cancelled) return;
+        const restoredPages = Array.isArray(readerSnapshot.pages) ? readerSnapshot.pages : [];
+        const restoredLrrProgress = clampProgressPage(restoredArchive?.progress, restoredPages.length);
+        const restoredLocalProgress = clampProgressPage(Number.parseInt(
+          getHistory().find((item) => item.id === archiveId)?.page,
+          10,
+        ) || 0, restoredPages.length);
+        const restoredSnapshotProgress = clampProgressPage((readerSnapshot.currentIndex || 0) + 1, restoredPages.length);
+        const restoredHighestPage = Math.max(restoredLrrProgress, restoredLocalProgress, restoredSnapshotProgress);
+        highestLrrSyncedPageRef.current.set(archiveId, Math.max(
+          highestLrrSyncedPageRef.current.get(archiveId) || 0,
+          restoredLrrProgress,
+        ));
+        highestObservedPageRef.current.set(archiveId, restoredHighestPage);
+        const restoredIndex = Math.min(
+          Math.max(0, restoredPages.length - 1),
+          Math.max(readerSnapshot.currentIndex || 0, restoredHighestPage - 1),
+        );
         setArchive(restoredArchive);
-        setPages(Array.isArray(readerSnapshot.pages) ? readerSnapshot.pages : []);
-        setCurrentIndex(typeof readerSnapshot.currentIndex === 'number' ? readerSnapshot.currentIndex : 0);
-        setDisplayedIndex(typeof readerSnapshot.displayedIndex === 'number' ? readerSnapshot.displayedIndex : 0);
+        setPages(restoredPages);
+        setCurrentIndex(restoredIndex);
+        setDisplayedIndex(restoredIndex);
         setLoadingUiArmed(false);
         setPageLoadPhase({
           status: 'loading',
-          visibleIndex: typeof readerSnapshot.displayedIndex === 'number' ? readerSnapshot.displayedIndex : 0,
-          targetIndex: typeof readerSnapshot.currentIndex === 'number' ? readerSnapshot.currentIndex : 0,
+          visibleIndex: restoredIndex,
+          targetIndex: restoredIndex,
           progress: 0.08,
           shownAt: Date.now(),
         });
@@ -1671,14 +1751,11 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       try {
         let meta = await lrrApi.getArchive(archiveId);
         if (archiveHasNewMarker(meta)) {
-          const progressKey = `${archiveId}:1`;
-          lrrProgressSentRef.current.add(progressKey);
           try {
             await lrrApi.updateProgress(archiveId, 1);
+            highestLrrSyncedPageRef.current.set(archiveId, Math.max(1, highestLrrSyncedPageRef.current.get(archiveId) || 0));
             meta = { ...clearArchiveNewMarker(meta), progress: Math.max(1, Number.parseInt(meta.progress, 10) || 0) };
-          } catch {
-            lrrProgressSentRef.current.delete(progressKey);
-          }
+          } catch {}
         }
         if (cancelled) return;
         setArchive(meta);
@@ -1700,7 +1777,17 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         setPages(extractedPages);
         setLoadingPages(false);
         setReaderReady(true);
-        const savedProgress = parseInt(meta.progress || 0);
+        const lrrProgress = clampProgressPage(meta.progress, extractedPages.length);
+        const localProgress = clampProgressPage(Number.parseInt(
+          getHistory().find((item) => item.id === archiveId)?.page,
+          10,
+        ) || 0, extractedPages.length);
+        const savedProgress = Math.max(lrrProgress, localProgress);
+        highestLrrSyncedPageRef.current.set(archiveId, Math.max(
+          highestLrrSyncedPageRef.current.get(archiveId) || 0,
+          lrrProgress,
+        ));
+        highestObservedPageRef.current.set(archiveId, savedProgress);
         if (savedProgress > 0 && savedProgress <= extractedPages.length) {
           setCurrentIndex(savedProgress - 1);
           setDisplayedIndex(savedProgress - 1);
@@ -1731,26 +1818,23 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   useEffect(() => {
     if (archive && pages.length > 0) {
       const page = currentIndex + 1;
-      saveHistory(archive, page, { deferRemote: serverTracksProgress !== false }).catch(() => {});
-      setHistoryEntries(getHistory());
       const archiveId = archive.arcid || archive.id;
+      const observedPage = highestObservedPageRef.current.get(archiveId) || 0;
+      const highestPage = clampProgressPage(Math.max(observedPage, page), pages.length);
+      highestObservedPageRef.current.set(archiveId, highestPage);
+      saveHistory(archive, highestPage).catch(() => {});
+      setHistoryEntries(getHistory());
       const totalPages = Number(archive.pagecount || pages.length) || 0;
       if (archiveId && totalPages > 0 && (currentIndex + 1) / totalPages > 0.8 && !watchlistAutoRemovedRef.current.has(archiveId)) {
         watchlistAutoRemovedRef.current.add(archiveId);
         removeWatchlistItem(archiveId).catch(() => {});
       }
       if (serverTracksProgress && archiveId) {
-        const progressKey = `${archiveId}:${page}`;
-        if (!lrrProgressSentRef.current.has(progressKey)) {
-          lrrProgressSentRef.current.add(progressKey);
-          lrrApi.updateProgress(archiveId, page).catch(() => {
-            lrrProgressSentRef.current.delete(progressKey);
-          });
-        }
+        enqueueLrrProgressSync(archiveId, highestPage);
       }
     }
     return undefined;
-  }, [currentIndex, archive, pages, serverTracksProgress]);
+  }, [currentIndex, archive, pages, serverTracksProgress, enqueueLrrProgressSync]);
 
   // ===== Pointer down =====
   const handlePointerDown = useCallback((e) => {
@@ -2246,12 +2330,17 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       setViewMode('normal');
     } else {
       if (archive && pages.length > 0) {
-        saveHistory(archive, currentIndex + 1).then(() => flushHistorySync()).catch(() => {});
+        const highestPage = clampProgressPage(Math.max(
+          highestObservedPageRef.current.get(archiveId) || 0,
+          currentIndex + 1,
+        ), pages.length);
+        saveHistory(archive, highestPage).then(() => flushHistorySync()).catch(() => {});
+        if (serverTracksProgress) enqueueLrrProgressSync(archiveId, highestPage);
         setHistoryEntries(getHistory());
       }
       onBack();
     }
-  }, [archive, currentIndex, onBack, pages.length, viewMode]);
+  }, [archive, archiveId, currentIndex, enqueueLrrProgressSync, onBack, pages.length, serverTracksProgress, viewMode]);
 
   // ===== Preload indices =====
   const getPreloadIndices = () => {
@@ -2615,37 +2704,36 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                 />
               </button>
             )}
+            {viewMode === 'normal' && (
+              <button
+                className="reader-toolbar-button"
+                style={btnBase}
+                onClick={() => setViewMode('immersive')}
+                title="沉浸模式"
+                aria-label="沉浸模式"
+              >
+                <ReaderToolbarButtonContent icon="fullscreen" label="沉浸模式" />
+              </button>
+            )}
             <button
               className="reader-toolbar-button"
-              style={btnBase}
-              onClick={() => { setViewMode(viewMode === 'normal' ? 'immersive' : 'normal'); }}
-              title={viewMode === 'normal' ? '沉浸模式' : '退出沉浸'}
-              aria-label={viewMode === 'normal' ? '沉浸模式' : '退出沉浸'}
+              disabled={!readerReady || pages.length === 0 || coverSetting}
+              style={{
+                ...btnBase,
+                opacity: (!readerReady || pages.length === 0 || coverSetting) ? 0.45 : 1,
+                cursor: (!readerReady || pages.length === 0 || coverSetting) ? 'not-allowed' : 'pointer',
+              }}
+              onClick={handleSetCover}
+              title={`将当前第 ${currentIndex + 1} 页设为封面`}
+              aria-label={`将当前第 ${currentIndex + 1} 页设为封面`}
             >
               <ReaderToolbarButtonContent
-                icon={viewMode === 'normal' ? 'fullscreen' : 'fullscreenExit'}
-                label={viewMode === 'normal' ? '沉浸模式' : '退出沉浸'}
+                icon="cover"
+                label={coverSetting ? '设置中...' : coverSetPage === currentIndex + 1 ? '已设为封面' : '设为封面'}
               />
             </button>
             {viewMode !== 'immersive' && (
               <>
-                <button
-                  className="reader-toolbar-button"
-                  disabled={!readerReady || pages.length === 0 || coverSetting}
-                  style={{
-                    ...btnBase,
-                    opacity: (!readerReady || pages.length === 0 || coverSetting) ? 0.45 : 1,
-                    cursor: (!readerReady || pages.length === 0 || coverSetting) ? 'not-allowed' : 'pointer',
-                  }}
-                  onClick={handleSetCover}
-                  title={`将当前第 ${currentIndex + 1} 页设为封面`}
-                  aria-label={`将当前第 ${currentIndex + 1} 页设为封面`}
-                >
-                  <ReaderToolbarButtonContent
-                    icon="cover"
-                    label={coverSetting ? '设置中...' : coverSetPage === currentIndex + 1 ? '已设为封面' : '设为封面'}
-                  />
-                </button>
                 <button className="reader-toolbar-button" style={btnBase} data-panel-toggle onClick={() => { setShowSettingsPanel((v) => !v); setShowArchivePanel(false); }} title="阅读设定" aria-label="阅读设定">
                   <ReaderToolbarButtonContent icon="settings" label="阅读设定" />
                 </button>
@@ -2912,6 +3000,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                 alt=""
                 style={{
                   width: '100%', height: '100%', maxWidth: '100vw', maxHeight: '100vh', objectFit: 'contain',
+                  display: 'none',
                   userSelect: 'none', WebkitUserSelect: 'none',
                   pointerEvents: 'none',
                 }}
@@ -2942,6 +3031,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                   alt=""
                   style={{
                     width: '100%', height: '100%', maxWidth: '100vw', maxHeight: '100vh', objectFit: 'contain',
+                    display: 'none',
                     userSelect: 'none', WebkitUserSelect: 'none',
                     pointerEvents: 'none',
                   }}
@@ -2980,6 +3070,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                   alt=""
                   style={{
                     width: '100%', height: '100%', maxWidth: '100vw', maxHeight: '100vh', objectFit: 'contain',
+                    display: 'none',
                     userSelect: 'none', WebkitUserSelect: 'none',
                     pointerEvents: 'none',
                   }}

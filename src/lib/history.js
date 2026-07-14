@@ -1,7 +1,7 @@
 import { getSyncToken, getWorkerUrl } from './worker-config';
 import { decorateArchiveRecord, hydrateArchiveRecords, rememberArchiveMetadata } from './archiveMetadataCache';
 import { loadServerInfo } from './serverInfoCache';
-import { mergeCachedHistoryProgress, mergeHistoryProgressCache, mergeMonotonicHistoryItems } from './historyProgressCache';
+import { clampProgressPage, mergeCachedHistoryProgress, mergeHistoryProgressCache, mergeMonotonicHistoryItems } from './historyProgressCache';
 
 const LOCAL_HISTORY_KEY = 'lrr_history';
 const LOCAL_HIDE_READ_KEY = 'lrr_hide_read';
@@ -22,6 +22,7 @@ let historyFlushTimer = null;
 let historyFlushPromise = null;
 let pendingHistoryScope = '';
 const pendingHistorySync = new Map();
+const pendingHistoryPageCaps = new Map();
 
 function remoteConfig() {
   const workerUrl = getWorkerUrl();
@@ -91,6 +92,20 @@ function writeHistoryProgressCache(items) {
   localStorage.setItem(HISTORY_PROGRESS_CACHE_KEY, JSON.stringify(Object.fromEntries(entries)));
 }
 
+function clampHistoryProgressForArchive(id, total) {
+  const pageCap = Math.max(0, Number.parseInt(total, 10) || 0);
+  if (!id || pageCap <= 0) return;
+  const cache = readHistoryProgressCache();
+  const current = cache[id];
+  if (!current) return;
+  const page = clampProgressPage(current.page, pageCap);
+  if (page === current.page && current.total === pageCap) return;
+  localStorage.setItem(HISTORY_PROGRESS_CACHE_KEY, JSON.stringify({
+    ...cache,
+    [id]: { ...current, page, total: pageCap },
+  }));
+}
+
 function writeHideReadCache(v) {
   localStorage.setItem(activeHideReadKey(), v ? '1' : '0');
   emitHistoryChanged();
@@ -122,14 +137,21 @@ function scheduleHistoryFlush(delay = HISTORY_SYNC_INTERVAL_MS) {
   }, delay);
 }
 
-function queueHistorySync(item) {
+function queueHistorySync(item, pageCap = 0) {
   const cfg = remoteConfig();
   if (!cfg) return;
   const scope = `${cfg.base}|${cfg.token}`;
-  if (pendingHistoryScope && pendingHistoryScope !== scope) pendingHistorySync.clear();
+  if (pendingHistoryScope && pendingHistoryScope !== scope) {
+    pendingHistorySync.clear();
+    pendingHistoryPageCaps.clear();
+  }
   pendingHistoryScope = scope;
+  if (pageCap > 0) pendingHistoryPageCaps.set(item.id, pageCap);
   const queued = pendingHistorySync.get(item.id);
-  pendingHistorySync.set(item.id, mergeMonotonicHistoryItems(queued ? [queued] : [], [item])[0]);
+  const boundedQueued = queued
+    ? { ...queued, page: clampProgressPage(queued.page, pageCap) }
+    : null;
+  pendingHistorySync.set(item.id, mergeMonotonicHistoryItems(boundedQueued ? [boundedQueued] : [], [item])[0]);
   scheduleHistoryFlush();
 }
 
@@ -138,6 +160,7 @@ export async function flushHistorySync({ keepalive = false } = {}) {
   const scope = cfg ? `${cfg.base}|${cfg.token}` : '';
   if (!cfg || (pendingHistoryScope && pendingHistoryScope !== scope)) {
     pendingHistorySync.clear();
+    pendingHistoryPageCaps.clear();
     pendingHistoryScope = '';
     if (historyFlushTimer) clearTimeout(historyFlushTimer);
     historyFlushTimer = null;
@@ -157,14 +180,20 @@ export async function flushHistorySync({ keepalive = false } = {}) {
     .catch(() => {
       batch.forEach((item) => {
         const queued = pendingHistorySync.get(item.id);
-        pendingHistorySync.set(item.id, mergeMonotonicHistoryItems(queued ? [queued] : [], [item])[0]);
+        const pageCap = pendingHistoryPageCaps.get(item.id) || 0;
+        const boundedQueued = queued ? { ...queued, page: clampProgressPage(queued.page, pageCap) } : null;
+        const boundedItem = { ...item, page: clampProgressPage(item.page, pageCap) };
+        pendingHistorySync.set(item.id, mergeMonotonicHistoryItems(boundedQueued ? [boundedQueued] : [], [boundedItem])[0]);
       });
       scheduleHistoryFlush(HISTORY_SYNC_RETRY_MS);
       return false;
     })
     .finally(() => {
       historyFlushPromise = null;
-      if (pendingHistorySync.size === 0) pendingHistoryScope = '';
+      if (pendingHistorySync.size === 0) {
+        pendingHistoryScope = '';
+        pendingHistoryPageCaps.clear();
+      }
       if (pendingHistorySync.size > 0 && !historyFlushTimer) scheduleHistoryFlush();
     });
   return historyFlushPromise;
@@ -174,7 +203,7 @@ function archiveToHistoryItem(archive, page) {
   rememberArchiveMetadata(archive);
   return {
     id: archive.arcid,
-    page,
+    page: clampProgressPage(page, archive.pagecount),
     time: Date.now(),
   };
 }
@@ -224,9 +253,12 @@ async function loadHistoryStateNow({ force = false } = {}) {
       const changed = [];
       resultItems = hydrated.items.map((item) => {
         if (item.progress === undefined || item.progress === null || item.progress === '') return item;
-        const lrrProgress = Math.max(0, Number.parseInt(item.progress, 10) || 0);
+        const pageCap = Math.max(0, Number.parseInt(item.pagecount, 10) || 0);
+        const lrrProgress = clampProgressPage(item.progress, pageCap);
         const stored = storedById.get(item.id);
-        const nextPage = Math.max(stored?.page || 0, lrrProgress);
+        const storedPage = clampProgressPage(stored?.page, pageCap);
+        const nextPage = Math.max(storedPage, lrrProgress);
+        clampHistoryProgressForArchive(item.id, pageCap);
         if (!stored || stored.page === nextPage) return { ...item, page: nextPage };
         const next = { id: item.id, page: nextPage, time: stored.time };
         changed.push(next);
@@ -265,11 +297,17 @@ export function loadHistoryState(options = {}) {
 export const saveHistory = async (archive, page) => {
   if (!archive?.arcid) return false;
   const item = archiveToHistoryItem(archive, page);
-  const history = mergeMonotonicHistoryItems(getStoredHistory(), [item]);
+  clampHistoryProgressForArchive(item.id, archive.pagecount);
+  const storedHistory = getStoredHistory().map((entry) => (
+    entry.id === item.id
+      ? { ...entry, page: clampProgressPage(entry.page, archive.pagecount) }
+      : entry
+  ));
+  const history = mergeMonotonicHistoryItems(storedHistory, [item]);
   writeHistoryCache(history);
 
   if (!hasRemoteHistory()) return true;
-  queueHistorySync(history.find((entry) => entry.id === item.id));
+  queueHistorySync(history.find((entry) => entry.id === item.id), archive.pagecount);
   return true;
 };
 

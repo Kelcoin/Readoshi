@@ -5,6 +5,12 @@ function normalizedProgressEntry(value) {
   return page > 0 ? { page, ...(total > 0 ? { total } : {}), time } : null;
 }
 
+export function clampProgressPage(page, total) {
+  const normalizedPage = Math.max(0, Number.parseInt(page, 10) || 0);
+  const normalizedTotal = Math.max(0, Number.parseInt(total, 10) || 0);
+  return normalizedTotal > 0 ? Math.min(normalizedPage, normalizedTotal) : normalizedPage;
+}
+
 export function mergeMonotonicHistoryItems(...lists) {
   const byId = new Map();
   for (const item of lists.flatMap((list) => (Array.isArray(list) ? list : []))) {
