@@ -1,5 +1,12 @@
 node_modules/
 dist/
+.planning/
+.secrets/
+*.jks
+*.keystore
+start.bat
+docs/superpowers/
+scripts/check-*.mjs
 
 .env
 .env.*
