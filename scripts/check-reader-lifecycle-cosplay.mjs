@@ -45,6 +45,10 @@ assert.doesNotMatch(recommendations, /transition:\s*'all/);
 assert.match(home, /className="archive-category-list"/);
 assert.match(home, /className="btn archive-category-button"/);
 assert.match(css, /@media \(max-width: 640px\)[\s\S]*?\.archive-category-list/);
+assert.match(css, /@media \(max-width: 640px\)[\s\S]*?\.archive-category-button\s*\{[\s\S]*?min-height:\s*36px/);
+assert.match(css, /@media \(hover: none\)[\s\S]*?\.archive-category-button:hover:not\(:disabled\)/);
+assert.match(css, /@media \(hover: none\)[\s\S]*?background:\s*var\(--button-bg\)/);
+assert.match(css, /@media \(hover: none\)[\s\S]*?transform:\s*none/);
 assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.archive-category-button/);
 assert.match(css, /\[data-ios="true"\] \.reader-content-fade-in\s*\{[^}]*animation:\s*none/);
 
