@@ -10,6 +10,7 @@ import { lrrApi } from '../lib/api';
 import { archiveMatchesSearch } from '../lib/archiveSearch';
 import { getSyncToken, getWorkerUrl } from '../lib/worker-config';
 import { getWatchlist, getWatchlistAutoRemoveIds, loadWatchlistState, mergeWatchlistProgress, removeWatchlistItems } from '../lib/watchlist';
+import { ARCHIVE_PROGRESS_VISIBILITY, readArchiveProgressVisibility, shouldShowArchiveProgress } from '../lib/archiveProgress';
 
 function HeaderGlyph() {
   return <HomeSectionGlyph name="watchlist" size={24} color={getSectionGlyphColor('watchlist')} />;
@@ -19,6 +20,9 @@ export default function WatchlistPage({ onSelectArchive, onBack }) {
   const [items, setItems] = useState(() => getWatchlist());
   const [history, setHistory] = useState(() => getHistory());
   const [cropCover] = useState(getCropCover);
+  const [progressBarVisibility] = useState(readArchiveProgressVisibility);
+  const showHistoricalArchiveProgress = shouldShowArchiveProgress(progressBarVisibility, true);
+  const reserveGlobalProgressSpace = progressBarVisibility === ARCHIVE_PROGRESS_VISIBILITY.GLOBAL;
   const [query, setQuery] = useState('');
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
@@ -285,7 +289,8 @@ export default function WatchlistPage({ onSelectArchive, onBack }) {
                     onLongPress={() => requestSingleDelete(item)}
                     longPressTitle="移除待看"
                     currentPage={item.page}
-                    showProgressBar
+                    showProgressBar={showHistoricalArchiveProgress}
+                    reserveProgressSpace={reserveGlobalProgressSpace}
                     noCrop={!cropCover}
                     selectionMode={selectionMode}
                     selected={selected}

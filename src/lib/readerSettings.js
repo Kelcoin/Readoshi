@@ -1,3 +1,5 @@
+import { ARCHIVE_PROGRESS_VISIBILITY, normalizeArchiveProgressVisibility } from './archiveProgress';
+
 export const READER_SETTINGS_KEY = 'lrr_reader_settings';
 
 export const DEFAULT_READER_SETTINGS = Object.freeze({
@@ -9,6 +11,7 @@ export const DEFAULT_READER_SETTINGS = Object.freeze({
   splitWidePagesEnabled: false, rotateWidePagesEnabled: false,
   webtoonGap: 0, doublePageGap: 8,
   pageIndicatorVisibilityMode: 'auto',
+  progressBarVisibility: ARCHIVE_PROGRESS_VISIBILITY.HISTORY,
 });
 
 const allowed = {
@@ -30,6 +33,7 @@ export function normalizeReaderSettings(value = {}) {
   next.webtoonGap = Math.max(0, Math.min(64, Number(next.webtoonGap) || 0));
   next.doublePageGap = Math.max(0, Math.min(64, Number(next.doublePageGap) || 0));
   next.doublePageEnabled = next.readingLayout === 'double';
+  next.progressBarVisibility = normalizeArchiveProgressVisibility(next.progressBarVisibility);
   if (next.splitWidePagesEnabled) next.rotateWidePagesEnabled = false;
   return next;
 }

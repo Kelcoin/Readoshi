@@ -4,6 +4,8 @@ const {
   READER_STAGE_STATUS,
   createReaderRenderState,
   getReaderCapabilities,
+  isRetryableReaderBootstrapError,
+  loadReaderBootstrapResource,
   readerRenderReducer,
 } = await import('../src/lib/readerRenderPipeline.js');
 
@@ -54,5 +56,34 @@ const manifestOnly = readerRenderReducer(cold, { type: 'ready', resource: 'manif
 assert.equal(getReaderCapabilities(manifestOnly, 12).canShowPageCount, true, 'page count may appear before selection');
 assert.equal(getReaderCapabilities(manifestOnly, 12).canNavigate, false, 'navigation must wait for progress selection');
 assert.equal(getReaderCapabilities(manifestOnly, 12).canRenderPage, false, 'current image must wait for progress selection');
+
+assert.equal(isRetryableReaderBootstrapError(new TypeError('Failed to fetch')), true);
+assert.equal(isRetryableReaderBootstrapError(Object.assign(new Error('busy'), { status: 503 })), true);
+assert.equal(isRetryableReaderBootstrapError(Object.assign(new Error('missing'), { status: 404 })), false);
+assert.equal(isRetryableReaderBootstrapError(Object.assign(new Error('cancelled'), { name: 'AbortError' })), false);
+
+let transientAttempts = 0;
+const retryWaits = [];
+const recovered = await loadReaderBootstrapResource(
+  async () => {
+    transientAttempts += 1;
+    if (transientAttempts < 3) throw new TypeError('Failed to fetch');
+    return 'ready';
+  },
+  { wait: async (delay) => retryWaits.push(delay) },
+);
+assert.equal(recovered, 'ready');
+assert.equal(transientAttempts, 3, 'transient bootstrap failures should receive two bounded retries');
+assert.deepEqual(retryWaits, [180, 450]);
+
+let missingAttempts = 0;
+await assert.rejects(
+  loadReaderBootstrapResource(async () => {
+    missingAttempts += 1;
+    throw Object.assign(new Error('missing'), { status: 404 });
+  }, { wait: async () => {} }),
+  /missing/,
+);
+assert.equal(missingAttempts, 1, 'permanent API errors must not be retried');
 
 console.log('Reader render pipeline checks passed');

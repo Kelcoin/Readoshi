@@ -18,6 +18,7 @@ import {
 import { extractEhGalleryUrl, getEhCookie, getEhFavoriteDeleteSync, removeEhFavorite, shouldSyncEhFavorite } from '../lib/ehFavoriteSync';
 import { getNonDuplicatePairKeys, markNonDuplicatePairs } from '../lib/worker-kv';
 import { getSyncToken, getWorkerUrl } from '../lib/worker-config';
+import { ARCHIVE_PROGRESS_VISIBILITY, readArchiveProgressVisibility, shouldShowArchiveProgress } from '../lib/archiveProgress';
 
 const BATCH_SIZE = 50;
 const THUMBNAIL_CONCURRENCY = 4;
@@ -306,6 +307,9 @@ function EmptyState({ title, detail }) {
 }
 
 export default function DeduplicatePage({ onBack }) {
+  const [progressBarVisibility] = useState(readArchiveProgressVisibility);
+  const showGlobalArchiveProgress = shouldShowArchiveProgress(progressBarVisibility, false);
+  const reserveGlobalProgressSpace = progressBarVisibility === ARCHIVE_PROGRESS_VISIBILITY.GLOBAL;
   const [status, setStatus] = useState('准备检测');
   const [running, setRunning] = useState(false);
   const [archives, setArchives] = useState([]);
@@ -817,6 +821,8 @@ export default function DeduplicatePage({ onBack }) {
                   >
                     <ArchiveCard
                       archive={archive}
+                      showProgressBar={showGlobalArchiveProgress}
+                      reserveProgressSpace={reserveGlobalProgressSpace}
                       onClick={() => toggleArchiveSelection(archive)}
                       noCrop
                       selectionMode

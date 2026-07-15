@@ -53,3 +53,32 @@ export function getReaderCapabilities(state, pageCount) {
     canRenderPage: manifestReady && selectionReady && pageCount > 0,
   };
 }
+
+export function isRetryableReaderBootstrapError(error) {
+  if (error?.name === 'AbortError') return false;
+  const status = Number(error?.status);
+  if (!Number.isFinite(status) || status <= 0) return true;
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+export async function loadReaderBootstrapResource(
+  load,
+  { attempts = 3, isActive = () => true, wait = (delay) => new Promise((resolve) => setTimeout(resolve, delay)) } = {},
+) {
+  const attemptLimit = Math.max(1, Math.floor(Number(attempts) || 1));
+  let lastError = null;
+  for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
+    try {
+      return await load();
+    } catch (error) {
+      lastError = error;
+      const canRetry = attempt + 1 < attemptLimit
+        && isActive()
+        && isRetryableReaderBootstrapError(error);
+      if (!canRetry) throw error;
+      await wait(attempt === 0 ? 180 : 450);
+      if (!isActive()) throw error;
+    }
+  }
+  throw lastError;
+}

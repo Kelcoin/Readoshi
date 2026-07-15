@@ -14,9 +14,10 @@ assert.match(
 );
 assert.match(
   reader,
-  /getArchiveFiles\(archiveId, \{ signal: controller\.signal \}\)[\s\S]*controller\.signal\.aborted[\s\S]*extractArchive\(archiveId, \{ signal: controller\.signal \}\)/,
-  'aborted manifest requests must not fall through to extraction',
+  /loadReaderBootstrapResource\([\s\S]*getArchive\(archiveId, \{ signal: controller\.signal \}\)[\s\S]*loadReaderBootstrapResource\([\s\S]*getArchiveFiles\(archiveId, \{ signal: controller\.signal \}\)/,
+  'metadata and manifest must use bounded transient-failure retries',
 );
+assert.doesNotMatch(reader, /extractArchive\(archiveId/, 'Reader must use the documented files endpoint instead of the removed legacy extraction fallback');
 assert.doesNotMatch(reader, /if \(loading\)\s*\{\s*return <ReaderStageSkeleton/, 'metadata loading must not replace the whole Reader tree');
 assert.doesNotMatch(reader, /if \(loadingPages && pages\.length === 0\)/, 'manifest loading must not replace the whole Reader tree');
 assert.match(reader, /const currentPageReady =/, 'secondary work needs a current-page readiness gate');

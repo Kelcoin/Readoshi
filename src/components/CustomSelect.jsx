@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 
-export default function CustomSelect({ value, options, onChange, style, compact }) {
+export default function CustomSelect({ value, options, onChange, style, compact, ariaLabel }) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef(null);
   const triggerRef = useRef(null);
@@ -50,6 +50,7 @@ export default function CustomSelect({ value, options, onChange, style, compact 
         ref={triggerRef}
         className="input-glass"
         role="button"
+        aria-label={ariaLabel}
         tabIndex={0}
         style={{ 
           cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', 
@@ -73,7 +74,7 @@ export default function CustomSelect({ value, options, onChange, style, compact 
         }}
       >
         <span style={{ fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {selectedOption ? selectedOption.label : '请选择...'}
+          {selectedOption ? selectedOption.label : '请选择…'}
         </span>
         <span style={{ transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.3s', fontSize: '10px', color: 'var(--text-sub)', flexShrink: 0 }}>▼</span>
       </div>

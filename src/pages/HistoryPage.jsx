@@ -14,6 +14,7 @@ import { deleteArchiveWithFavoriteSync } from '../lib/archiveDeletion';
 import { getEhFavoriteDeleteSync } from '../lib/ehFavoriteSync';
 import { navigateToMetadata } from '../lib/navigation';
 import { removeWatchlistItem } from '../lib/watchlist';
+import { ARCHIVE_PROGRESS_VISIBILITY, readArchiveProgressVisibility, shouldShowArchiveProgress } from '../lib/archiveProgress';
 
 function HeaderGlyph() {
   return <HomeSectionGlyph name="continue" size={24} color={getSectionGlyphColor('continue')} />;
@@ -78,6 +79,9 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
   const [history, setHistoryState] = useState(() => getHistory());
   const [hideRead, setHideReadState] = useState(getHideRead);
   const [cropCover] = useState(getCropCover);
+  const [progressBarVisibility] = useState(readArchiveProgressVisibility);
+  const showHistoricalArchiveProgress = shouldShowArchiveProgress(progressBarVisibility, true);
+  const reserveGlobalProgressSpace = progressBarVisibility === ARCHIVE_PROGRESS_VISIBILITY.GLOBAL;
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [menu, setMenu] = useState(null);
   const [archiveDeleteTarget, setArchiveDeleteTarget] = useState(null);
@@ -449,7 +453,8 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
                           onArchiveContextMenu={(archive, point) => setMenu({ archive, x: point.x, y: point.y, showRemoveHistory: true })}
                           longPressTitle="打开菜单"
                           currentPage={h.page}
-                          showProgressBar
+                          showProgressBar={showHistoricalArchiveProgress}
+                          reserveProgressSpace={reserveGlobalProgressSpace}
                           noCrop={!cropCover}
                         />
                       );

@@ -29,6 +29,7 @@ assert.match(reader, /const \[networkPending, setNetworkPending\] = useState\(fa
 assert.match(reader, /networkPending[\s\S]*?setTimeout\(\(\) => setShowLoadingStatus\(true\), 180\)/, 'slow-network status must retain the approved delay');
 assert.match(primePageImageSource, /new Image\(\)[\s\S]*?await image\.decode\(\)/, 'normal-mode adjacent priming must predecode images');
 assert.match(reader, /role="status" aria-live="polite"/);
+assert.match(reader, /height: '100%', display: 'flex', justifyContent: 'center', alignItems: settings\.scaleMode === 'original' \? 'flex-start' : 'center'/, 'normal reader pages must be vertically centered without clipping original-size overflow');
 assert.match(reader, /setThumbState\(\(state\) => state === 'queued' \? state : 'loading'\)/);
 
 assert.match(css, /\.settings-hint-bubble[\s\S]*?background: #1c1e24;/);

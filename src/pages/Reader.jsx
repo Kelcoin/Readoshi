@@ -3,14 +3,15 @@ import { flushSync } from 'react-dom';
 import { lrrApi } from '../lib/api';
 import { flushHistorySync, getHistory, saveHistory, getHideRead, removeHistoryItem, loadHistoryState } from '../lib/history';
 import { clampProgressPage } from '../lib/historyProgressCache';
-import { getWatchlist, loadWatchlistState, removeWatchlistItem } from '../lib/watchlist';
+import { getWatchlist, loadWatchlistState, mergeWatchlistProgress, removeWatchlistItem } from '../lib/watchlist';
 import { getReaderArchiveListMeta } from '../lib/readerArchiveList';
 import { isArchiveMissingError } from '../lib/historyMaintenance';
 import { translateTag, categorizeTags } from '../lib/tags';
 import { getCachedImage, getImage, clearImageCache, IMAGE_LOAD_PRIORITY } from '../lib/imageCache';
 import { DEFAULT_READER_SETTINGS, READER_SETTINGS_KEY, normalizeReaderSettings, prepareReaderSettingsForArchiveChange } from '../lib/readerSettings';
+import { getArchiveProgressPercent, shouldShowArchiveProgress } from '../lib/archiveProgress';
 import { getReaderSkeletonToolbarGroups } from '../lib/readerSkeletonLayout';
-import { createReaderRenderState, getReaderCapabilities, readerRenderReducer } from '../lib/readerRenderPipeline';
+import { createReaderRenderState, getReaderCapabilities, loadReaderBootstrapResource, readerRenderReducer } from '../lib/readerRenderPipeline';
 import {
   getReaderArchivePanelModel,
   getReaderArchivePanelWindow,
@@ -506,7 +507,7 @@ const ReaderArchiveThumb = ({ archiveId, cacheOnly = false }) => {
   );
 };
 
-function ReaderArchiveListPanel({ type, title, items, emptyMessage, cacheOnly, onDelete, activeType, onTypeChange, onViewMore }) {
+function ReaderArchiveListPanel({ type, title, items, emptyMessage, cacheOnly, onDelete, activeType, onTypeChange, onViewMore, progressBarVisibility }) {
   const panelWindow = getReaderArchivePanelWindow(type, items);
   const panelRef = useRef(null);
   const contentRef = useRef(null);
@@ -608,6 +609,8 @@ function ReaderArchiveListPanel({ type, title, items, emptyMessage, cacheOnly, o
               .filter(Boolean)
               .slice(0, 6);
             const meta = getReaderArchiveListMeta(item, type);
+            const progressPct = getArchiveProgressPercent(item);
+            const showProgress = progressPct != null && shouldShowArchiveProgress(progressBarVisibility, type !== 'random');
 
             return (
               <div
@@ -629,6 +632,8 @@ function ReaderArchiveListPanel({ type, title, items, emptyMessage, cacheOnly, o
                   background: 'var(--surface-2)',
                   border: '1px solid var(--glass-border)',
                   transition: 'background-color 0.15s ease, border-color 0.15s ease',
+                  position: 'relative',
+                  overflow: 'hidden',
                 }}
               >
                 <ReaderArchiveThumb archiveId={id} cacheOnly={cacheOnly} />
@@ -667,6 +672,11 @@ function ReaderArchiveListPanel({ type, title, items, emptyMessage, cacheOnly, o
                 >
                   ×
                 </button>}
+                {showProgress && (
+                  <div className="reader-archive-progress" role="progressbar" aria-label="阅读进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow={progressPct}>
+                    <div className="reader-archive-progress-fill" style={{ width: `${progressPct}%` }} />
+                  </div>
+                )}
               </div>
             );
           })}
@@ -1977,7 +1987,10 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
 
       const metadataPromise = retainedArchive ? Promise.resolve(retainedArchive) : (async () => {
         try {
-          const meta = await lrrApi.getArchive(archiveId, { signal: controller.signal });
+          const meta = await loadReaderBootstrapResource(
+            () => lrrApi.getArchive(archiveId, { signal: controller.signal }),
+            { isActive },
+          );
           if (!isActive()) throw new DOMException('Reader bootstrap aborted', 'AbortError');
           archiveRef.current = meta;
           setArchive(meta);
@@ -2003,13 +2016,10 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
 
       const manifestPromise = retainedPages.length > 0 ? Promise.resolve(retainedPages) : (async () => {
         try {
-          let response;
-          try {
-            response = await lrrApi.getArchiveFiles(archiveId, { signal: controller.signal });
-          } catch (error) {
-            if (controller.signal.aborted) throw error;
-            response = await lrrApi.extractArchive(archiveId, { signal: controller.signal });
-          }
+          const response = await loadReaderBootstrapResource(
+            () => lrrApi.getArchiveFiles(archiveId, { signal: controller.signal }),
+            { isActive },
+          );
           if (!isActive()) throw new DOMException('Reader bootstrap aborted', 'AbortError');
           const extractedPages = (response.pages || []).map((url) => normalizePageUrl(url, serverUrl)).filter(Boolean);
           pagesRef.current = extractedPages;
@@ -2621,9 +2631,13 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const historyList = useMemo(() => {
     return hideRead ? historyEntries.filter(h => !(h.total > 0 && h.page >= h.total)) : historyEntries;
   }, [hideRead, historyEntries]);
+  const watchlistWithProgress = useMemo(
+    () => mergeWatchlistProgress(watchlistEntries, historyEntries),
+    [historyEntries, watchlistEntries],
+  );
   const archivePanel = getReaderArchivePanelModel(archivePanelType, {
     historyItems: historyList,
-    watchlistItems: watchlistEntries,
+    watchlistItems: watchlistWithProgress,
     randomItems: randomEntries,
     historyEmptyMessage: hideRead && historyEntries.length > 0 ? '所有归档均已读完' : '暂无阅读历史',
     watchlistEmptyMessage: '暂无待看归档',
@@ -3080,6 +3094,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             onViewMore={archivePanelType === 'history'
               ? navigateHistory
               : (archivePanelType === 'watchlist' ? navigateWatchlist : null)}
+            progressBarVisibility={settings.progressBarVisibility}
           />
         )}
 
@@ -3111,7 +3126,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                     />
                   );
                 })}
-              </div> : <div style={{ width: '100%', height: '100%', display: 'flex', justifyContent: 'center', gap: settings.doublePageGap, overflow: settings.scaleMode === 'original' ? 'auto' : 'hidden' }}><PageImage
+              </div> : <div style={{ width: '100%', height: '100%', display: 'flex', justifyContent: 'center', alignItems: settings.scaleMode === 'original' ? 'flex-start' : 'center', gap: settings.doublePageGap, overflow: settings.scaleMode === 'original' ? 'auto' : 'hidden' }}><PageImage
                 pageUrl={pages[normalDisplayIndex]}
                 pageIndex={normalDisplayIndex}
                 isImmersive={false}

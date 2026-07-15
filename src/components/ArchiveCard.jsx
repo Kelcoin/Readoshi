@@ -5,6 +5,7 @@ import { getCachedImage, getImage } from '../lib/imageCache';
 import { navigateHome, parseRouteFromLocation } from '../lib/navigation';
 import { NamespaceGlyph, stripDecoratedLabel } from './AppGlyphs';
 import { useViewportWidth } from '../lib/viewport';
+import { getArchiveProgressPercent } from '../lib/archiveProgress';
 
 const NAMESPACE_COLORS = NAMESPACE_COLORS_MAP;
 const archiveAspectRatioCache = new Map();
@@ -82,7 +83,7 @@ async function readImageAspectRatio(src) {
   }
 }
 
-export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveContextMenu, longPressTitle = '', currentPage, progress, showProgressBar, noCrop, cacheOnly = false, wrapStyle, className, overlay, selectionMode = false, selected = false, onSelectToggle }) {
+export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveContextMenu, longPressTitle = '', currentPage, progress, showProgressBar, reserveProgressSpace = false, noCrop, cacheOnly = false, wrapStyle, className, overlay, selectionMode = false, selected = false, onSelectToggle }) {
   const id = archive.arcid || archive.id;
   const [hovered, setHovered] = useState(false);
   const [closing, setClosing] = useState(false);
@@ -160,8 +161,9 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
     return '';
   })();
 
-  const progressPct = progress != null ? progress : (totalPages > 0 && current > 0 ? Math.round((current / totalPages) * 100) : 0);
-  const showProgress = showProgressBar && ((current > 0 && totalPages > 0) || progress != null);
+  const progressPct = getArchiveProgressPercent(archive, { currentPage, progressPercent: progress });
+  const showProgress = showProgressBar && progressPct != null;
+  const reserveEmptyProgressSpace = reserveProgressSpace && !showProgress;
 
   const isWide = noCrop && aspectRatio != null && aspectRatio > 1.0;
   const baseMetaFontSize = isMobile ? 10.5 : 11;
@@ -575,7 +577,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
                 fontSize: '12px',
               }}
             >
-              加载封面...
+              加载封面…
             </div>
           )}
 
@@ -626,8 +628,8 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
           )}
         </div>
         {showProgress && (
-          <div className="archive-card-progress" role="progressbar" aria-label="阅读进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.min(progressPct, 100)}>
-            <div className="archive-card-progress-fill" style={{ width: `${Math.min(progressPct, 100)}%` }} />
+          <div className="archive-card-progress" role="progressbar" aria-label="阅读进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow={progressPct}>
+            <div className="archive-card-progress-fill" style={{ width: `${progressPct}%` }} />
           </div>
         )}
         {/* 标题 */}
@@ -637,7 +639,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
             handleTitleClick(e);
           }}
           style={{
-            fontSize: '13px', marginTop: '12px',
+            fontSize: '13px', marginTop: reserveEmptyProgressSpace && !(pageInfo || dateAddedStr) ? '17px' : '12px',
             overflow: 'hidden',
             display: '-webkit-box',
             WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
@@ -654,7 +656,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
             style={{
               fontSize: `${baseMetaFontSize}px`,
               color: 'var(--text-sub)',
-              marginTop: isMobile ? '4px' : '6px',
+              marginTop: `${(isMobile ? 4 : 6) + (reserveEmptyProgressSpace ? 5 : 0)}px`,
               display: 'flex',
               justifyContent: 'space-between',
               gap: '6px',

@@ -39,8 +39,11 @@ assert.match(home, /!archiveRequestInFlightRef\.current/);
 assert.match(home, /disabled=\{loading \|\| archivesRefreshing\}/);
 assert.match(home, /archiveLoadError && archives\.length > 0/);
 
-assert.doesNotMatch(css, /\.archive-grid\s*\{[^}]*grid-auto-flow:\s*dense/s);
-assert.match(css, /\.archive-grid:not\(\.is-paged\)\s*\{[^}]*grid-auto-flow:\s*dense/s);
+assert.match(css, /\.archive-grid\s*\{[^}]*grid-auto-flow:\s*row dense/s, 'scroll and paged grids must both backfill gaps left by wide cards');
+assert.doesNotMatch(css, /\.archive-grid:not\(\.is-paged\)/, 'paged mode must not opt out of wide-card backfill');
+assert.doesNotMatch(home, /if \(!grid \|\| archiveBrowseMode !== ARCHIVE_BROWSE_MODES\.paged\) return undefined/, 'last-row centering must run in every archive browse mode');
+assert.match(home, /const displayArchives = archives;/, 'scroll mode must render an incomplete final row so it can be centered');
+assert.doesNotMatch(home, /archives\.slice\(0, len - rem\)/, 'scroll mode must not discard an incomplete final row');
 assert.doesNotMatch(home, /mutationObserver\.observe\(grid,\s*\{[^}]*subtree:\s*true/s);
 assert.match(home, /mutationObserver\.observe\(item,\s*\{ attributes: true, attributeFilter: \['class'\] \}\)/);
 assert.match(home, /mutationObserver\.disconnect\(\);\s*mutationObserver\.observe\(grid, \{ childList: true \}\);\s*observeCardClasses\(\)/);

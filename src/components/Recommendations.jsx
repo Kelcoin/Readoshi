@@ -7,6 +7,7 @@ import ArchiveCard from './ArchiveCard';
 import ArchiveContextMenu from './ArchiveContextMenu';
 import ConfirmDialog from './ConfirmDialog';
 import { useViewportWidth } from '../lib/viewport';
+import { ARCHIVE_PROGRESS_VISIBILITY, readArchiveProgressVisibility, shouldShowArchiveProgress } from '../lib/archiveProgress';
 
 const CUSTOM_WEIGHT_TAGS = {
   'female:ahegao': 1.5, 'female:anal intercourse': 2, 'female:anal': 2,
@@ -86,6 +87,9 @@ function calculateSimilarity(sourceTagsLower, archive) {
 }
 
 export default function Recommendations({ currentArchive }) {
+  const [progressBarVisibility] = useState(readArchiveProgressVisibility);
+  const showGlobalArchiveProgress = shouldShowArchiveProgress(progressBarVisibility, false);
+  const reserveGlobalProgressSpace = progressBarVisibility === ARCHIVE_PROGRESS_VISIBILITY.GLOBAL;
   const [tab, setTab] = useState('sim');
   const [collapsed, setCollapsed] = useState(false);
   const [simData, setSimData] = useState([]);
@@ -451,7 +455,7 @@ export default function Recommendations({ currentArchive }) {
               <div style={{ padding: '24px 8px', color: 'var(--text-sub)', fontStyle: 'italic', fontSize: '13px' }}>暂无推荐结果。</div>
             ) : (
               data.map(arc => (
-                <ArchiveCard key={arc.arcid || arc.id} archive={arc} onClick={() => handleCardClick(arc)} onArchiveContextMenu={handleOpenArchiveMenu} noCrop={noCrop} />
+                <ArchiveCard key={arc.arcid || arc.id} archive={arc} onClick={() => handleCardClick(arc)} onArchiveContextMenu={handleOpenArchiveMenu} showProgressBar={showGlobalArchiveProgress} reserveProgressSpace={reserveGlobalProgressSpace} noCrop={noCrop} />
               ))
             )}
           </div>

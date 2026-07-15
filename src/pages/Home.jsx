@@ -29,6 +29,7 @@ import { useHorizontalScroller } from '../lib/horizontalScroller';
 import { navigateDeduplicate, navigateHistory, navigateHome, navigateToMetadata, navigateUpload, navigateWatchlist } from '../lib/navigation';
 import { ARCHIVE_BROWSE_MODES, ARCHIVE_PAGE_SIZE, clampArchivePage, getArchivePageAfterResize, getArchivePageCount, getArchivePageStart, getLastArchiveRowCentering, getSmartArchivePageSize } from '../lib/archivePagination';
 import { reduceArchiveRefreshPhase } from '../lib/archiveRefreshMotion';
+import { ARCHIVE_PROGRESS_VISIBILITY, normalizeArchiveProgressVisibility, shouldShowArchiveProgress } from '../lib/archiveProgress';
 
 const FILTER_KEY = 'lrr_filter';
 const RANDOMS_RECENT_KEY = 'lrr_random_recent_v1';
@@ -231,12 +232,12 @@ function SkeletonCard({ showProgress = false }) {
         <div className="shimmer-strip" style={{ position: 'absolute', inset: 0 }} />
       </div>
       {showProgress && (
-        <div style={{ width: '48px', height: '4px', borderRadius: '999px', background: 'rgba(74,159,240,0.22)', marginTop: '8px' }} />
+        <div style={{ width: '100%', height: '3px', marginTop: '2px', borderRadius: '999px', background: 'rgba(74,159,240,0.22)' }} />
       )}
       <div style={{
         height: '12px', borderRadius: '4px',
         background: 'rgba(255,255,255,0.05)',
-        width: '84%', marginTop: showProgress ? '10px' : '12px',
+        width: '84%', marginTop: '12px',
       }} />
       <div style={{
         height: '12px', borderRadius: '4px',
@@ -314,6 +315,7 @@ const DEFAULT_READER_EH_SETTINGS = {
   ehMaxComments: 45,
   ehSortMethod: 'score',
   ehSortOrder: 'desc',
+  progressBarVisibility: ARCHIVE_PROGRESS_VISIBILITY.HISTORY,
 };
 
 function readReaderSettings() {
@@ -324,6 +326,7 @@ function readReaderSettings() {
     return {
       ...DEFAULT_READER_EH_SETTINGS,
       ...settings,
+      progressBarVisibility: normalizeArchiveProgressVisibility(settings.progressBarVisibility),
       ehCookie: typeof settings.ehCookie === 'string' && settings.ehCookie.trim()
         ? settings.ehCookie
         : standaloneCookie,
@@ -399,6 +402,9 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
   const [cfgWorkerUrl, setCfgWorkerUrl] = useState(getWorkerUrl());
   const [cfgSyncToken, setCfgSyncToken] = useState(getSyncToken());
   const [readerSettings, setReaderSettings] = useState(readReaderSettings);
+  const showHistoricalArchiveProgress = shouldShowArchiveProgress(readerSettings.progressBarVisibility, true);
+  const showGlobalArchiveProgress = shouldShowArchiveProgress(readerSettings.progressBarVisibility, false);
+  const reserveGlobalProgressSpace = readerSettings.progressBarVisibility === ARCHIVE_PROGRESS_VISIBILITY.GLOBAL;
   const [randoms, setRandoms] = useState(() => {
     if (homeSnapshot && Array.isArray(homeSnapshot.randoms) && homeSnapshot.randoms.length > 0) {
       return homeSnapshot.randoms;
@@ -453,7 +459,6 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
   const [presetDeleteTarget, setPresetDeleteTarget] = useState('');
   const [selectedCategory, setSelectedCategory] = useState(() => homeSnapshot?.selectedCategory || null);
   const [categories, setCategories] = useState([]);
-  const [columnsPerRow, setColumnsPerRow] = useState(5);
   const [stackFilterControls, setStackFilterControls] = useState(window.innerWidth < FILTER_STACK_BREAKPOINT);
   const didFetchArchivesRef = useRef(false);
   const didApplyUrlFilterRef = useRef(false);
@@ -984,7 +989,6 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
       const gap = window.innerWidth < 600 ? 10 : 16;
       const cols = Math.max(1, Math.floor((gridWidth + gap) / (150 + gap)));
       const nextPageSize = getSmartArchivePageSize({ columns: cols, rows: 4, minimum: 20 });
-      setColumnsPerRow(cols);
       if (nextPageSize === archivePageSizeRef.current) return;
       const nextPage = getArchivePageAfterResize(archivePageRef.current, archivePageSizeRef.current, nextPageSize);
       archivePageRef.current = nextPage;
@@ -1000,7 +1004,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
 
   useLayoutEffect(() => {
     const grid = gridRef.current;
-    if (!grid || archiveBrowseMode !== ARCHIVE_BROWSE_MODES.paged) return undefined;
+    if (!grid) return undefined;
 
     let frame = 0;
     const centerLastRow = () => {
@@ -1474,16 +1478,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     };
   }, [getWatchlistScrollerNode, watchlist.length, watchlistCollapsed]);
 
-  const displayArchives = useMemo(() => {
-    if (archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged) return archives;
-    if (!cropCover) return archives;
-    const cpr = Math.max(1, columnsPerRow);
-    const len = archives.length;
-    if (len <= cpr) return archives;
-    const rem = len % cpr;
-    if (rem === 0) return archives;
-    return archives.slice(0, len - rem);
-  }, [archiveBrowseMode, archives, columnsPerRow, cropCover]);
+  const displayArchives = archives;
 
   const visibleArchiveIds = useMemo(() => (
     displayArchives.map((arc) => arc.arcid || arc.id).filter(Boolean)
@@ -2009,7 +2004,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
               {filteredHistory.length > 0 ? (
                 <>
                   {filteredHistory.slice(0, 10).map(h => (
-                    <ArchiveCard key={`hist-${h.id}`} className={watchlistIds.has(h.id) ? 'watchlist-card' : undefined} archive={h} onClick={() => handleSelectArchive(h.id)} onArchiveContextMenu={(archive, point, event) => handleOpenArchiveMenu(archive, point, event, { showRemoveHistory: true })} longPressTitle="打开菜单" currentPage={h.page} showProgressBar noCrop={!cropCover} cacheOnly={coldRestoreRef.current} />
+                    <ArchiveCard key={`hist-${h.id}`} className={watchlistIds.has(h.id) ? 'watchlist-card' : undefined} archive={h} onClick={() => handleSelectArchive(h.id)} onArchiveContextMenu={(archive, point, event) => handleOpenArchiveMenu(archive, point, event, { showRemoveHistory: true })} longPressTitle="打开菜单" currentPage={h.page} showProgressBar={showHistoricalArchiveProgress} reserveProgressSpace={reserveGlobalProgressSpace} noCrop={!cropCover} cacheOnly={coldRestoreRef.current} />
                   ))}
                   {filteredHistory.length > 10 && (
                     <button
@@ -2058,7 +2053,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           </div>
           <div style={{ display: 'flex', gap: '16px', overflowX: 'auto', overflowY: 'hidden', overscrollBehaviorX: 'contain', overscrollBehaviorY: 'contain', padding: isNarrow ? '8px 14px 16px' : '8px 20px 16px', position: 'relative', zIndex: 1 }} className="no-scrollbar">
             {Array.from({ length: 4 }).map((_, i) => (
-              <SkeletonCard key={`hsk-${i}`} showProgress />
+              <SkeletonCard key={`hsk-${i}`} showProgress={showHistoricalArchiveProgress} />
             ))}
           </div>
         </section>
@@ -2089,7 +2084,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           <div style={{ overflow: 'hidden', transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)', maxHeight: watchlistCollapsed ? '0px' : '368px' }}>
             <div ref={watchlistScroller.ref} onWheelCapture={watchlistScroller.onWheelCapture} onScroll={watchlistScroller.onScroll} onMouseDown={watchlistScroller.onMouseDown} onClickCapture={watchlistScroller.onClickCapture} onDragStart={watchlistScroller.onDragStart} style={{ display: 'flex', gap: isNarrow ? '10px' : '16px', overflowX: 'auto', overflowY: 'hidden', padding: isNarrow ? '8px 14px 16px' : '8px 20px 16px', position: 'relative', zIndex: 1, ...watchlistScroller.getTouchScrollStyle(), ...watchlistScroller.getMouseScrollStyle() }} className="no-scrollbar">
               {watchlistWithProgress.map(item => (
-                <ArchiveCard key={`watch-${item.id || item.arcid}`} archive={item} onClick={() => handleSelectArchive(item.id || item.arcid)} onArchiveContextMenu={(archive, point, event) => handleOpenArchiveMenu(archive, point, event, { showRemoveWatchlist: true })} longPressTitle="打开菜单" currentPage={item.page} showProgressBar noCrop={!cropCover} cacheOnly={coldRestoreRef.current} />
+                <ArchiveCard key={`watch-${item.id || item.arcid}`} archive={item} onClick={() => handleSelectArchive(item.id || item.arcid)} onArchiveContextMenu={(archive, point, event) => handleOpenArchiveMenu(archive, point, event, { showRemoveWatchlist: true })} longPressTitle="打开菜单" currentPage={item.page} showProgressBar={showHistoricalArchiveProgress} reserveProgressSpace={reserveGlobalProgressSpace} noCrop={!cropCover} cacheOnly={coldRestoreRef.current} />
               ))}
               {watchlistOverflow && (
                 <button
@@ -2135,7 +2130,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           </div>
           <div style={{ display: 'flex', gap: '16px', overflowX: 'auto', overflowY: 'hidden', overscrollBehaviorX: 'contain', overscrollBehaviorY: 'contain', padding: isNarrow ? '8px 14px 16px' : '8px 20px 16px', position: 'relative', zIndex: 1 }} className="no-scrollbar">
             {Array.from({ length: 5 }).map((_, i) => (
-              <SkeletonCard key={`rsk-${i}`} />
+              <SkeletonCard key={`rsk-${i}`} showProgress={showGlobalArchiveProgress} />
             ))}
           </div>
         </section>
@@ -2155,9 +2150,9 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           <div style={{ overflow: 'hidden', transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)', maxHeight: randomCollapsed ? '0px' : '368px' }}>
             <div ref={randomScroller.ref} onWheelCapture={randomScroller.onWheelCapture} onScroll={randomScroller.onScroll} onMouseDown={randomScroller.onMouseDown} onClickCapture={randomScroller.onClickCapture} onDragStart={randomScroller.onDragStart} style={{ display: 'flex', gap: isNarrow ? '10px' : '16px', overflowX: 'auto', overflowY: 'hidden', padding: isNarrow ? '8px 14px 16px' : '8px 20px 16px', position: 'relative', zIndex: 1, ...randomScroller.getTouchScrollStyle(), ...randomScroller.getMouseScrollStyle() }} className="no-scrollbar">
               {randomsRefreshing ? Array.from({ length: Math.max(5, Math.min(8, randoms.length || 5)) }).map((_, i) => (
-                <SkeletonCard key={`rrsk-${i}`} />
+                <SkeletonCard key={`rrsk-${i}`} showProgress={showGlobalArchiveProgress} />
               )) : randoms.map(arc => (
-                <ArchiveCard key={`rnd-${arc.arcid}`} className={watchlistIds.has(arc.arcid || arc.id) ? 'watchlist-card' : undefined} archive={arc} onClick={() => handleSelectArchive(arc.arcid)} onArchiveContextMenu={handleOpenArchiveMenu} noCrop={!cropCover} cacheOnly={coldRestoreRef.current} />
+                <ArchiveCard key={`rnd-${arc.arcid}`} className={watchlistIds.has(arc.arcid || arc.id) ? 'watchlist-card' : undefined} archive={arc} onClick={() => handleSelectArchive(arc.arcid)} onArchiveContextMenu={handleOpenArchiveMenu} showProgressBar={showGlobalArchiveProgress} reserveProgressSpace={reserveGlobalProgressSpace} noCrop={!cropCover} cacheOnly={coldRestoreRef.current} />
               ))}
             </div>
           </div>
@@ -2403,10 +2398,10 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
 
         <div ref={gridRef} className={`archive-grid${archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged ? ' is-paged' : ''}`} data-refresh-phase={archiveRefreshPhase} aria-busy={archivesRefreshing} style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: isNarrow ? '10px' : '16px', '--archive-grid-half-gap': isNarrow ? '5px' : '8px' }}>
           {archives.length === 0 && loading ? (
-            Array.from({ length: 12 }).map((_, i) => <SkeletonCard key={`gsk-${i}`} />)
+            Array.from({ length: 12 }).map((_, i) => <SkeletonCard key={`gsk-${i}`} showProgress={showGlobalArchiveProgress} />)
           ) : (
             displayArchives.map((arc) => (
-              <ArchiveCard key={arc.arcid || arc.id} className={watchlistIds.has(arc.arcid || arc.id) ? 'watchlist-card' : undefined} archive={arc} onClick={() => handleSelectArchive(arc.arcid)} onArchiveContextMenu={handleOpenArchiveMenu} noCrop={!cropCover} cacheOnly={coldRestoreRef.current} selectionMode={archiveSelectionMode} selected={selectedArchiveIds.has(arc.arcid || arc.id)} onSelectToggle={toggleArchiveSelection} />
+              <ArchiveCard key={arc.arcid || arc.id} className={watchlistIds.has(arc.arcid || arc.id) ? 'watchlist-card' : undefined} archive={arc} onClick={() => handleSelectArchive(arc.arcid)} onArchiveContextMenu={handleOpenArchiveMenu} showProgressBar={showGlobalArchiveProgress} reserveProgressSpace={reserveGlobalProgressSpace} noCrop={!cropCover} cacheOnly={coldRestoreRef.current} selectionMode={archiveSelectionMode} selected={selectedArchiveIds.has(arc.arcid || arc.id)} onSelectToggle={toggleArchiveSelection} />
             ))
           )}
         </div>
@@ -2487,6 +2482,23 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
             <SettingHint text={'作用：将横版或方形封面裁成统一的竖向比例。\n影响：只改变书库缩略图，不修改归档原图。'}>裁剪封面</SettingHint>
             <ToggleSwitch checked={cropCover} onChange={handleToggleCropCover} label="裁剪封面" />
           </div>
+
+          <label className="settings-row">
+            <SettingHint text={'禁止：所有归档卡片都不显示阅读进度。\n仅历史记录：保持历史与待看组件中的进度提示。\n全局：有阅读进度的归档卡片均会显示。'}>显示进度条</SettingHint>
+            <div style={{ width: 128 }}>
+              <CustomSelect
+                ariaLabel="显示进度条"
+                value={readerSettings.progressBarVisibility}
+                onChange={(value) => updateReaderSettings((settings) => ({ ...settings, progressBarVisibility: value }))}
+                options={[
+                  { label: '禁止', value: ARCHIVE_PROGRESS_VISIBILITY.DISABLED },
+                  { label: '仅历史记录', value: ARCHIVE_PROGRESS_VISIBILITY.HISTORY },
+                  { label: '全局', value: ARCHIVE_PROGRESS_VISIBILITY.GLOBAL },
+                ]}
+                compact
+              />
+            </div>
+          </label>
 
           <label className="settings-row">
             <SettingHint text={'滚动模式：到达列表底部时自动加载更多。\n分页模式：每次显示一页归档，使用页码切换。'}>档案浏览模式</SettingHint>
