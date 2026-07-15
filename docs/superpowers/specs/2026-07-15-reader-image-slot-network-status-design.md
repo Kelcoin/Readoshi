@@ -41,4 +41,3 @@
 
 - 源码回归检查覆盖槽位页号失效/校验、网络回调边界、180ms 网络提示、`primePageImage()` 解码。
 - 运行全部 `scripts/check-*.mjs`、`npm run build`、`git diff --check`。
-

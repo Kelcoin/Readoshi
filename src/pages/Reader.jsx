@@ -7,7 +7,7 @@ import { getWatchlist, loadWatchlistState, removeWatchlistItem } from '../lib/wa
 import { getReaderArchiveListMeta } from '../lib/readerArchiveList';
 import { isArchiveMissingError } from '../lib/historyMaintenance';
 import { translateTag, categorizeTags } from '../lib/tags';
-import { getCachedImage, getImage, clearImageCache, primeImage, IMAGE_LOAD_PRIORITY } from '../lib/imageCache';
+import { getCachedImage, getImage, clearImageCache, IMAGE_LOAD_PRIORITY } from '../lib/imageCache';
 import { DEFAULT_READER_SETTINGS, READER_SETTINGS_KEY, normalizeReaderSettings, prepareReaderSettingsForArchiveChange } from '../lib/readerSettings';
 import { getReaderSkeletonToolbarGroups } from '../lib/readerSkeletonLayout';
 import {
@@ -82,6 +82,7 @@ async function resolvePageImageSource(pageUrl, {
   cacheOnly = false,
   allowNetworkFallback = true,
   priority = IMAGE_LOAD_PRIORITY.NORMAL,
+  onNetworkStart,
 } = {}) {
   if (!pageUrl) return null;
   const normalized = toLocalUrl(pageUrl);
@@ -92,6 +93,7 @@ async function resolvePageImageSource(pageUrl, {
   return getImage(normalized, async () => {
     const headers = {};
     if (key) headers.Authorization = `Bearer ${btoa(key)}`;
+    onNetworkStart?.();
     const res = await fetch(normalized, { headers });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.blob();
@@ -265,6 +267,7 @@ const PageImage = React.forwardRef(({
   const [imgSrc, setImgSrc] = useState(null);
   const [loadState, setLoadState] = useState(() => (pageUrl ? 'loading' : 'idle'));
   const [showLoadingStatus, setShowLoadingStatus] = useState(false);
+  const [networkPending, setNetworkPending] = useState(false);
   const [allowNetworkFallback, setAllowNetworkFallback] = useState(() => !cacheOnly);
   const requestSeqRef = useRef(0);
   const imgRef = useRef(null);
@@ -288,6 +291,7 @@ const PageImage = React.forwardRef(({
     let isMounted = true;
     const requestSeq = ++requestSeqRef.current;
     setShowLoadingStatus(false);
+    setNetworkPending(false);
     setLoadState(pageUrl ? 'loading' : 'idle');
     setImgSrc(null);
 
@@ -296,8 +300,16 @@ const PageImage = React.forwardRef(({
       onLoadStart?.(pageIndex);
 
       try {
-        const src = await resolvePageImageSource(pageUrl, { cacheOnly, allowNetworkFallback, priority });
+        const src = await resolvePageImageSource(pageUrl, {
+          cacheOnly,
+          allowNetworkFallback,
+          priority,
+          onNetworkStart: () => {
+            if (isMounted && requestSeq === requestSeqRef.current) setNetworkPending(true);
+          },
+        });
         if (!isMounted || requestSeq !== requestSeqRef.current) return;
+        setNetworkPending(false);
         if (src) {
           setImgSrc(src);
           return;
@@ -310,6 +322,7 @@ const PageImage = React.forwardRef(({
         onError?.(pageIndex);
       } catch {
         if (!isMounted || requestSeq !== requestSeqRef.current) return;
+        setNetworkPending(false);
         if (cacheOnly && !allowNetworkFallback) {
           setAllowNetworkFallback(true);
           return;
@@ -323,13 +336,13 @@ const PageImage = React.forwardRef(({
   }, [allowNetworkFallback, cacheOnly, onError, onLoadStart, onReady, pageIndex, pageUrl, priority]);
 
   useEffect(() => {
-    if (loadState !== 'loading') {
+    if (!networkPending) {
       setShowLoadingStatus(false);
       return undefined;
     }
-    const timer = setTimeout(() => setShowLoadingStatus(true), 160);
+    const timer = setTimeout(() => setShowLoadingStatus(true), 180);
     return () => clearTimeout(timer);
-  }, [loadState, pageUrl]);
+  }, [networkPending, pageUrl]);
 
   const handleMountedImageLoad = useCallback(async (event) => {
     const image = event.currentTarget;
@@ -690,13 +703,28 @@ async function primePageImage(pageUrl, priority = IMAGE_LOAD_PRIORITY.PRELOAD) {
   if (!pageUrl) return false;
   const normalized = toLocalUrl(pageUrl);
   const key = localStorage.getItem('lrr_api_key') || '';
-  return primeImage(normalized, async () => {
+  const src = await getImage(normalized, async () => {
     const headers = {};
     if (key) headers.Authorization = `Bearer ${btoa(key)}`;
     const res = await fetch(normalized, { headers });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.blob();
   }, { priority });
+  if (!src) return false;
+
+  const image = new Image();
+  image.src = src;
+  if (typeof image.decode === 'function') {
+    await image.decode();
+  } else if (!image.complete) {
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = reject;
+    });
+    image.onload = null;
+    image.onerror = null;
+  }
+  return image.naturalWidth > 0;
 }
 
 function getNormalReaderFrameHeight(isMobile) {
@@ -1040,6 +1068,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     shownAt: 0,
   }));
   const [loadingUiArmed, setLoadingUiArmed] = useState(false);
+  const [immersiveNetworkPending, setImmersiveNetworkPending] = useState(false);
 
   useLayoutEffect(() => {
     forceWindowScrollTop();
@@ -1502,6 +1531,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       image.onerror = null;
       image.style.display = 'none';
       image.removeAttribute('src');
+      delete image.dataset.pageIndex;
     });
   }, []);
 
@@ -1525,7 +1555,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   }, []);
 
   // ===== Immersive image loader (raw img.src via ref — never unmounts) =====
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (viewMode !== 'immersive' || pages.length === 0) return;
     const idx = currentIndex;
     const loadSeq = immersiveLoadSeqRef.current + 1;
@@ -1533,24 +1563,40 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     let alive = true;
     const key = localStorage.getItem('lrr_api_key') || '';
 
-    const loadImg = async (imgRef, pageUrl, priority) => {
+    const loadImg = async (imgRef, pageUrl, pageIndex, priority, trackNetwork = false) => {
       if (!pageUrl || !imgRef.current) return false;
       try {
+        const initialImage = imgRef.current;
+        if (initialImage.dataset.pageIndex !== String(pageIndex)) {
+          initialImage.style.display = 'none';
+          delete initialImage.dataset.pageIndex;
+        }
         const normalized = toLocalUrl(pageUrl);
-        const src = coldRestoreRef.current
-          ? await getCachedImage(normalized)
-          : await getImage(normalized, async () => {
+        let src;
+        try {
+          src = coldRestoreRef.current
+            ? await getCachedImage(normalized)
+            : await getImage(normalized, async () => {
               const headers = {};
               if (key) headers.Authorization = `Bearer ${btoa(key)}`;
+              if (trackNetwork && alive && loadSeq === immersiveLoadSeqRef.current) {
+                setImmersiveNetworkPending(true);
+              }
               const res = await fetch(normalized, { headers });
               if (!res.ok) throw new Error(`HTTP ${res.status}`);
               return res.blob();
             }, { priority });
+        } finally {
+          if (trackNetwork && alive && loadSeq === immersiveLoadSeqRef.current) {
+            setImmersiveNetworkPending(false);
+          }
+        }
         if (!alive || loadSeq !== immersiveLoadSeqRef.current) return false;
         if (!alive || loadSeq !== immersiveLoadSeqRef.current || !imgRef.current) return false;
         if (src) {
           const image = imgRef.current;
-          const imageAlreadyReady = (image.currentSrc || image.src) === src
+          const imageAlreadyReady = image.dataset.pageIndex === String(pageIndex)
+            && (image.currentSrc || image.src) === src
             && image.complete
             && image.naturalWidth > 0;
           if (imageAlreadyReady) {
@@ -1558,6 +1604,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             return true;
           }
           image.style.display = 'none';
+          delete image.dataset.pageIndex;
           image.src = src;
           if (typeof image.decode === 'function') {
             try { await image.decode(); } catch {}
@@ -1569,10 +1616,12 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
           }
           if (!alive || loadSeq !== immersiveLoadSeqRef.current || image !== imgRef.current) return false;
           if (!image.naturalWidth || !image.naturalHeight) throw new Error('Image decode failed');
+          image.dataset.pageIndex = String(pageIndex);
           image.style.display = '';
         } else {
           imgRef.current.src = '';
           imgRef.current.style.display = 'none';
+          delete imgRef.current.dataset.pageIndex;
         }
         return !!src;
       } catch {
@@ -1583,6 +1632,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       if (imgRef.current) {
         imgRef.current.src = '';
         imgRef.current.style.display = 'none';
+        delete imgRef.current.dataset.pageIndex;
       }
     };
 
@@ -1590,7 +1640,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     const prevIdx = l2r ? idx - 1 : idx + 1;
     const nextIdx = l2r ? idx + 1 : idx - 1;
 
-    loadImg(imgCurrRef, pages[idx], IMAGE_LOAD_PRIORITY.CRITICAL).then((ok) => {
+    setImmersiveNetworkPending(false);
+    loadImg(imgCurrRef, pages[idx], idx, IMAGE_LOAD_PRIORITY.CRITICAL, true).then((ok) => {
       if (!alive || loadSeq !== immersiveLoadSeqRef.current) return;
       if (currentIndexRef.current !== idx) return;
       if (ok) {
@@ -1601,9 +1652,9 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             ? prev
             : { status: 'ready', visibleIndex: idx, targetIndex: idx, shownAt: prev.shownAt }
         ));
-        if (prevIdx >= 0 && prevIdx < pages.length) void loadImg(imgLeftRef, pages[prevIdx], IMAGE_LOAD_PRIORITY.ADJACENT);
+        if (prevIdx >= 0 && prevIdx < pages.length) void loadImg(imgLeftRef, pages[prevIdx], prevIdx, IMAGE_LOAD_PRIORITY.ADJACENT);
         else unloadImg(imgLeftRef);
-        if (nextIdx >= 0 && nextIdx < pages.length) void loadImg(imgRightRef, pages[nextIdx], IMAGE_LOAD_PRIORITY.ADJACENT);
+        if (nextIdx >= 0 && nextIdx < pages.length) void loadImg(imgRightRef, pages[nextIdx], nextIdx, IMAGE_LOAD_PRIORITY.ADJACENT);
         else unloadImg(imgRightRef);
       } else {
         setPageLoadPhase((prev) => (
@@ -2197,26 +2248,27 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         const previewImg = deltaX > 0 ? imgLeftRef.current : imgRightRef.current;
         const currImg = imgCurrRef.current;
         const previewSrc = previewImg?.currentSrc || previewImg?.src || '';
+        const targetIndex = nextIdx;
         const canPromotePreview = !!(
           currImg &&
           previewImg &&
           previewSrc &&
+          previewImg.dataset.pageIndex === String(targetIndex) &&
           previewImg.style.display !== 'none' &&
           previewImg.complete &&
           previewImg.naturalWidth > 0
         );
-        const forwardTarget = deltaX > 0 ? curIdx - 1 : curIdx + 1;
-        const backwardTarget = deltaX > 0 ? curIdx + 1 : curIdx - 1;
-        const targetIndex = settings.direction === 'ltr' ? forwardTarget : backwardTarget;
         if (currImg) {
           if (canPromotePreview) {
             currImg.style.display = '';
             currImg.src = previewSrc;
+            currImg.dataset.pageIndex = String(targetIndex);
           } else {
             // If target image is not ready yet, hide the previous page so it
             // doesn't flash back into view when the swipe container recenters.
             currImg.src = '';
             currImg.style.display = 'none';
+            delete currImg.dataset.pageIndex;
           }
         }
         flushSync(() => {
@@ -2388,17 +2440,13 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   }, []);
 
   useEffect(() => {
-    if (
-      pageLoadPhase.status !== 'loading' ||
-      pageLoadPhase.targetIndex !== currentIndex ||
-      currentIndex === displayedIndex
-    ) {
+    if (viewMode !== 'immersive' || !immersiveNetworkPending) {
       setLoadingUiArmed(false);
       return undefined;
     }
     const timer = setTimeout(() => setLoadingUiArmed(true), 180);
     return () => clearTimeout(timer);
-  }, [currentIndex, displayedIndex, pageLoadPhase.status, pageLoadPhase.targetIndex]);
+  }, [immersiveNetworkPending, viewMode]);
 
   const confirmRemoveHistory = useCallback(() => {
     if (!historyDeleteTarget?.id) return;
@@ -2968,7 +3016,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                 priority={IMAGE_LOAD_PRIORITY.CRITICAL}
                 style={{ ...scaleStyle, ...transformStyle, maxWidth: settings.scaleMode === 'original' ? 'none' : '100%', maxHeight: settings.scaleMode === 'original' ? 'none' : '100%', borderRadius: '8px' }} splitWide={settings.splitWidePagesEnabled} cropBorders={settings.cropBordersEnabled}
                 loadingLabel={`正在切换到第 ${normalTargetIndex + 1} 页`}
-                loadingHint="正在请求并解码图像"
+                loadingHint="正在请求图像"
                 errorLabel={`第 ${normalTargetIndex + 1} 页加载失败`}
                 onLoadStart={handlePageVisualLoadStart}
                 onReady={handlePageVisualReady}
@@ -3118,7 +3166,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                     {`正在切换到第 ${currentIndex + 1} 页`}
                   </div>
                   <div style={{ fontSize: 'clamp(16px, 2.6vw, 26px)', fontWeight: 600, color: 'rgba(223,225,232,0.62)' }}>
-                    正在请求并解码图像
+                    正在请求图像
                   </div>
                 </div>
               )}

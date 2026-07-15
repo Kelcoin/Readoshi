@@ -26,11 +26,11 @@
 - Consumes: `src/pages/Reader.jsx` source text.
 - Produces: executable assertions for slot page identity, network-only status, and adjacent decode.
 
-- [ ] **Step 1: Add failing source-contract assertions**
+- [x] **Step 1: Add failing source-contract assertions**
 
 Assert that immersive elements store/check `dataset.pageIndex`, `resolvePageImageSource` accepts `onNetworkStart`, loading timers depend on a network state, and `primePageImage` calls `decode()`.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `node scripts/check-reader-loading-performance.mjs`
 
@@ -47,15 +47,15 @@ Expected: failure naming the first missing slot/network/decode contract.
 - Consumes: target `pageIndex` for each slot load and swipe target.
 - Produces: `img.dataset.pageIndex` only after valid decode.
 
-- [ ] **Step 1: Pass target page index into `loadImg`**
+- [x] **Step 1: Pass target page index into `loadImg`**
 
 Hide and invalidate a slot before loading when its recorded page differs from target. After current load sequence validation and decode, record target page and show the element.
 
-- [ ] **Step 2: Require page identity during preview promotion**
+- [x] **Step 2: Require page identity during preview promotion**
 
 Compute target index before `canPromotePreview`; require `previewImg.dataset.pageIndex === String(targetIndex)` and copy identity to the current image when promoted.
 
-- [ ] **Step 3: Verify focused check**
+- [x] **Step 3: Verify focused check**
 
 Run: `node scripts/check-reader-loading-performance.mjs`
 
@@ -75,19 +75,19 @@ Expected: slot assertions pass; later network/decode assertion may remain RED.
 - `PageImage` owns delayed network-status visibility and clears it when fetch resolution returns.
 - Immersive current-page fetch arms parent status; adjacent fetches never do.
 
-- [ ] **Step 1: Add network-start callback at cache-miss fetch boundary**
+- [x] **Step 1: Add network-start callback at cache-miss fetch boundary**
 
 Call optional `onNetworkStart` inside the fetcher passed to `getImage`, directly before `fetch(normalized)`.
 
-- [ ] **Step 2: Replace generic loading timer with network timer**
+- [x] **Step 2: Replace generic loading timer with network timer**
 
 Track network pending separately. Start 180ms timer only after callback; clear pending and timer as soon as `resolvePageImageSource` returns or throws. Keep errors visible.
 
-- [ ] **Step 3: Apply same boundary to immersive current page**
+- [x] **Step 3: Apply same boundary to immersive current page**
 
 Arm delayed UI from current-page fetcher only. Clear it at fetch completion; remove generic `pageLoadPhase` loading timer.
 
-- [ ] **Step 4: Verify focused check**
+- [x] **Step 4: Verify focused check**
 
 Run: `node scripts/check-reader-loading-performance.mjs`
 
@@ -102,15 +102,15 @@ Expected: slot and network assertions pass; decode assertion may remain RED.
 **Interfaces:**
 - `primePageImage(pageUrl, priority)` returns `true` after cache fill and browser decode, otherwise `false`.
 
-- [ ] **Step 1: Resolve shared object URL during prime**
+- [x] **Step 1: Resolve shared object URL during prime**
 
 Use existing `getImage()` with the provided priority so the same cache/queue key is reused.
 
-- [ ] **Step 2: Decode temporary image**
+- [x] **Step 2: Decode temporary image**
 
 Assign returned object URL to `new Image()`, await `decode()` or `load`, clear handlers, and return success. Swallow preheat failure at existing effect call site.
 
-- [ ] **Step 3: Verify GREEN**
+- [x] **Step 3: Verify GREEN**
 
 Run: `node scripts/check-reader-loading-performance.mjs`
 
@@ -125,21 +125,20 @@ Expected: `reader loading/performance checks passed`.
 
 **Interfaces:** None.
 
-- [ ] **Step 1: Run all checks**
+- [x] **Step 1: Run all checks**
 
 Run every `scripts/check-*.mjs`; expected exit code 0 for each.
 
-- [ ] **Step 2: Build**
+- [x] **Step 2: Build**
 
 Run: `npm run build`
 
 Expected: Vite production build succeeds.
 
-- [ ] **Step 3: Review diff**
+- [x] **Step 3: Review diff**
 
 Run: `git diff --check` and inspect `git diff`; expected no whitespace errors or unrelated changes.
 
 - [ ] **Step 4: Commit and push**
 
 Commit with Conventional Commits message `fix(reader): stabilize page image loading`, then `git push origin dev`.
-
