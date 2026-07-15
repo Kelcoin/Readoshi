@@ -27,7 +27,7 @@ import { claimColdRestoreRoute, consumeHomeNavigationSnapshot, getBootState, loa
 import { getStoredServerInfo, loadServerInfo } from '../lib/serverInfoCache';
 import { useHorizontalScroller } from '../lib/horizontalScroller';
 import { navigateDeduplicate, navigateHistory, navigateHome, navigateToMetadata, navigateUpload, navigateWatchlist } from '../lib/navigation';
-import { ARCHIVE_BROWSE_MODES, ARCHIVE_PAGE_SIZE, clampArchivePage, getArchivePageAfterResize, getArchivePageCount, getArchivePageStart, getLastArchiveRowCentering, getSmartArchivePageSize } from '../lib/archivePagination';
+import { ARCHIVE_BROWSE_MODES, ARCHIVE_PAGE_SIZE, clampArchivePage, getArchivePageAfterResize, getArchivePageCount, getArchivePageStart, getSmartArchivePageSize, observeLastArchiveRowCentering } from '../lib/archivePagination';
 import { reduceArchiveRefreshPhase } from '../lib/archiveRefreshMotion';
 import { ARCHIVE_PROGRESS_VISIBILITY, normalizeArchiveProgressVisibility, shouldShowArchiveProgress } from '../lib/archiveProgress';
 
@@ -50,8 +50,14 @@ const FILTER_INPUT_MIN_WIDTH = 400;
 const FILTER_ACTIONS_MIN_WIDTH = 320;
 const FILTER_LAYOUT_GAP = 12;
 const FILTER_STACK_BREAKPOINT = FILTER_INPUT_MIN_WIDTH + FILTER_ACTIONS_MIN_WIDTH + FILTER_LAYOUT_GAP;
+const HOME_CAROUSEL_GLOW_PADDING = 44;
+const HOME_CAROUSEL_EXPANDED_HEIGHT = '420px';
 const UNTAGGED_CATEGORY_ID = '__untagged__';
 const UNTAGGED_CATEGORY = Object.freeze({ id: UNTAGGED_CATEGORY_ID, name: '无标签' });
+
+function getHomeCarouselPadding(isNarrow) {
+  return `${HOME_CAROUSEL_GLOW_PADDING}px ${isNarrow ? 14 : 20}px`;
+}
 
 function readFilter() {
   try {
@@ -1003,60 +1009,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
   }, [cropCover]);
 
   useLayoutEffect(() => {
-    const grid = gridRef.current;
-    if (!grid) return undefined;
-
-    let frame = 0;
-    const centerLastRow = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        const items = Array.from(grid.children);
-        items.forEach((item) => { item.style.translate = ''; });
-        const { translations } = getLastArchiveRowCentering(
-          grid.getBoundingClientRect(),
-          items.map((item) => {
-            const rect = item.getBoundingClientRect();
-            return {
-              left: rect.left,
-              right: rect.right,
-              top: rect.top,
-              isWide: item.classList.contains('is-wide'),
-            };
-          }),
-        );
-        translations.forEach(({ index, offset }) => {
-          if (Math.abs(offset) >= 1) items[index].style.translate = `${offset}px 0`;
-        });
-      });
-    };
-
-    const resizeObserver = new ResizeObserver(centerLastRow);
-    const observeCardClasses = () => {
-      Array.from(grid.children).forEach((item) => {
-        mutationObserver.observe(item, { attributes: true, attributeFilter: ['class'] });
-      });
-    };
-    const mutationObserver = new MutationObserver((records) => {
-      if (records.some((record) => record.type === 'childList' && record.target === grid)) {
-        mutationObserver.disconnect();
-        mutationObserver.observe(grid, { childList: true });
-        observeCardClasses();
-      }
-      centerLastRow();
-    });
-    resizeObserver.observe(grid);
-    mutationObserver.observe(grid, { childList: true });
-    observeCardClasses();
-    window.addEventListener('resize', centerLastRow);
-    centerLastRow();
-
-    return () => {
-      cancelAnimationFrame(frame);
-      resizeObserver.disconnect();
-      mutationObserver.disconnect();
-      window.removeEventListener('resize', centerLastRow);
-      Array.from(grid.children).forEach((item) => { item.style.translate = ''; });
-    };
+    return observeLastArchiveRowCentering(gridRef.current);
   }, [archiveBrowseMode, archivePage, archivePageSize, archives.length, isNarrow]);
 
   const archiveSideEffectsRef = useRef({ exitColdRestoreMode, scrollToArchives });
@@ -1999,8 +1952,8 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
               />
             </div>
           </div>
-          <div style={{ overflow: 'hidden', transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)', maxHeight: historyCollapsed ? '0px' : '368px' }}>
-            <div ref={historyScroller.ref} onWheelCapture={historyScroller.onWheelCapture} onScroll={historyScroller.onScroll} onMouseDown={historyScroller.onMouseDown} onClickCapture={historyScroller.onClickCapture} onDragStart={historyScroller.onDragStart} style={{ display: 'flex', gap: isNarrow ? '10px' : '16px', overflowX: 'auto', overflowY: 'hidden', padding: isNarrow ? '8px 14px 16px' : '8px 20px 16px', position: 'relative', zIndex: 1, ...historyScroller.getTouchScrollStyle(), ...historyScroller.getMouseScrollStyle() }} className="no-scrollbar">
+          <div style={{ overflow: 'hidden', transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)', maxHeight: historyCollapsed ? '0px' : HOME_CAROUSEL_EXPANDED_HEIGHT }}>
+            <div ref={historyScroller.ref} onWheelCapture={historyScroller.onWheelCapture} onScroll={historyScroller.onScroll} onMouseDown={historyScroller.onMouseDown} onClickCapture={historyScroller.onClickCapture} onDragStart={historyScroller.onDragStart} style={{ display: 'flex', gap: isNarrow ? '10px' : '16px', overflowX: 'auto', overflowY: 'hidden', padding: getHomeCarouselPadding(isNarrow), position: 'relative', zIndex: 1, ...historyScroller.getTouchScrollStyle(), ...historyScroller.getMouseScrollStyle() }} className="no-scrollbar">
               {filteredHistory.length > 0 ? (
                 <>
                   {filteredHistory.slice(0, 10).map(h => (
@@ -2081,8 +2034,8 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
               />
             </div>
           </div>
-          <div style={{ overflow: 'hidden', transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)', maxHeight: watchlistCollapsed ? '0px' : '368px' }}>
-            <div ref={watchlistScroller.ref} onWheelCapture={watchlistScroller.onWheelCapture} onScroll={watchlistScroller.onScroll} onMouseDown={watchlistScroller.onMouseDown} onClickCapture={watchlistScroller.onClickCapture} onDragStart={watchlistScroller.onDragStart} style={{ display: 'flex', gap: isNarrow ? '10px' : '16px', overflowX: 'auto', overflowY: 'hidden', padding: isNarrow ? '8px 14px 16px' : '8px 20px 16px', position: 'relative', zIndex: 1, ...watchlistScroller.getTouchScrollStyle(), ...watchlistScroller.getMouseScrollStyle() }} className="no-scrollbar">
+          <div style={{ overflow: 'hidden', transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)', maxHeight: watchlistCollapsed ? '0px' : HOME_CAROUSEL_EXPANDED_HEIGHT }}>
+            <div ref={watchlistScroller.ref} onWheelCapture={watchlistScroller.onWheelCapture} onScroll={watchlistScroller.onScroll} onMouseDown={watchlistScroller.onMouseDown} onClickCapture={watchlistScroller.onClickCapture} onDragStart={watchlistScroller.onDragStart} style={{ display: 'flex', gap: isNarrow ? '10px' : '16px', overflowX: 'auto', overflowY: 'hidden', padding: getHomeCarouselPadding(isNarrow), position: 'relative', zIndex: 1, ...watchlistScroller.getTouchScrollStyle(), ...watchlistScroller.getMouseScrollStyle() }} className="no-scrollbar">
               {watchlistWithProgress.map(item => (
                 <ArchiveCard key={`watch-${item.id || item.arcid}`} archive={item} onClick={() => handleSelectArchive(item.id || item.arcid)} onArchiveContextMenu={(archive, point, event) => handleOpenArchiveMenu(archive, point, event, { showRemoveWatchlist: true })} longPressTitle="打开菜单" currentPage={item.page} showProgressBar={showHistoricalArchiveProgress} reserveProgressSpace={reserveGlobalProgressSpace} noCrop={!cropCover} cacheOnly={coldRestoreRef.current} />
               ))}
@@ -2147,8 +2100,8 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
               />
             </div>
           </div>
-          <div style={{ overflow: 'hidden', transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)', maxHeight: randomCollapsed ? '0px' : '368px' }}>
-            <div ref={randomScroller.ref} onWheelCapture={randomScroller.onWheelCapture} onScroll={randomScroller.onScroll} onMouseDown={randomScroller.onMouseDown} onClickCapture={randomScroller.onClickCapture} onDragStart={randomScroller.onDragStart} style={{ display: 'flex', gap: isNarrow ? '10px' : '16px', overflowX: 'auto', overflowY: 'hidden', padding: isNarrow ? '8px 14px 16px' : '8px 20px 16px', position: 'relative', zIndex: 1, ...randomScroller.getTouchScrollStyle(), ...randomScroller.getMouseScrollStyle() }} className="no-scrollbar">
+          <div style={{ overflow: 'hidden', transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)', maxHeight: randomCollapsed ? '0px' : HOME_CAROUSEL_EXPANDED_HEIGHT }}>
+            <div ref={randomScroller.ref} onWheelCapture={randomScroller.onWheelCapture} onScroll={randomScroller.onScroll} onMouseDown={randomScroller.onMouseDown} onClickCapture={randomScroller.onClickCapture} onDragStart={randomScroller.onDragStart} style={{ display: 'flex', gap: isNarrow ? '10px' : '16px', overflowX: 'auto', overflowY: 'hidden', padding: getHomeCarouselPadding(isNarrow), position: 'relative', zIndex: 1, ...randomScroller.getTouchScrollStyle(), ...randomScroller.getMouseScrollStyle() }} className="no-scrollbar">
               {randomsRefreshing ? Array.from({ length: Math.max(5, Math.min(8, randoms.length || 5)) }).map((_, i) => (
                 <SkeletonCard key={`rrsk-${i}`} showProgress={showGlobalArchiveProgress} />
               )) : randoms.map(arc => (

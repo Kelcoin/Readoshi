@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import ArchiveCard from '../components/ArchiveCard';
 import ArchiveContextMenu from '../components/ArchiveContextMenu';
 import { navigateToMetadata } from '../lib/navigation';
@@ -11,6 +11,7 @@ import { archiveMatchesSearch } from '../lib/archiveSearch';
 import { getSyncToken, getWorkerUrl } from '../lib/worker-config';
 import { getWatchlist, getWatchlistAutoRemoveIds, loadWatchlistState, mergeWatchlistProgress, removeWatchlistItems } from '../lib/watchlist';
 import { ARCHIVE_PROGRESS_VISIBILITY, readArchiveProgressVisibility, shouldShowArchiveProgress } from '../lib/archiveProgress';
+import { observeLastArchiveRowCentering } from '../lib/archivePagination';
 
 function HeaderGlyph() {
   return <HomeSectionGlyph name="watchlist" size={24} color={getSectionGlyphColor('watchlist')} />;
@@ -31,6 +32,7 @@ export default function WatchlistPage({ onSelectArchive, onBack }) {
   const [syncing, setSyncing] = useState(false);
   const [menu, setMenu] = useState(null);
   const [isNarrow, setIsNarrow] = useState(window.innerWidth < 600);
+  const gridRef = useRef(null);
 
   useEffect(() => {
     loadWatchlistState().then((state) => setItems(state.items)).catch(() => setItems(getWatchlist()));
@@ -66,6 +68,8 @@ export default function WatchlistPage({ onSelectArchive, onBack }) {
   const autoRemoveIds = useMemo(() => getWatchlistAutoRemoveIds(itemsWithProgress), [itemsWithProgress]);
   const filteredItems = useMemo(() => itemsWithProgress.filter((item) => archiveMatchesSearch(item, query)), [itemsWithProgress, query]);
   const selectedCount = selectedIds.size;
+
+  useLayoutEffect(() => observeLastArchiveRowCentering(gridRef.current), [cropCover, filteredItems.length, isNarrow]);
 
   useEffect(() => {
     if (autoRemoveIds.length > 0) removeWatchlistItems(autoRemoveIds).catch(() => {});
@@ -243,7 +247,7 @@ export default function WatchlistPage({ onSelectArchive, onBack }) {
           </div>
 
           {filteredItems.length > 0 ? (
-            <div className="archive-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: isNarrow ? '10px' : '16px', '--archive-grid-half-gap': isNarrow ? '5px' : '8px' }}>
+            <div ref={gridRef} className="archive-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: isNarrow ? '10px' : '16px', '--archive-grid-half-gap': isNarrow ? '5px' : '8px' }}>
               {filteredItems.map((item) => {
                 const selected = selectedIds.has(item.id);
                 return (

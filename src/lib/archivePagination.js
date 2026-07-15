@@ -80,3 +80,59 @@ export function getLastArchiveRowCentering(containerRect, itemRects, tolerance =
     translations,
   };
 }
+
+export function observeLastArchiveRowCentering(grid) {
+  if (!grid) return () => {};
+
+  let frame = 0;
+  const centerLastRow = () => {
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => {
+      const items = Array.from(grid.children);
+      items.forEach((item) => { item.style.translate = ''; });
+      const { translations } = getLastArchiveRowCentering(
+        grid.getBoundingClientRect(),
+        items.map((item) => {
+          const rect = item.getBoundingClientRect();
+          return {
+            left: rect.left,
+            right: rect.right,
+            top: rect.top,
+            isWide: item.classList.contains('is-wide'),
+          };
+        }),
+      );
+      translations.forEach(({ index, offset }) => {
+        if (Math.abs(offset) >= 1) items[index].style.translate = `${offset}px 0`;
+      });
+    });
+  };
+
+  const resizeObserver = new ResizeObserver(centerLastRow);
+  const mutationObserver = new MutationObserver((records) => {
+    if (records.some((record) => record.type === 'childList' && record.target === grid)) {
+      mutationObserver.disconnect();
+      mutationObserver.observe(grid, { childList: true });
+      Array.from(grid.children).forEach((item) => {
+        mutationObserver.observe(item, { attributes: true, attributeFilter: ['class'] });
+      });
+    }
+    centerLastRow();
+  });
+
+  resizeObserver.observe(grid);
+  mutationObserver.observe(grid, { childList: true });
+  Array.from(grid.children).forEach((item) => {
+    mutationObserver.observe(item, { attributes: true, attributeFilter: ['class'] });
+  });
+  window.addEventListener('resize', centerLastRow);
+  centerLastRow();
+
+  return () => {
+    cancelAnimationFrame(frame);
+    resizeObserver.disconnect();
+    mutationObserver.disconnect();
+    window.removeEventListener('resize', centerLastRow);
+    Array.from(grid.children).forEach((item) => { item.style.translate = ''; });
+  };
+}

@@ -1,5 +1,9 @@
 # LANraragi-React-Reader
 
+<p align="center">
+  <img src="logo.png" alt="LANraragi-React-Reader Logo" width="180">
+</p>
+
 LANraragi-React-Reader 是一个面向 [LANraragi](https://github.com/Difegue/LANraragi) 的现代阅读器前端，支持 PWA、标签翻译、分类浏览、阅读历史、智能推荐、归档上传、元数据编辑、E-Hentai 评论、重复归档检测和沉浸式阅读。
 
 应用通过 LANraragi HTTP API 工作：首次打开页面时填写 LANraragi 地址和 API Key，之后配置保存在浏览器 `localStorage`。API 请求会发送到 `<LANraragi 地址>/api/*`，认证方式为 `Authorization: Bearer <base64(API Key)>`。
@@ -10,6 +14,7 @@ LANraragi-React-Reader 是一个面向 [LANraragi](https://github.com/Difegue/LA
 - 标签翻译：加载 [EhTagTranslation Database](https://github.com/EhTagTranslation/Database)，支持中文和拼音检索。
 - 分类筛选：同步 LANraragi 分类，可与标签搜索叠加。
 - 随机漫游：随机抽取归档并自动补齐横向列表宽度。
+- 归档布局：归档网格末行自动居中，首页历史、待看和随机卡片支持更宽的横向展示区域。
 - 智能推荐：根据当前归档标签和分类推荐相似内容。
 - 阅读器：单页/双页/Webtoon 布局、翻页阅读、键盘导航、页码跳转、缩略图抽屉和图片预加载。
 - 智能阅读布局：自动检测连续长条 Webtoon，依据相邻图片连接处的色度连续性判断，并排除接近纯白的边界。
@@ -147,10 +152,6 @@ npm run build
 
 构建产物输出到 `dist/`。
 
-### 版本规则
-
-当前版本为 `1.2.1`。项目遵循 SemVer：`fix:` 与文档/维护更新提升 patch，`feat:` 提升 minor，提交主题含 `!` 或正文含 `BREAKING CHANGE` 时提升 major。页面版本号附带 7 位 Git Hash，便于确认实际构建。
-
 ## Cloudflare Worker
 
 项目根目录的 `worker.js` 可部署为 Cloudflare Worker，用于：
@@ -159,8 +160,6 @@ npm run build
 - 通过 KV 存储同步阅读进度、待看归档 ID、隐藏已读等最小状态；标题与标签不写入 Worker。
 - 保存重复归档检测中被标记为“非重复”的归档组合。
 - 在 Worker 状态网页中导入/导出 KV 数据。
-
-Worker 状态页底部会显示项目名、版本号和 GitHub 链接。可选配置 Worker 文本变量 `APP_VERSION` 覆盖内置版本号，建议使用与前端一致的 `v<SemVer>+<7位Git Hash>` 格式。
 
 部署后，在登录页或首页设置面板填写 Worker 地址，例如 `https://your-worker.example.workers.dev`。
 

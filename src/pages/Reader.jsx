@@ -379,11 +379,18 @@ const PageImage = React.forwardRef(({
 
   const isReady = !!imgSrc && loadState === 'ready';
   const showSplit = isReady && splitWide && naturalSize.width > naturalSize.height * 1.2;
+  const pageShellStyle = isReady ? style : {
+    ...style,
+    width: '100%',
+    height: '100%',
+    maxWidth: '100%',
+    maxHeight: '100%',
+  };
   return (
     <div
       className={[className, 'reader-page-image-shell'].filter(Boolean).join(' ')}
       style={{
-        ...style,
+        ...pageShellStyle,
         position: 'relative',
         overflow: 'hidden',
         minWidth: 0,
@@ -447,7 +454,7 @@ const PageImage = React.forwardRef(({
             color: loadState === 'error' ? 'var(--danger)' : 'var(--text-main)',
           }}
         >
-          <div style={{ fontSize: 'clamp(18px, 2.2vw, 28px)', fontWeight: 750, letterSpacing: '0.3px', textWrap: 'balance' }}>
+          <div style={{ fontSize: 'clamp(18px, 2.2vw, 28px)', lineHeight: 1.35, fontWeight: 750, letterSpacing: '0.3px', textWrap: 'balance' }}>
             {loadState === 'error' ? (errorLabel || '图片加载失败') : (loadingLabel || '正在加载图像…')}
           </div>
           <div style={{ fontSize: 'clamp(13px, 1.4vw, 18px)', fontWeight: 600, color: loadState === 'error' ? 'rgba(255,180,180,0.84)' : 'var(--text-sub)' }}>
@@ -3285,7 +3292,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                     background: '#000',
                   }}
                 >
-                  <div style={{ fontSize: 'clamp(24px, 4vw, 40px)', fontWeight: 800, color: '#f2f3f6', letterSpacing: '0.5px', textWrap: 'balance' }}>
+                  <div style={{ fontSize: 'clamp(24px, 4vw, 40px)', lineHeight: 1.35, fontWeight: 800, color: '#f2f3f6', letterSpacing: '0.5px', textWrap: 'balance' }}>
                     {`正在加载第 ${currentIndex + 1} 页`}
                   </div>
                   <div style={{ fontSize: 'clamp(16px, 2.6vw, 26px)', fontWeight: 600, color: 'rgba(223,225,232,0.62)' }}>
