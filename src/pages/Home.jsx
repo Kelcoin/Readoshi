@@ -2,7 +2,7 @@ import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMe
 import { createPortal } from 'react-dom';
 import { loadArchiveMetadataBatch, lrrApi } from '../lib/api';
 import { getHistory, getHideRead, setHideRead, getCropCover, setCropCover, getArchiveBrowseMode, setArchiveBrowseMode, removeHistoryItem, loadHistoryState } from '../lib/history';
-import { addWatchlistItem, getWatchlist, loadWatchlistState, removeWatchlistItem, removeWatchlistItems } from '../lib/watchlist';
+import { addWatchlistItem, getWatchlist, getWatchlistAutoRemoveIds, loadWatchlistState, mergeWatchlistProgress, removeWatchlistItem, removeWatchlistItems } from '../lib/watchlist';
 import { loadTagDB, startTagDBUpdateTimer, stopTagDBUpdateTimer } from '../lib/tags';
 import { getWorkerUrl, setWorkerUrl, getSyncToken, setSyncToken, exportConfig, importConfig } from '../lib/worker-config';
 import { runHistoryExistenceCheck } from '../lib/historyMaintenance';
@@ -617,7 +617,13 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     });
   }, []);
 
-  const watchlistIds = useMemo(() => new Set(watchlist.map((item) => item.id || item.arcid).filter(Boolean)), [watchlist]);
+  const watchlistWithProgress = useMemo(() => mergeWatchlistProgress(watchlist, history), [history, watchlist]);
+  const watchlistAutoRemoveIds = useMemo(() => getWatchlistAutoRemoveIds(watchlistWithProgress), [watchlistWithProgress]);
+  const watchlistIds = useMemo(() => new Set(watchlistWithProgress.map((item) => item.id || item.arcid).filter(Boolean)), [watchlistWithProgress]);
+
+  useEffect(() => {
+    if (watchlistAutoRemoveIds.length > 0) removeWatchlistItems(watchlistAutoRemoveIds).catch(() => {});
+  }, [watchlistAutoRemoveIds]);
 
   const handleOpenArchiveMenu = useCallback((archive, point, event, options = {}) => {
     if (archiveSelectionMode) return;
@@ -1123,7 +1129,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
         const data = await loadArchiveMetadataBatch(
           batchIds,
           (id) => lrrApi.getArchive(id, { signal: controller.signal }),
-          { signal: controller.signal },
+          { signal: controller.signal, ignoreMissing: true },
         );
         if (fetchSeq !== archiveFetchSeqRef.current) return false;
         setArchiveTotal(total);
@@ -1694,6 +1700,8 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
   const handleUntaggedCategoryClick = useCallback(() => {
     const nextCategory = selectedCategory?.id === UNTAGGED_CATEGORY_ID ? null : UNTAGGED_CATEGORY;
     const cleared = { ...DEFAULT_FILTER };
+    lastFetchedFilterRef.current = '';
+    lastFetchedRef.current = 0;
     writeFilter(cleared);
     setFilter(cleared);
     setSelectedCategory(nextCategory);
@@ -2080,8 +2088,8 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           </div>
           <div style={{ overflow: 'hidden', transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)', maxHeight: watchlistCollapsed ? '0px' : '368px' }}>
             <div ref={watchlistScroller.ref} onWheelCapture={watchlistScroller.onWheelCapture} onScroll={watchlistScroller.onScroll} onMouseDown={watchlistScroller.onMouseDown} onClickCapture={watchlistScroller.onClickCapture} onDragStart={watchlistScroller.onDragStart} style={{ display: 'flex', gap: isNarrow ? '10px' : '16px', overflowX: 'auto', overflowY: 'hidden', padding: isNarrow ? '8px 14px 16px' : '8px 20px 16px', position: 'relative', zIndex: 1, ...watchlistScroller.getTouchScrollStyle(), ...watchlistScroller.getMouseScrollStyle() }} className="no-scrollbar">
-              {watchlist.map(item => (
-                <ArchiveCard key={`watch-${item.id || item.arcid}`} archive={item} onClick={() => handleSelectArchive(item.id || item.arcid)} onArchiveContextMenu={(archive, point, event) => handleOpenArchiveMenu(archive, point, event, { showRemoveWatchlist: true })} longPressTitle="打开菜单" noCrop={!cropCover} cacheOnly={coldRestoreRef.current} />
+              {watchlistWithProgress.map(item => (
+                <ArchiveCard key={`watch-${item.id || item.arcid}`} archive={item} onClick={() => handleSelectArchive(item.id || item.arcid)} onArchiveContextMenu={(archive, point, event) => handleOpenArchiveMenu(archive, point, event, { showRemoveWatchlist: true })} longPressTitle="打开菜单" currentPage={item.page} showProgressBar noCrop={!cropCover} cacheOnly={coldRestoreRef.current} />
               ))}
               {watchlistOverflow && (
                 <button

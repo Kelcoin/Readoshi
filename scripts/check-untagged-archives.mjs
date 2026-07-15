@@ -34,6 +34,21 @@ await assert.rejects(
   /metadata failed/,
 );
 
+const missing400 = Object.assign(new Error('missing'), { status: 400 });
+const missing404 = Object.assign(new Error('missing'), { status: 404 });
+const kept = await loadArchiveMetadataBatch(['first', 'gone-400', 'second', 'gone-404'], async (id) => {
+  if (id === 'gone-400') throw missing400;
+  if (id === 'gone-404') throw missing404;
+  return { arcid: id };
+}, { concurrency: 2, ignoreMissing: true });
+assert.deepEqual(kept.map((item) => item.arcid), ['first', 'second']);
+
+const unauthorized = Object.assign(new Error('unauthorized'), { status: 401 });
+await assert.rejects(
+  loadArchiveMetadataBatch(['blocked'], async () => { throw unauthorized; }, { ignoreMissing: true }),
+  (error) => error === unauthorized,
+);
+
 const abortError = new Error('cancelled');
 abortError.name = 'AbortError';
 await assert.rejects(
@@ -46,4 +61,7 @@ assert.match(home, /无标签/);
 assert.match(home, /UNTAGGED_CATEGORY_ID/);
 assert.match(home, /if \(ids\.length === 0\)/);
 assert.match(home, /ids\.slice\(batchStart, batchStart \+ pageSize\)/);
+assert.match(home, /ignoreMissing:\s*true/);
+assert.match(home, /handleUntaggedCategoryClick[\s\S]*lastFetchedFilterRef\.current\s*=\s*''/);
+assert.match(home, /handleUntaggedCategoryClick[\s\S]*lastFetchedRef\.current\s*=\s*0/);
 assert.match(home, /archiveLoadError/);

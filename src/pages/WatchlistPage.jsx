@@ -5,11 +5,11 @@ import { navigateToMetadata } from '../lib/navigation';
 import ConfirmDialog from '../components/ConfirmDialog';
 import ArchiveSearchBox from '../components/ArchiveSearchBox';
 import { HomeSectionGlyph, getSectionGlyphColor } from '../components/AppGlyphs';
-import { getCropCover } from '../lib/history';
+import { getCropCover, getHistory, loadHistoryState } from '../lib/history';
 import { lrrApi } from '../lib/api';
 import { archiveMatchesSearch } from '../lib/archiveSearch';
 import { getSyncToken, getWorkerUrl } from '../lib/worker-config';
-import { getWatchlist, loadWatchlistState, removeWatchlistItems } from '../lib/watchlist';
+import { getWatchlist, getWatchlistAutoRemoveIds, loadWatchlistState, mergeWatchlistProgress, removeWatchlistItems } from '../lib/watchlist';
 
 function HeaderGlyph() {
   return <HomeSectionGlyph name="watchlist" size={24} color={getSectionGlyphColor('watchlist')} />;
@@ -17,6 +17,7 @@ function HeaderGlyph() {
 
 export default function WatchlistPage({ onSelectArchive, onBack }) {
   const [items, setItems] = useState(() => getWatchlist());
+  const [history, setHistory] = useState(() => getHistory());
   const [cropCover] = useState(getCropCover);
   const [query, setQuery] = useState('');
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -29,6 +30,13 @@ export default function WatchlistPage({ onSelectArchive, onBack }) {
 
   useEffect(() => {
     loadWatchlistState().then((state) => setItems(state.items)).catch(() => setItems(getWatchlist()));
+  }, []);
+
+  useEffect(() => {
+    loadHistoryState().then((state) => setHistory(state.histories)).catch(() => setHistory(getHistory()));
+    const refresh = () => setHistory(getHistory());
+    window.addEventListener('lrr:history-changed', refresh);
+    return () => window.removeEventListener('lrr:history-changed', refresh);
   }, []);
 
   useEffect(() => {
@@ -50,8 +58,14 @@ export default function WatchlistPage({ onSelectArchive, onBack }) {
     return () => window.removeEventListener('resize', check);
   }, []);
 
-  const filteredItems = useMemo(() => items.filter((item) => archiveMatchesSearch(item, query)), [items, query]);
+  const itemsWithProgress = useMemo(() => mergeWatchlistProgress(items, history), [history, items]);
+  const autoRemoveIds = useMemo(() => getWatchlistAutoRemoveIds(itemsWithProgress), [itemsWithProgress]);
+  const filteredItems = useMemo(() => itemsWithProgress.filter((item) => archiveMatchesSearch(item, query)), [itemsWithProgress, query]);
   const selectedCount = selectedIds.size;
+
+  useEffect(() => {
+    if (autoRemoveIds.length > 0) removeWatchlistItems(autoRemoveIds).catch(() => {});
+  }, [autoRemoveIds]);
 
   const handleSync = useCallback(async () => {
     if (!getWorkerUrl() || !getSyncToken() || syncing) return;
@@ -270,6 +284,8 @@ export default function WatchlistPage({ onSelectArchive, onBack }) {
                     onArchiveContextMenu={(archive, point) => setMenu({ archive, x: point.x, y: point.y, showRemoveWatchlist: true })}
                     onLongPress={() => requestSingleDelete(item)}
                     longPressTitle="移除待看"
+                    currentPage={item.page}
+                    showProgressBar
                     noCrop={!cropCover}
                     selectionMode={selectionMode}
                     selected={selected}

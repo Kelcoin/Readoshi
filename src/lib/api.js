@@ -66,7 +66,7 @@ export function normalizeUntaggedArchiveIds(response) {
     .filter(Boolean);
 }
 
-export async function loadArchiveMetadataBatch(ids, loadArchive, { concurrency = 6, signal } = {}) {
+export async function loadArchiveMetadataBatch(ids, loadArchive, { concurrency = 6, signal, ignoreMissing = false } = {}) {
   const archiveIds = Array.isArray(ids) ? ids.filter(Boolean) : [];
   if (archiveIds.length === 0) return [];
   const results = new Array(archiveIds.length);
@@ -83,11 +83,16 @@ export async function loadArchiveMetadataBatch(ids, loadArchive, { concurrency =
       if (signal?.aborted) throw abortError();
       const index = cursor;
       cursor += 1;
-      results[index] = await loadArchive(archiveIds[index]);
+      try {
+        results[index] = await loadArchive(archiveIds[index]);
+      } catch (error) {
+        if (ignoreMissing && (error?.status === 400 || error?.status === 404)) continue;
+        throw error;
+      }
     }
   };
   await Promise.all(Array.from({ length: workerCount }, worker));
-  return results;
+  return results.filter((item) => item !== undefined);
 }
 
 export const lrrApi = {

@@ -54,6 +54,26 @@ function sortWatchlist(list) {
     .sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
 }
 
+export function mergeWatchlistProgress(items, histories) {
+  const historyById = new Map((Array.isArray(histories) ? histories : []).map((item) => [
+    String(item?.id || item?.arcid || ''),
+    item,
+  ]));
+  return (Array.isArray(items) ? items : []).map((item) => {
+    const history = historyById.get(String(item?.id || item?.arcid || ''));
+    const page = Math.max(Number(item?.page) || 0, Number(history?.page) || 0);
+    const total = Number(item?.total || item?.pagecount || history?.total || history?.pagecount) || 0;
+    return { ...item, page, total };
+  });
+}
+
+export function getWatchlistAutoRemoveIds(items, threshold = 0.8) {
+  return (Array.isArray(items) ? items : [])
+    .filter((item) => Number(item?.total) > 0 && Number(item?.page) / Number(item.total) > threshold)
+    .map((item) => String(item?.id || item?.arcid || ''))
+    .filter(Boolean);
+}
+
 function writeWatchlistCache(list, { notify = true } = {}) {
   localStorage.setItem(activeWatchlistKey(), JSON.stringify(sortWatchlist(list)));
   if (notify) emitWatchlistChanged();

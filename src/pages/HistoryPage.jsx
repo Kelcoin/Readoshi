@@ -1,12 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ArchiveCard from '../components/ArchiveCard';
+import ArchiveContextMenu from '../components/ArchiveContextMenu';
 import ConfirmDialog from '../components/ConfirmDialog';
 import ArchiveSearchBox from '../components/ArchiveSearchBox';
+import EhFavoriteDeleteSwitch from '../components/EhFavoriteDeleteSwitch';
 import { HomeSectionGlyph, getSectionGlyphColor } from '../components/AppGlyphs';
 import { getCropCover, getHideRead, getHistory, loadHistoryState, removeHistoryItems, setHideRead } from '../lib/history';
-import { runHistoryExistenceCheck } from '../lib/historyMaintenance';
+import { isArchiveMissingError, runHistoryExistenceCheck } from '../lib/historyMaintenance';
 import { getSyncToken, getWorkerUrl } from '../lib/worker-config';
 import { archiveMatchesSearch } from '../lib/archiveSearch';
+import { lrrApi } from '../lib/api';
+import { deleteArchiveWithFavoriteSync } from '../lib/archiveDeletion';
+import { getEhFavoriteDeleteSync } from '../lib/ehFavoriteSync';
+import { navigateToMetadata } from '../lib/navigation';
+import { removeWatchlistItem } from '../lib/watchlist';
 
 function HeaderGlyph() {
   return <HomeSectionGlyph name="continue" size={24} color={getSectionGlyphColor('continue')} />;
@@ -72,6 +79,11 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
   const [hideRead, setHideReadState] = useState(getHideRead);
   const [cropCover] = useState(getCropCover);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [menu, setMenu] = useState(null);
+  const [archiveDeleteTarget, setArchiveDeleteTarget] = useState(null);
+  const [archiveDeleting, setArchiveDeleting] = useState(false);
+  const [archiveDeleteSyncConfirmed, setArchiveDeleteSyncConfirmed] = useState(true);
+  const [notice, setNotice] = useState('');
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [lastSelectedId, setLastSelectedId] = useState(null);
   const [selectionMode, setSelectionMode] = useState(false);
@@ -214,6 +226,66 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
     });
     setDeleteTarget(null);
   }, [deleteTarget]);
+
+  const handleDownload = useCallback(async (archive) => {
+    const archiveId = archive?.arcid || archive?.id;
+    if (!archiveId) return;
+    try {
+      const { blob, filename } = await lrrApi.downloadArchive(archiveId);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename || `${archiveId}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      setNotice(`下载失败：${error?.message || '未知错误'}`);
+    }
+  }, []);
+
+  const handleCopyLink = useCallback(async (archive) => {
+    const archiveId = archive?.arcid || archive?.id;
+    if (!archiveId) return;
+    const url = `${window.location.origin}/?id=${encodeURIComponent(archiveId)}`;
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      setNotice(`无法自动复制，请手动复制：${url}`);
+    }
+  }, []);
+
+  const requestArchiveDelete = useCallback((archive) => {
+    setArchiveDeleteSyncConfirmed(true);
+    setArchiveDeleteTarget(archive);
+  }, []);
+
+  const handleArchiveDelete = useCallback(async () => {
+    if (!archiveDeleteTarget || archiveDeleting) return;
+    const archiveId = archiveDeleteTarget.arcid || archiveDeleteTarget.id;
+    setArchiveDeleting(true);
+    try {
+      await deleteArchiveWithFavoriteSync(archiveDeleteTarget, {
+        syncEnabled: getEhFavoriteDeleteSync(),
+        confirmationEnabled: archiveDeleteSyncConfirmed,
+      });
+      await Promise.all([removeHistoryItems([archiveId]), removeWatchlistItem(archiveId)]);
+      setHistoryState(getHistory());
+      setArchiveDeleteTarget(null);
+    } catch (error) {
+      if (isArchiveMissingError(error)) {
+        await removeHistoryItems([archiveId]);
+        setHistoryState(getHistory());
+        setArchiveDeleteTarget(null);
+        setNotice('归档已不存在于 LANraragi，相关历史记录已清理。');
+      } else {
+        setNotice(`删除失败：${error?.message || '未知错误'}`);
+      }
+    } finally {
+      setArchiveDeleting(false);
+    }
+  }, [archiveDeleteSyncConfirmed, archiveDeleteTarget, archiveDeleting]);
 
   return (
     <>
@@ -374,8 +446,8 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
                               onSelectArchive(h.id);
                             }
                           }}
-                          onLongPress={() => requestSingleDelete(h)}
-                          longPressTitle="删除阅读记录"
+                          onArchiveContextMenu={(archive, point) => setMenu({ archive, x: point.x, y: point.y, showRemoveHistory: true })}
+                          longPressTitle="打开菜单"
                           currentPage={h.page}
                           showProgressBar
                           noCrop={!cropCover}
@@ -394,6 +466,16 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
           )}
         </section>
       </div>
+      <ArchiveContextMenu
+        menu={menu}
+        onClose={() => setMenu(null)}
+        onRead={(archive) => onSelectArchive(archive.arcid || archive.id)}
+        onEditMetadata={(archive) => navigateToMetadata(archive.arcid || archive.id)}
+        onDownload={handleDownload}
+        onCopyLink={handleCopyLink}
+        onRemoveHistory={requestSingleDelete}
+        onDelete={requestArchiveDelete}
+      />
       <ConfirmDialog
         open={!!deleteTarget}
         title="确认删除阅读记录"
@@ -402,6 +484,31 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
         cancelLabel="取消"
         onConfirm={handleRemoveHistory}
         onCancel={() => setDeleteTarget(null)}
+      />
+      <ConfirmDialog
+        open={!!archiveDeleteTarget}
+        title="确认删除归档"
+        message={archiveDeleteTarget ? `将从 LANraragi 中删除“${archiveDeleteTarget.title || archiveDeleteTarget.arcid || archiveDeleteTarget.id}”。此操作不可撤销。` : ''}
+        confirmLabel={archiveDeleting ? '删除中…' : '确认删除'}
+        cancelLabel="取消"
+        onConfirm={handleArchiveDelete}
+        onCancel={() => { if (!archiveDeleting) setArchiveDeleteTarget(null); }}
+        confirmDisabled={archiveDeleting}
+      >
+        {getEhFavoriteDeleteSync() && (
+          <EhFavoriteDeleteSwitch checked={archiveDeleteSyncConfirmed} onChange={setArchiveDeleteSyncConfirmed} disabled={archiveDeleting} />
+        )}
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={!!notice}
+        title="操作提示"
+        message={notice}
+        confirmLabel="知道了"
+        showCancel={false}
+        destructive={false}
+        initialFocusSelector="[data-dialog-confirm]"
+        onConfirm={() => setNotice('')}
+        onCancel={() => setNotice('')}
       />
     </>
   );

@@ -1935,7 +1935,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       }).catch(() => {});
       setHistoryEntries(getHistory());
       const totalPages = Number(archive.pagecount || pages.length) || 0;
-      if (archiveId && totalPages > 0 && (currentIndex + 1) / totalPages > 0.8 && !watchlistAutoRemovedRef.current.has(archiveId)) {
+      if (archiveId && totalPages > 0 && highestPage / totalPages > 0.8 && !watchlistAutoRemovedRef.current.has(archiveId)) {
         watchlistAutoRemovedRef.current.add(archiveId);
         removeWatchlistItem(archiveId).catch(() => {});
       }
