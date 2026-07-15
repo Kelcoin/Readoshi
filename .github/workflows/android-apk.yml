@@ -28,9 +28,6 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Install Android SDK 36
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
-
       - name: Install web dependencies
         run: npm install --package-lock=false --no-audit --no-fund
 
