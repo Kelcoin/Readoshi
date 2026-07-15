@@ -127,7 +127,7 @@ export const lrrApi = {
     });
     return readResponse(res);
   },
-  getArchiveFiles: (id) => request(`/archives/${id}/files`),
+  getArchiveFiles: (id, options = {}) => request(`/archives/${id}/files`, 'GET', null, options),
   deleteArchive: (id) => request(`/archives/${encodeURIComponent(id)}`, 'DELETE'),
   setArchiveThumbnail: (id, page) =>
     request(`/archives/${encodeURIComponent(id)}/thumbnail?page=${encodeURIComponent(page)}`, 'PUT'),
@@ -174,7 +174,7 @@ export const lrrApi = {
   getMinionStatus: (job) => request(`/minion/${encodeURIComponent(job)}`),
   queueArchivePageThumbnails: (id, force = false) =>
     request(`/archives/${id}/files/thumbnails${force ? '?force=true' : ''}`, 'POST'),
-  extractArchive: (id) => request(`/archives/${id}/extract`, 'POST'),
+  extractArchive: (id, options = {}) => request(`/archives/${id}/extract`, 'POST', null, options),
   clearCache: (id) => request(`/archives/${id}/extract`, 'DELETE'),
   updateProgress: (id, page) => request(`/archives/${id}/progress/${page}`, 'PUT'),
   getCategories: () => request('/categories'),

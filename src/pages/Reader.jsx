@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useReducer } from 'react';
 import { flushSync } from 'react-dom';
 import { lrrApi } from '../lib/api';
 import { flushHistorySync, getHistory, saveHistory, getHideRead, removeHistoryItem, loadHistoryState } from '../lib/history';
@@ -10,6 +10,7 @@ import { translateTag, categorizeTags } from '../lib/tags';
 import { getCachedImage, getImage, clearImageCache, IMAGE_LOAD_PRIORITY } from '../lib/imageCache';
 import { DEFAULT_READER_SETTINGS, READER_SETTINGS_KEY, normalizeReaderSettings, prepareReaderSettingsForArchiveChange } from '../lib/readerSettings';
 import { getReaderSkeletonToolbarGroups } from '../lib/readerSkeletonLayout';
+import { createReaderRenderState, getReaderCapabilities, readerRenderReducer } from '../lib/readerRenderPipeline';
 import {
   getReaderArchivePanelModel,
   getReaderArchivePanelWindow,
@@ -1006,6 +1007,32 @@ function ReaderStageSkeleton({ title = '', hasMeta = false, hasPages = false, is
   );
 }
 
+function ReaderStageSlot({ status, onRetry }) {
+  if (status === 'error') {
+    return (
+      <div className="reader-stage-slot reader-slot-error" role="status" aria-live="polite">
+        <strong>页面列表加载失败</strong>
+        <span>请检查 LANraragi 连接后重试。</span>
+        <button type="button" className="reader-stage-retry" onClick={onRetry}>重新加载</button>
+      </div>
+    );
+  }
+  if (status === 'empty') {
+    return (
+      <div className="reader-stage-slot" role="status" aria-live="polite">
+        <strong>归档没有可显示页面</strong>
+        <span>请检查归档内容或重新提取页面。</span>
+      </div>
+    );
+  }
+  return (
+    <div className="reader-stage-slot reader-shell-pulse" role="status" aria-live="polite">
+      <div className="shimmer-strip" aria-hidden="true" />
+      <span className="reader-stage-slot-label">正在加载页面列表…</span>
+    </div>
+  );
+}
+
 export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const bootState = getBootState();
   const readerSnapshotRef = useRef(null);
@@ -1031,8 +1058,16 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     const next = readerSnapshot?.displayedIndex;
     return typeof next === 'number' && next >= 0 ? next : 0;
   });
-  const [loading, setLoading] = useState(() => !hasSnapshot);
-  const [loadingPages, setLoadingPages] = useState(() => !hasSnapshot);
+  const [renderState, dispatchRender] = useReducer(
+    readerRenderReducer,
+    {
+      hasMetadata: !!readerSnapshot?.archive,
+      hasManifest: Array.isArray(readerSnapshot?.pages) && readerSnapshot.pages.length > 0,
+      hasSelection: hasSnapshot,
+    },
+    createReaderRenderState,
+  );
+  const [bootstrapRetryToken, setBootstrapRetryToken] = useState(0);
 
   // ===== UI States =====
   const [viewMode, setViewMode] = useState(() => readerSnapshot?.viewMode || 'normal');
@@ -1050,7 +1085,6 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const [coverConfirmPage, setCoverConfirmPage] = useState(0);
   const [drawerPrefetchSet, setDrawerPrefetchSet] = useState(() => new Set());
   const [drawerViewport, setDrawerViewport] = useState({ height: 0, scrollTop: 0, width: 0 });
-  const [readerReady, setReaderReady] = useState(() => hasSnapshot);
   const [assetCacheOnly, setAssetCacheOnly] = useState(() => hasSnapshot);
   const [historyEntries, setHistoryEntries] = useState(() => getHistory());
   const [watchlistEntries, setWatchlistEntries] = useState(() => getWatchlist());
@@ -1079,6 +1113,11 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       : 0,
     shownAt: 0,
   }));
+  const { canShowMetadata, canShowPageCount, canNavigate, canRenderPage } = getReaderCapabilities(renderState, pages.length);
+  const currentPageReady = canRenderPage
+    && pageLoadPhase.status === 'ready'
+    && pageLoadPhase.targetIndex === currentIndex;
+  const [secondaryContentReady, setSecondaryContentReady] = useState(false);
   const [loadingUiArmed, setLoadingUiArmed] = useState(false);
   const [immersiveNetworkPending, setImmersiveNetworkPending] = useState(false);
 
@@ -1093,10 +1132,10 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   }, [archiveId]);
 
   useEffect(() => {
-    if (!readerReady) return undefined;
+    if (!canRenderPage) return undefined;
     const frame = requestAnimationFrame(forceWindowScrollTop);
     return () => cancelAnimationFrame(frame);
-  }, [archiveId, readerReady]);
+  }, [archiveId, canRenderPage]);
 
   // ===== Zoom =====
   const [zoomScale, setZoomScale] = useState(() => readerSnapshot?.zoomScale || 1.0);
@@ -1132,6 +1171,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const displayedIndexRef = useRef(displayedIndex);
   const viewModeSnapshotRef = useRef(viewMode);
   const pageLoadPhaseRef = useRef(pageLoadPhase);
+  const bootstrapGenerationRef = useRef(0);
 
   useEffect(() => { archiveRef.current = archive; }, [archive]);
   useEffect(() => { pagesRef.current = pages; }, [pages]);
@@ -1139,6 +1179,10 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   useEffect(() => { displayedIndexRef.current = displayedIndex; }, [displayedIndex]);
   useEffect(() => { viewModeSnapshotRef.current = viewMode; }, [viewMode]);
   useEffect(() => { pageLoadPhaseRef.current = pageLoadPhase; }, [pageLoadPhase]);
+
+  useEffect(() => {
+    if (currentPageReady) setSecondaryContentReady(true);
+  }, [currentPageReady]);
 
   useEffect(() => {
     const refreshHistory = () => setHistoryEntries(getHistory());
@@ -1149,15 +1193,19 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   useEffect(() => () => { flushHistorySync().catch(() => {}); }, []);
 
   useEffect(() => {
+    if (!secondaryContentReady) return undefined;
     loadHistoryState().then((state) => setHistoryEntries(state.histories)).catch(() => {});
-  }, []);
+    return undefined;
+  }, [secondaryContentReady]);
 
   useEffect(() => {
     const refreshWatchlist = () => setWatchlistEntries(getWatchlist());
     window.addEventListener('lrr:watchlist-changed', refreshWatchlist);
-    loadWatchlistState().then((state) => setWatchlistEntries(state.items)).catch(() => {});
+    if (secondaryContentReady) {
+      loadWatchlistState().then((state) => setWatchlistEntries(state.items)).catch(() => {});
+    }
     return () => window.removeEventListener('lrr:watchlist-changed', refreshWatchlist);
-  }, []);
+  }, [secondaryContentReady]);
 
   const saveReaderStateSnapshot = useCallback(() => {
     if (!archiveRef.current || pagesRef.current.length === 0) return;
@@ -1179,6 +1227,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   }, [serverTracksProgress]);
 
   useEffect(() => {
+    if (!secondaryContentReady) return undefined;
     let cancelled = false;
     loadServerInfo().then((info) => {
       if (cancelled) return;
@@ -1188,7 +1237,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       }
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, []);
+  }, [secondaryContentReady]);
 
   const exitColdRestoreMode = useCallback(async () => {
     if (!coldRestoreRef.current) return serverInfoRef.current;
@@ -1207,12 +1256,12 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   }, []);
 
   useEffect(() => {
-    if (!readerReady || !assetCacheOnly) return undefined;
+    if (!canRenderPage || !assetCacheOnly) return undefined;
     const timer = setTimeout(() => {
       void exitColdRestoreMode();
     }, 1200);
     return () => clearTimeout(timer);
-  }, [assetCacheOnly, exitColdRestoreMode, readerReady]);
+  }, [assetCacheOnly, canRenderPage, exitColdRestoreMode]);
 
   const updateSettings = useCallback((updater) => {
     setSettingsState((prev) => {
@@ -1229,7 +1278,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   }, [archiveId, updateSettings]);
 
   useEffect(() => {
-    if (settings.readingLayout !== 'auto' || pages.length < 2) { setAutoWebtoon(false); return undefined; }
+    if (!secondaryContentReady || settings.readingLayout !== 'auto' || pages.length < 2) { setAutoWebtoon(false); return undefined; }
     let active = true;
     const detectorImages = new Map();
     (async () => {
@@ -1271,7 +1320,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       });
       detectorImages.clear();
     };
-  }, [pages, settings.readingLayout]);
+  }, [pages, secondaryContentReady, settings.readingLayout]);
 
   useEffect(() => {
     if (!archive || pages.length === 0) return;
@@ -1859,7 +1908,9 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
 
   // ===== 1. Init archive =====
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    const generation = ++bootstrapGenerationRef.current;
+    const isActive = () => !controller.signal.aborted && generation === bootstrapGenerationRef.current;
     const init = async () => {
       const serverUrl = serverUrlRef.current;
 
@@ -1872,7 +1923,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             restoredArchive = clearArchiveNewMarker(restoredArchive);
           } catch {}
         }
-        if (cancelled) return;
+        if (!isActive()) return;
         const restoredPages = Array.isArray(readerSnapshot.pages) ? readerSnapshot.pages : [];
         const restoredLrrProgress = clampProgressPage(restoredArchive?.progress, restoredPages.length);
         const restoredLocalProgress = clampProgressPage(Number.parseInt(
@@ -1911,44 +1962,76 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         setZoomScale(restoredZoom);
         setPanX(restoredPanX);
         setPanY(restoredPanY);
-        setLoading(false);
-        setLoadingPages(false);
-        setReaderReady(true);
+        dispatchRender({ type: 'reset', hasMetadata: !!restoredArchive, hasManifest: restoredPages.length > 0, hasSelection: true });
         return;
       }
 
-      setLoading(true);
-      setLoadingPages(true);
-      try {
-        let meta = await lrrApi.getArchive(archiveId);
-        if (archiveHasNewMarker(meta)) {
-          try {
-            await lrrApi.updateProgress(archiveId, 1);
-            highestLrrSyncedPageRef.current.set(archiveId, Math.max(1, highestLrrSyncedPageRef.current.get(archiveId) || 0));
-            meta = { ...clearArchiveNewMarker(meta), progress: Math.max(1, Number.parseInt(meta.progress, 10) || 0) };
-          } catch {}
-        }
-        if (cancelled) return;
-        setArchive(meta);
-        setLoading(false);
+      const retainedArchive = archiveRef.current;
+      const retainedPages = pagesRef.current;
+      dispatchRender({
+        type: 'reset',
+        hasMetadata: !!retainedArchive,
+        hasManifest: retainedPages.length > 0,
+        hasSelection: false,
+      });
 
-        let extractedPages = [];
-
+      const metadataPromise = retainedArchive ? Promise.resolve(retainedArchive) : (async () => {
         try {
-          const fileListRes = await lrrApi.getArchiveFiles(archiveId);
-          if (cancelled) return;
-          extractedPages = (fileListRes.pages || []).map((url) => normalizePageUrl(url, serverUrl)).filter(Boolean);
-        } catch {
-          const extractRes = await lrrApi.extractArchive(archiveId);
-          if (cancelled) return;
-          extractedPages = (extractRes.pages || []).map((url) => normalizePageUrl(url, serverUrl)).filter(Boolean);
+          const meta = await lrrApi.getArchive(archiveId, { signal: controller.signal });
+          if (!isActive()) throw new DOMException('Reader bootstrap aborted', 'AbortError');
+          archiveRef.current = meta;
+          setArchive(meta);
+          dispatchRender({ type: 'ready', resource: 'metadata' });
+          if (archiveHasNewMarker(meta)) {
+            void lrrApi.updateProgress(archiveId, 1).then(() => {
+              if (!isActive()) return;
+              highestLrrSyncedPageRef.current.set(archiveId, Math.max(1, highestLrrSyncedPageRef.current.get(archiveId) || 0));
+              const updatedMeta = { ...clearArchiveNewMarker(meta), progress: Math.max(1, Number.parseInt(meta.progress, 10) || 0) };
+              archiveRef.current = updatedMeta;
+              setArchive(updatedMeta);
+            }).catch(() => {});
+          }
+          return meta;
+        } catch (error) {
+          if (!controller.signal.aborted) {
+            dispatchRender({ type: 'error', resource: 'metadata', error });
+            if (isArchiveMissingError(error)) removeHistoryItem(archiveId).catch(() => {});
+          }
+          throw error;
         }
+      })();
 
-        if (cancelled) return;
+      const manifestPromise = retainedPages.length > 0 ? Promise.resolve(retainedPages) : (async () => {
+        try {
+          let response;
+          try {
+            response = await lrrApi.getArchiveFiles(archiveId, { signal: controller.signal });
+          } catch (error) {
+            if (controller.signal.aborted) throw error;
+            response = await lrrApi.extractArchive(archiveId, { signal: controller.signal });
+          }
+          if (!isActive()) throw new DOMException('Reader bootstrap aborted', 'AbortError');
+          const extractedPages = (response.pages || []).map((url) => normalizePageUrl(url, serverUrl)).filter(Boolean);
+          pagesRef.current = extractedPages;
+          setPages(extractedPages);
+          dispatchRender({ type: 'ready', resource: 'manifest' });
+          return extractedPages;
+        } catch (error) {
+          if (!controller.signal.aborted) {
+            dispatchRender({ type: 'error', resource: 'manifest', error });
+            if (isArchiveMissingError(error)) removeHistoryItem(archiveId).catch(() => {});
+          }
+          throw error;
+        }
+      })();
+
+      const [metadataResult, manifestResult] = await Promise.allSettled([metadataPromise, manifestPromise]);
+      if (!isActive()) return;
+      if (manifestResult.status === 'fulfilled') {
+        const meta = metadataResult.status === 'fulfilled' ? metadataResult.value : archiveRef.current;
+        const extractedPages = manifestResult.value;
         setPages(extractedPages);
-        setLoadingPages(false);
-        setReaderReady(true);
-        const lrrProgress = clampProgressPage(meta.progress, extractedPages.length);
+        const lrrProgress = clampProgressPage(meta?.progress, extractedPages.length);
         const localProgress = clampProgressPage(Number.parseInt(
           getHistory().find((item) => item.id === archiveId)?.page,
           10,
@@ -1969,21 +2052,15 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
           setLoadingUiArmed(false);
           setPageLoadPhase({ status: extractedPages.length > 0 ? 'loading' : 'idle', visibleIndex: 0, targetIndex: 0, shownAt: extractedPages.length > 0 ? Date.now() : 0 });
         }
-      } catch (e) {
-        if (!cancelled) {
-          if (isArchiveMissingError(e)) {
-            removeHistoryItem(archiveId).catch(() => {});
-          }
-          console.error('画廊解析失败:', e);
-          setLoading(false);
-          setLoadingPages(false);
-          setReaderReady(false);
-        }
+        dispatchRender({ type: 'ready', resource: 'selection' });
+      } else if (!controller.signal.aborted) {
+        dispatchRender({ type: 'error', resource: 'selection', error: manifestResult.reason });
+        console.error('画廊页面列表加载失败:', manifestResult.reason);
       }
     };
-    init();
-    return () => { cancelled = true; };
-  }, [archiveId, readerSnapshot]);
+    void init();
+    return () => controller.abort();
+  }, [archiveId, bootstrapRetryToken, readerSnapshot]);
 
   // ===== 2. Save progress =====
   useEffect(() => {
@@ -2594,12 +2671,6 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const drawerBottomSpacer = Math.max(0, (drawerTotalRows - drawerVisibleEndRow) * drawerRowHeight);
 
   useEffect(() => {
-    if (archive && pages.length > 0) {
-      setReaderReady(true);
-    }
-  }, [archive, pages.length]);
-
-  useEffect(() => {
     if (!showDrawer || pages.length === 0) {
       setDrawerPrefetchSet(new Set());
       return undefined;
@@ -2709,7 +2780,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   }, [currentIndex, drawerRowHeight, showDrawer]);
 
   useEffect(() => {
-    if (!readerReady) return undefined;
+    if (!canRenderPage) return undefined;
     const timer = setTimeout(() => {
       const hasVisiblePage = pages.length > 0;
       const hasSource = !!sourceUrl;
@@ -2724,7 +2795,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       }
     }, 1800);
     return () => clearTimeout(timer);
-  }, [assetCacheOnly, exitColdRestoreMode, pages.length, readerReady, sourceUrl]);
+  }, [assetCacheOnly, canRenderPage, exitColdRestoreMode, pages.length, sourceUrl]);
 
   useEffect(() => {
     if (pages.length === 0) return;
@@ -2740,7 +2811,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   // ===== Outside-click to close panels =====
   useEffect(() => {
     if (!showSettingsPanel && !showArchivePanel) return;
-    if (!readerReady) return undefined;
+    if (!canShowMetadata) return undefined;
     const handler = (e) => {
       const t = e.target;
       if (t?.closest?.('[data-panel]') || t?.closest?.('[data-panel-toggle]') || t?.closest?.('[data-select-dropdown]') || t?.closest?.('[data-dialog-root]') || t?.closest?.('[data-dialog-overlay]')) return;
@@ -2749,21 +2820,13 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     };
     window.addEventListener('mousedown', handler, { passive: true });
     return () => window.removeEventListener('mousedown', handler);
-  }, [readerReady, showArchivePanel, showSettingsPanel]);
-
-  if (loading) {
-    return <ReaderStageSkeleton title={archive?.title || ''} hasMeta={false} hasPages={false} isMobile={isMobile} />;
-  }
-
-  if (loadingPages && pages.length === 0) {
-    return <ReaderStageSkeleton title={archive?.title || ''} hasMeta={!!archive} hasPages={false} isMobile={isMobile} />;
-  }
+  }, [canShowMetadata, showArchivePanel, showSettingsPanel]);
 
   const isLTR = settings.direction === 'ltr';
   const leftAction = isLTR ? handlePrev : handleNext;
   const rightAction = isLTR ? handleNext : handlePrev;
-  const leftDisabled = isLTR ? currentIndex === 0 : currentIndex === pages.length - 1;
-  const rightDisabled = isLTR ? currentIndex === pages.length - 1 : currentIndex === 0;
+  const leftDisabled = !canNavigate || (isLTR ? currentIndex === 0 : currentIndex === pages.length - 1);
+  const rightDisabled = !canNavigate || (isLTR ? currentIndex === pages.length - 1 : currentIndex === 0);
 
   const btnBase = getTopBarButtonStyle(toolbarCompact);
 
@@ -2833,10 +2896,10 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             {viewMode !== 'immersive' && (
               <button
                 className="reader-toolbar-button"
-                disabled={!readerReady}
-                style={{ ...btnBase, opacity: readerReady ? 1 : 0.45, cursor: readerReady ? 'pointer' : 'not-allowed' }}
+                disabled={!canNavigate}
+                style={{ ...btnBase, opacity: canNavigate ? 1 : 0.45, cursor: canNavigate ? 'pointer' : 'not-allowed' }}
                 data-panel-toggle
-                onClick={() => { if (readerReady) { setShowArchivePanel((visible) => !visible); setShowSettingsPanel(false); } }}
+                onClick={() => { if (canNavigate) { setShowArchivePanel((visible) => !visible); setShowSettingsPanel(false); } }}
                 title="快速跳转"
                 aria-label="打开快速跳转"
               >
@@ -2860,7 +2923,15 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                 minWidth: 0,
               }}
             >
-              {archive?.title}
+              {canShowMetadata ? archive?.title : (
+                <span
+                  className={renderState.metadata.status === 'error' ? 'reader-slot-error' : 'reader-title-skeleton reader-shell-pulse'}
+                  role="status"
+                  aria-live="polite"
+                >
+                  {renderState.metadata.status === 'error' ? '元数据加载失败' : '正在加载元数据…'}
+                </span>
+              )}
             </span>
           )}
           {toolbarCompact && <span style={{ flex: '0 0 0', minWidth: 0 }} />}
@@ -2877,8 +2948,9 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             {viewMode === 'normal' && (
               <button
                 className="reader-toolbar-button"
-                style={btnBase}
-                onClick={() => setViewMode('immersive')}
+                disabled={!canRenderPage}
+                style={{ ...btnBase, opacity: canRenderPage ? 1 : 0.45, cursor: canRenderPage ? 'pointer' : 'not-allowed' }}
+                onClick={() => { if (canRenderPage) setViewMode('immersive'); }}
                 title="沉浸模式"
                 aria-label="沉浸模式"
               >
@@ -2887,11 +2959,11 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             )}
             <button
               className="reader-toolbar-button"
-              disabled={!readerReady || pages.length === 0 || coverSetting}
+              disabled={!canNavigate || coverSetting}
               style={{
                 ...btnBase,
-                opacity: (!readerReady || pages.length === 0 || coverSetting) ? 0.45 : 1,
-                cursor: (!readerReady || pages.length === 0 || coverSetting) ? 'not-allowed' : 'pointer',
+                opacity: (!canNavigate || coverSetting) ? 0.45 : 1,
+                cursor: (!canNavigate || coverSetting) ? 'not-allowed' : 'pointer',
               }}
               onClick={handleSetCover}
               title={`将当前第 ${currentIndex + 1} 页设为封面`}
@@ -2909,7 +2981,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                 </button>
               </>
             )}
-            <button className="reader-toolbar-button" style={btnBase} onClick={() => setShowDrawer(true)} title="缩略面板" aria-label="缩略面板">
+            <button className="reader-toolbar-button" disabled={!canNavigate} style={{ ...btnBase, opacity: canNavigate ? 1 : 0.45, cursor: canNavigate ? 'pointer' : 'not-allowed' }} onClick={() => { if (canNavigate) setShowDrawer(true); }} title="缩略面板" aria-label="缩略面板">
               <ReaderToolbarButtonContent icon="grid" label="缩略面板" />
             </button>
           </div>
@@ -3018,8 +3090,27 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
               className="reader-stage-frame"
               style={{ ...normalReaderFrameStyle, position: 'relative' }}
             >
-              {webtoonActive ? <div style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: settings.webtoonGap, overflow: 'auto' }}>
-                {pages.map((pageUrl, index) => <PageImage key={pageUrl} pageUrl={pageUrl} pageIndex={index} isImmersive={false} cacheOnly={assetCacheOnly} style={{ width: '100%', height: 'auto', maxWidth: '100%', objectFit: 'contain', borderRadius: 0 }} />)}
+              {canRenderPage ? (webtoonActive ? <div style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: settings.webtoonGap, overflow: 'auto' }}>
+                {pages.map((pageUrl, index) => {
+                  const distance = Math.abs(index - currentIndex);
+                  const priority = distance === 0
+                    ? IMAGE_LOAD_PRIORITY.CRITICAL
+                    : (distance === 1 ? IMAGE_LOAD_PRIORITY.ADJACENT : IMAGE_LOAD_PRIORITY.PRELOAD);
+                  return (
+                    <PageImage
+                      key={pageUrl}
+                      pageUrl={pageUrl}
+                      pageIndex={index}
+                      isImmersive={false}
+                      cacheOnly={assetCacheOnly}
+                      priority={priority}
+                      onLoadStart={distance === 0 ? handlePageVisualLoadStart : undefined}
+                      onReady={distance === 0 ? handlePageVisualReady : undefined}
+                      onError={distance === 0 ? handlePageVisualError : undefined}
+                      style={{ width: '100%', height: 'auto', maxWidth: '100%', objectFit: 'contain', borderRadius: 0 }}
+                    />
+                  );
+                })}
               </div> : <div style={{ width: '100%', height: '100%', display: 'flex', justifyContent: 'center', gap: settings.doublePageGap, overflow: settings.scaleMode === 'original' ? 'auto' : 'hidden' }}><PageImage
                 pageUrl={pages[normalDisplayIndex]}
                 pageIndex={normalDisplayIndex}
@@ -3033,7 +3124,12 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                 onLoadStart={handlePageVisualLoadStart}
                 onReady={handlePageVisualReady}
                 onError={handlePageVisualError}
-              />{settings.doublePageEnabled && pages[normalDisplayIndex + 1] && <PageImage pageUrl={pages[normalDisplayIndex + 1]} pageIndex={normalDisplayIndex + 1} isImmersive={false} cacheOnly={assetCacheOnly} priority={IMAGE_LOAD_PRIORITY.CRITICAL} style={{ ...scaleStyle, maxWidth: '50%', maxHeight: '100%', borderRadius: 8 }} />}</div>}
+              />{settings.doublePageEnabled && pages[normalDisplayIndex + 1] && <PageImage pageUrl={pages[normalDisplayIndex + 1]} pageIndex={normalDisplayIndex + 1} isImmersive={false} cacheOnly={assetCacheOnly} priority={IMAGE_LOAD_PRIORITY.CRITICAL} style={{ ...scaleStyle, maxWidth: '50%', maxHeight: '100%', borderRadius: 8 }} />}</div>) : (
+                <ReaderStageSlot
+                  status={renderState.manifest.status === 'error' ? 'error' : (renderState.manifest.status === 'ready' ? 'empty' : 'loading')}
+                  onRetry={() => setBootstrapRetryToken((token) => token + 1)}
+                />
+              )}
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '24px', padding: '20px 8px', flexShrink: 0 }}>
@@ -3046,7 +3142,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                 ‹
               </button>
               <span style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-sub)', userSelect: 'none', minWidth: '60px', textAlign: 'center' }}>
-                  {normalTargetIndex + 1} / {pages.length}
+                  {canShowPageCount ? `${normalTargetIndex + 1} / ${pages.length}` : '— / —'}
               </span>
               <button
                 className="reader-page-nav-button"
@@ -3242,7 +3338,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         )}
       </div>
 
-      {viewMode === 'normal' && readerReady && archive && (
+      {viewMode === 'normal' && secondaryContentReady && archive && (
         <div style={{ maxWidth: '1300px', width: '100%', margin: '0 auto', padding: '0 16px 24px 16px' }}>
           <Recommendations currentArchive={archive} />
           {sourceUrl && (

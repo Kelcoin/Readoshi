@@ -26,7 +26,7 @@
 - Create: `src/lib/readerRenderPipeline.js`
 
 **Interfaces:**
-- Produces: `READER_STAGE_STATUS`, `createReaderRenderState({ hasMetadata, hasManifest })`, `readerRenderReducer(state, action)`, `getReaderCapabilities(state, pageCount)`.
+- Produces: `READER_STAGE_STATUS`, `createReaderRenderState({ hasMetadata, hasManifest, hasSelection })`, `readerRenderReducer(state, action)`, `getReaderCapabilities(state, pageCount)`.
 
 - [ ] **Step 1: Write failing reducer check**
 
@@ -40,7 +40,7 @@ Expected: FAIL because `src/lib/readerRenderPipeline.js` does not exist.
 
 - [ ] **Step 3: Implement minimal pure reducer**
 
-Use a frozen status map, two resource keys (`metadata`, `manifest`), generic `{ type: 'start'|'ready'|'error'|'reset', resource, error }` actions, and capability derivation from `ready` states plus `pageCount > 0`.
+Use a frozen status map, three resource keys (`metadata`, `manifest`, `selection`), generic `{ type: 'start'|'ready'|'error'|'reset', resource, error }` actions, and capability derivation from `ready` states plus `pageCount > 0`.
 
 - [ ] **Step 4: Verify GREEN**
 
@@ -162,4 +162,3 @@ Check no whole-page boot return remains, no new global Store/dependency exists, 
 - [ ] **Step 4: Commit implementation**
 
 Stage only Reader pipeline files and commit with a concise Conventional Commit. Do not push.
-
