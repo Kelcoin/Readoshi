@@ -5,6 +5,11 @@ on:
     branches:
       - main
       - dev
+    paths-ignore:
+      - '.github/**'
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
 
 jobs:
   publish:
