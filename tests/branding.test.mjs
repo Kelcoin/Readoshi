@@ -23,16 +23,10 @@ test('project branding is consistently Readoshi', () => {
   assert.match(html, /media="\(prefers-color-scheme: light\)"[^>]+href="\/icons\/favicon-black-32\.png"/);
   assert.match(html, /media="\(prefers-color-scheme: dark\)"[^>]+href="\/icons\/favicon-white-32\.png"/);
   assert.match(readme, /<h1 align="center">Readoshi<\/h1>/);
-  assert.match(readme, /<div align="center"><sub><sub>A LANraragi Reader<\/sub><\/sub><\/div>/);
-  assert.doesNotMatch(readme, /<h1[^>]*>[^<]*Readoshi[^\n]*A LANraragi Reader/);
-  assert.doesNotMatch(readme, /<p align="center"><strong>A LANraragi Reader<\/strong><\/p>/);
+  assert.doesNotMatch(readme, /A LANraragi Reader/);
   assert.match(readme, /public\/logo-black\.png/);
   assert.match(readme, /public\/logo-white\.png/);
-  assert.match(readme, /history:<token>:<server-md5>/);
-  assert.match(readme, /watchlist:<token>:<server-md5>/);
-  assert.match(readme, /dedupe:<token>:<server-md5>:non-duplicates/);
-  assert.match(readme, /schema v3/);
-  assert.doesNotMatch(readme, /schema v2|`dedupe:non-duplicates`：/);
+  assert.doesNotMatch(readme, /history:<token>|watchlist:<token>|dedupe:<token>|schema v\d/);
   assert.match(workflow, /appId: 'com\.kelcoin\.readoshi'/);
   assert.match(workflow, /appName: 'Readoshi'/);
   assert.match(workflow, /public\/logo-white\.png/);

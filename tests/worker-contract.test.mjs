@@ -33,14 +33,9 @@ test('sync mutations serialize and retain timestamp tombstones', () => {
   assert.doesNotMatch(worker, /\.slice\(0, 200\)/);
 });
 
-test('Worker update checks are channel-scoped, cached, and non-blocking', () => {
-  assert.match(worker, /const WORKER_RELEASE\s*=\s*\d+/);
+test('Worker has no remote update checker and fallback matches package version', () => {
   const appRelease = worker.match(/const APP_RELEASE\s*=\s*['"]([^'"]+)['"]/);
   assert.equal(appRelease?.[1], pkg.version);
-  assert.match(worker, /`v\$\{APP_RELEASE\}\+worker\.\$\{WORKER_RELEASE\}`/);
-  assert.match(worker, /WORKER_UPDATE_BRANCH/);
-  assert.match(worker, /\['main', 'dev'\]/);
-  assert.match(worker, /raw\.githubusercontent\.com/);
-  assert.match(worker, /api\.github\.com\/repos\/Kelcoin\/Readoshi\/contents\/worker\.js/);
-  assert.match(worker, /max-age=21600/);
+  assert.match(worker, /const FALLBACK_APP_VERSION\s*=\s*`v\$\{APP_RELEASE\}`/);
+  assert.doesNotMatch(worker, /WORKER_RELEASE|WORKER_UPDATE_BRANCH|checkWorkerUpdate|getWorkerSourceUrl|raw\.githubusercontent\.com\/Kelcoin\/Readoshi\/.+\/worker\.js/);
 });

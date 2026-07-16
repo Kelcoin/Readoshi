@@ -4,7 +4,6 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const workerSource = fs.readFileSync(new URL('../worker.js', import.meta.url), 'utf8');
-const workerRelease = Number(workerSource.match(/const WORKER_RELEASE\s*=\s*(\d+)/)?.[1]);
 
 function createWorker(entries = [], globals = {}) {
   const values = new Map([['tokens', JSON.stringify(['test-token'])], ...entries]);
@@ -90,52 +89,24 @@ test('Worker claims legacy aggregate data into the first server scope once', asy
   assert.deepEqual(isolated.histories, []);
 });
 
-test('Worker status checks main by default and reports a newer release', async () => {
-  let requestedUrl = '';
-  const dispatch = createWorker([], {
-    fetch: async (url) => {
-      requestedUrl = String(url);
-      return new Response(`const WORKER_RELEASE = ${workerRelease + 1};`, { status: 200 });
-    },
-  });
+test('Worker status performs no remote update request', async () => {
+  let fetchCalls = 0;
+  const dispatch = createWorker([], { fetch: async () => { fetchCalls += 1; throw new Error('unexpected fetch'); } });
   const html = await (await dispatch('/')).text();
-  assert.match(requestedUrl, /\/main\/worker\.js$/);
-  assert.match(html, /发现 Worker 更新/);
-  assert.match(html, new RegExp(`本地 ${workerRelease} · 远端 ${workerRelease + 1}`));
+  assert.equal(fetchCalls, 0);
+  assert.doesNotMatch(html, /Worker 更新|最新版本|更新检查/);
 });
 
-test('Worker status accepts dev and falls back invalid branches to main', async () => {
-  const urls = [];
-  const remote = async (url) => {
-    urls.push(String(url));
-    return new Response(`const WORKER_RELEASE = ${workerRelease};`, { status: 200 });
-  };
-  const devHtml = await (await createWorker([], { fetch: remote, WORKER_UPDATE_BRANCH: 'dev' })('/')).text();
-  const fallbackHtml = await (await createWorker([], { fetch: remote, WORKER_UPDATE_BRANCH: 'feature' })('/')).text();
-  assert.match(urls[0], /\/dev\/worker\.js$/);
-  assert.match(urls[1], /\/main\/worker\.js$/);
-  assert.match(devHtml, /dev 最新版本/);
-  assert.match(fallbackHtml, /main 最新版本/);
-});
-
-test('Worker update check falls back to GitHub API when Raw is unavailable', async () => {
-  const urls = [];
-  const dispatch = createWorker([], {
-    fetch: async (url) => {
-      urls.push(String(url));
-      if (String(url).includes('raw.githubusercontent.com')) throw new Error('raw unavailable');
-      return new Response(`const WORKER_RELEASE = ${workerRelease + 1};`, { status: 200 });
-    },
-  });
-  const html = await (await dispatch('/')).text();
-  assert.match(urls[0], /raw\.githubusercontent\.com/);
-  assert.match(urls[1], /api\.github\.com\/repos\/Kelcoin\/Readoshi\/contents\/worker\.js\?ref=main/);
-  assert.match(html, /发现 Worker 更新/);
-});
-
-test('Worker update failure degrades without breaking status page', async () => {
-  const dispatch = createWorker([], { fetch: async () => { throw new Error('offline'); } });
-  const response = await dispatch('/');
-  assert.equal(response.status, 200);
-  assert.match(await response.text(), /更新检查暂时不可用/);
+test('Worker status uses Readoshi branding and animated centered KV panels', async () => {
+  const html = await (await createWorker()('/')).text();
+  assert.match(html, /<title>Readoshi Sync Worker<\/title>/);
+  assert.match(html, /class="brand-logo"[^>]+public\/logo-white\.png/);
+  assert.match(html, /<h1>Readoshi Sync Worker<\/h1>/);
+  assert.match(html, /请输入合法 Token，仅能导入 \/ 导出该 Token 对应的阅读历史与非重复记录。/);
+  assert.match(html, /\.collapsible\s*\{[^}]*grid-template-rows:\s*0fr[^}]*transition:/s);
+  assert.match(html, /\.collapsible\.is-open\s*\{[^}]*grid-template-rows:\s*1fr/s);
+  assert.match(html, /\.tool-actions\s*\{[^}]*justify-content:\s*center/s);
+  assert.match(html, /@media \(prefers-reduced-motion:\s*reduce\)/);
+  assert.match(html, /class="collapsible is-open"/);
+  assert.match(html, /classList\.toggle\('is-open'/);
 });

@@ -13,11 +13,8 @@ const DEDUPE_KEY_PREFIX = 'dedupe:';
 const SYNC_SCHEMA_VERSION = 3;
 const PROJECT_NAME = 'Readoshi';
 const PROJECT_URL = 'https://github.com/Kelcoin/Readoshi';
-// Increment when Worker behavior changes so deployed copies can detect updates.
-const WORKER_RELEASE = 2;
 const APP_RELEASE = '1.3.0';
-const FALLBACK_APP_VERSION = `v${APP_RELEASE}+worker.${WORKER_RELEASE}`;
-const WORKER_UPDATE_BRANCHES = ['main', 'dev'];
+const FALLBACK_APP_VERSION = `v${APP_RELEASE}`;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -42,89 +39,6 @@ function text(data, status = 200, extraHeaders = {}) {
     status,
     headers: Object.assign({}, CORS, { 'Content-Type': 'text/html; charset=utf-8' }, extraHeaders),
   });
-}
-
-function getWorkerUpdateBranch() {
-  const configured = typeof WORKER_UPDATE_BRANCH !== 'undefined'
-    ? String(WORKER_UPDATE_BRANCH).trim().toLowerCase()
-    : '';
-  return WORKER_UPDATE_BRANCHES.includes(configured) ? configured : 'main';
-}
-
-function getWorkerSourceUrl(branch) {
-  return `https://raw.githubusercontent.com/Kelcoin/Readoshi/${branch}/worker.js`;
-}
-
-function getWorkerSourceUrls(branch) {
-  return [
-    getWorkerSourceUrl(branch),
-    `https://api.github.com/repos/Kelcoin/Readoshi/contents/worker.js?ref=${branch}`,
-  ];
-}
-
-function parseWorkerRelease(source) {
-  const match = String(source || '').match(/const WORKER_RELEASE\s*=\s*(\d+)\s*;/);
-  return match ? Number(match[1]) : null;
-}
-
-async function fetchWorkerSource(url) {
-  let timeoutId;
-  const isGithubApi = url.startsWith('https://api.github.com/');
-  try {
-    return await Promise.race([
-      fetch(url, {
-        headers: isGithubApi
-          ? { Accept: 'application/vnd.github.raw+json', 'User-Agent': 'Readoshi-Worker' }
-          : { Accept: 'text/plain' },
-      }),
-      new Promise((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error('Worker update check timed out')), 8000);
-      }),
-    ]);
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
-  }
-}
-
-async function checkWorkerUpdate() {
-  const branch = getWorkerUpdateBranch();
-  const sourceUrl = getWorkerSourceUrl(branch);
-  try {
-    const cache = typeof caches !== 'undefined' ? caches.default : null;
-    const cachedResponse = cache ? await cache.match(sourceUrl).catch(() => null) : null;
-    if (cachedResponse) {
-      const remoteRelease = parseWorkerRelease(await cachedResponse.text());
-      if (Number.isInteger(remoteRelease)) {
-        return { status: remoteRelease > WORKER_RELEASE ? 'update' : 'current', branch, sourceUrl, remoteRelease };
-      }
-    }
-
-    let lastError = null;
-    for (const url of getWorkerSourceUrls(branch)) {
-      try {
-        const response = await fetchWorkerSource(url);
-        if (!response.ok) throw new Error(`GitHub returned HTTP ${response.status}`);
-        const source = await response.text();
-        const remoteRelease = parseWorkerRelease(source);
-        if (!Number.isInteger(remoteRelease)) throw new Error('Remote Worker release marker missing');
-        if (cache) {
-          const cached = new Response(source, {
-            headers: {
-              'Content-Type': 'text/plain; charset=utf-8',
-              'Cache-Control': 'public, max-age=21600',
-            },
-          });
-          await cache.put(sourceUrl, cached).catch(() => {});
-        }
-        return { status: remoteRelease > WORKER_RELEASE ? 'update' : 'current', branch, sourceUrl, remoteRelease };
-      } catch (error) {
-        lastError = error;
-      }
-    }
-    throw lastError || new Error('Worker update check failed');
-  } catch {
-    return { status: 'unavailable', branch, sourceUrl, remoteRelease: null };
-  }
 }
 
 // ── Memory-Cached State (loaded once at first request) ──────────
@@ -1247,7 +1161,6 @@ async function statusPage(request) {
   const { totalArchives, userCount, watchlistCount, dedupeCount } = await getStatusSummary();
   const hasKV = typeof HISTORY_KV !== 'undefined';
   const tokenCount = cachedTokens ? cachedTokens.size : 0;
-  const workerUpdate = await checkWorkerUpdate();
 
   const tokenStatusHtml = authEnabled
     ? (tokenCount > 0
@@ -1257,23 +1170,22 @@ async function statusPage(request) {
   const appVersion = typeof APP_VERSION !== 'undefined' && APP_VERSION
     ? String(APP_VERSION)
     : FALLBACK_APP_VERSION;
-  const workerUpdateHtml = workerUpdate.status === 'update'
-    ? `<div class="warning">发现 Worker 更新：本地 ${WORKER_RELEASE} · 远端 ${workerUpdate.remoteRelease}。<a href="${workerUpdate.sourceUrl}" target="_blank" rel="noreferrer">查看 ${workerUpdate.branch} 源码</a></div>`
-    : `<div class="stat"><span class="label">Worker 更新</span><span class="${workerUpdate.status === 'current' ? 'ok' : 'warn'}">${workerUpdate.status === 'current' ? `${workerUpdate.branch} 最新版本` : '更新检查暂时不可用'}</span></div>`;
 
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LRR Sync Worker</title>
+<title>Readoshi Sync Worker</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { background:#0f1115; color:#d1d5db; font-family:system-ui,-apple-system,sans-serif;
          display:flex; align-items:center; justify-content:center; min-height:100vh; padding:20px; }
   .card { background:#1a1d24; border:1px solid rgba(255,255,255,0.07); border-radius:16px;
           padding:36px 32px; max-width:460px; width:100%; }
-  h1 { font-size:22px; color:#fff; margin-bottom:28px; }
+  .brand { display:flex; align-items:center; justify-content:center; gap:14px; margin-bottom:28px; text-align:center; }
+  .brand-logo { width:52px; height:52px; object-fit:contain; flex:0 0 auto; }
+  h1 { font-size:22px; color:#fff; margin:0; }
   .stat { display:flex; justify-content:space-between; align-items:center; padding:12px 0;
           border-bottom:1px solid rgba(255,255,255,0.04); font-size:14px; }
   .stat:last-of-type { border:none; }
@@ -1289,13 +1201,15 @@ async function statusPage(request) {
   .footer a { color:#60a5fa; text-decoration:none; }
   .footer a:hover { color:#93c5fd; text-decoration:underline; }
   .card { max-width:560px; }
-  .warning { border:1px solid rgba(248,113,113,.45); background:rgba(248,113,113,.12); color:#fecaca;
-             padding:12px 14px; border-radius:10px; margin:0 0 18px; font-size:13px; line-height:1.5; }
-  .warning a { color:#93c5fd; }
   .tool { display:grid; gap:10px; margin-top:10px; }
-  .hidden { display:none; }
+  .collapsible { display:grid; grid-template-rows:0fr; opacity:0; transform:translateY(-6px);
+                 visibility:hidden; pointer-events:none;
+                 transition:grid-template-rows .28s ease, opacity .2s ease, transform .28s ease, visibility 0s linear .28s; }
+  .collapsible.is-open { grid-template-rows:1fr; opacity:1; transform:none; visibility:visible;
+                         pointer-events:auto; transition-delay:0s; }
+  .collapsible-inner { overflow:hidden; }
   .hint { color:#9ca3af; font-size:12px; line-height:1.5; }
-  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .tool-actions { display:flex; justify-content:center; gap:10px; align-items:center; flex-wrap:wrap; }
   .checks { display:flex; gap:14px; flex-wrap:wrap; color:#cbd5e1; font-size:13px; }
   input, textarea { width:100%; background:#111827; border:1px solid rgba(255,255,255,.09); color:#e5e7eb;
                     border-radius:8px; padding:9px 10px; font:inherit; }
@@ -1304,15 +1218,20 @@ async function statusPage(request) {
   button.secondary { background:#374151; }
   button.subtle { background:#1f2937; color:#cbd5e1; }
   #kvResult { color:#9ca3af; font-size:12px; white-space:pre-wrap; line-height:1.5; }
+  @media (prefers-reduced-motion: reduce) {
+    .collapsible { transition:none; transform:none; }
+  }
 </style>
 </head>
 <body>
 <div class="card">
-  <h1>LRR Sync Worker</h1>
+  <div class="brand">
+    <img class="brand-logo" src="https://raw.githubusercontent.com/Kelcoin/Readoshi/main/public/logo-white.png" alt="" aria-hidden="true">
+    <h1>Readoshi Sync Worker</h1>
+  </div>
 
   <div class="section-title">服务概览</div>
   <div class="stat"><span class="label">服务状态</span><span class="ok">● 运行中</span></div>
-  ${workerUpdateHtml}
   <div class="stat"><span class="label">请求计数</span><span class="value">${reqCount}</span></div>
   <div class="stat"><span class="label">同步用户数</span><span class="value">${userCount}</span></div>
   <div class="stat"><span class="label">阅读记录数</span><span class="value">${totalArchives}</span></div>
@@ -1328,31 +1247,37 @@ async function statusPage(request) {
 
   <div class="divider"></div>
   <div class="section-title">KV 导入 / 导出</div>
-  <div id="kvClosed" class="tool">
-    <button id="openKvTool" type="button">打开导入 / 导出菜单</button>
+  <div id="kvClosed" class="collapsible is-open" aria-hidden="false">
+    <div class="collapsible-inner"><div class="tool">
+      <div class="tool-actions"><button id="openKvTool" type="button">打开导入 / 导出菜单</button></div>
+    </div></div>
   </div>
-  <div id="kvAuth" class="tool hidden">
-    <div class="hint">请输入 KV tokens 中配置的访问 Token。验证通过后，只能导入 / 导出该 Token 对应的阅读历史与非重复记录。</div>
-    <input id="syncTokenInput" type="password" placeholder="访问 Token">
-    <div class="row">
-      <button id="validateTokenBtn" type="button">验证 Token</button>
-      <button id="cancelKvBtn" class="subtle" type="button">取消</button>
-    </div>
+  <div id="kvAuth" class="collapsible" aria-hidden="true">
+    <div class="collapsible-inner"><div class="tool">
+      <div class="hint">请输入合法 Token，仅能导入 / 导出该 Token 对应的阅读历史与非重复记录。</div>
+      <input id="syncTokenInput" type="password" placeholder="访问 Token">
+      <div class="tool-actions">
+        <button id="validateTokenBtn" type="button">验证 Token</button>
+        <button id="cancelKvBtn" class="subtle" type="button">取消</button>
+      </div>
+    </div></div>
   </div>
-  <div id="kvPanel" class="tool hidden">
-    <div class="hint">已通过 Token 验证。请输入 LANraragi 服务器地址的 32 位 MD5 作用域；数据按 Token 与服务器共同隔离。</div>
-    <input id="serverScopeInput" type="text" inputmode="text" maxlength="32" placeholder="服务器地址 MD5（32 位小写十六进制）">
-    <div class="checks">
-      <label><input id="sectionHistory" type="checkbox" checked style="width:auto"> 阅读历史</label>
-      <label><input id="sectionWatchlist" type="checkbox" checked style="width:auto"> 待看归档</label>
-      <label><input id="sectionDedupe" type="checkbox" checked style="width:auto"> 非重复 arcid</label>
-    </div>
-    <button id="exportBtn" type="button">导出选中数据</button>
-    <textarea id="importData" placeholder="粘贴导出的 JSON 后点击导入"></textarea>
-    <div class="row">
-      <button id="importBtn" class="secondary" type="button">导入选中数据</button>
-      <button id="switchTokenBtn" class="subtle" type="button">更换 Token</button>
-    </div>
+  <div id="kvPanel" class="collapsible" aria-hidden="true">
+    <div class="collapsible-inner"><div class="tool">
+      <div class="hint">已通过 Token 验证。请输入 LANraragi 服务器地址的 32 位 MD5 作用域；数据按 Token 与服务器共同隔离。</div>
+      <input id="serverScopeInput" type="text" inputmode="text" maxlength="32" placeholder="服务器地址 MD5（32 位小写十六进制）">
+      <div class="checks">
+        <label><input id="sectionHistory" type="checkbox" checked style="width:auto"> 阅读历史</label>
+        <label><input id="sectionWatchlist" type="checkbox" checked style="width:auto"> 待看归档</label>
+        <label><input id="sectionDedupe" type="checkbox" checked style="width:auto"> 非重复 arcid</label>
+      </div>
+      <div class="tool-actions"><button id="exportBtn" type="button">导出选中数据</button></div>
+      <textarea id="importData" placeholder="粘贴导出的 JSON 后点击导入"></textarea>
+      <div class="tool-actions">
+        <button id="importBtn" class="secondary" type="button">导入选中数据</button>
+        <button id="switchTokenBtn" class="subtle" type="button">更换 Token</button>
+      </div>
+    </div></div>
   </div>
   <div id="kvResult"></div>
 
@@ -1369,7 +1294,15 @@ const kvAuth = document.getElementById('kvAuth');
 const kvPanel = document.getElementById('kvPanel');
 const syncTokenInput = document.getElementById('syncTokenInput');
 const serverScopeInput = document.getElementById('serverScopeInput');
+const kvPanels = [kvClosed, kvAuth, kvPanel];
 let syncToken = '';
+function showPanel(panel) {
+  kvPanels.forEach((item) => {
+    const isOpen = item === panel;
+    item.classList.toggle('is-open', isOpen);
+    item.setAttribute('aria-hidden', String(!isOpen));
+  });
+}
 function serverScope() {
   const value = serverScopeInput.value.trim().toLowerCase();
   if (!/^[a-f0-9]{32}$/.test(value)) throw new Error('请输入有效的 32 位服务器 MD5 作用域');
@@ -1395,22 +1328,18 @@ async function call(path, body) {
 function showClosed() {
   syncToken = '';
   syncTokenInput.value = '';
-  kvClosed.classList.remove('hidden');
-  kvAuth.classList.add('hidden');
-  kvPanel.classList.add('hidden');
+  showPanel(kvClosed);
 }
 document.getElementById('openKvTool').onclick = () => {
   result.textContent = '';
-  kvClosed.classList.add('hidden');
-  kvAuth.classList.remove('hidden');
+  showPanel(kvAuth);
   syncTokenInput.focus();
 };
 document.getElementById('cancelKvBtn').onclick = showClosed;
 document.getElementById('switchTokenBtn').onclick = () => {
   result.textContent = '';
   syncToken = '';
-  kvPanel.classList.add('hidden');
-  kvAuth.classList.remove('hidden');
+  showPanel(kvAuth);
   syncTokenInput.focus();
 };
 document.getElementById('validateTokenBtn').onclick = async () => {
@@ -1422,8 +1351,7 @@ document.getElementById('validateTokenBtn').onclick = async () => {
     const data = await res.json().catch(() => null);
     if (!res.ok) throw new Error((data && (data.detail || data.error)) || 'Token 无效');
     syncToken = token;
-    kvAuth.classList.add('hidden');
-    kvPanel.classList.remove('hidden');
+    showPanel(kvPanel);
     result.textContent = 'Token 验证通过。';
   } catch (e) { result.textContent = e.message; }
 };
