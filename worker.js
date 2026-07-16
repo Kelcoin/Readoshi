@@ -13,9 +13,10 @@ const DEDUPE_KEY_PREFIX = 'dedupe:';
 const SYNC_SCHEMA_VERSION = 3;
 const PROJECT_NAME = 'Readoshi';
 const PROJECT_URL = 'https://github.com/Kelcoin/Readoshi';
-const FALLBACK_APP_VERSION = 'v1.1.0+944d658';
 // Increment when Worker behavior changes so deployed copies can detect updates.
-const WORKER_RELEASE = 1;
+const WORKER_RELEASE = 2;
+const APP_RELEASE = '1.3.0';
+const FALLBACK_APP_VERSION = `v${APP_RELEASE}+worker.${WORKER_RELEASE}`;
 const WORKER_UPDATE_BRANCHES = ['main', 'dev'];
 
 function json(data, status = 200) {
@@ -54,6 +55,13 @@ function getWorkerSourceUrl(branch) {
   return `https://raw.githubusercontent.com/Kelcoin/Readoshi/${branch}/worker.js`;
 }
 
+function getWorkerSourceUrls(branch) {
+  return [
+    getWorkerSourceUrl(branch),
+    `https://api.github.com/repos/Kelcoin/Readoshi/contents/worker.js?ref=${branch}`,
+  ];
+}
+
 function parseWorkerRelease(source) {
   const match = String(source || '').match(/const WORKER_RELEASE\s*=\s*(\d+)\s*;/);
   return match ? Number(match[1]) : null;
@@ -61,11 +69,16 @@ function parseWorkerRelease(source) {
 
 async function fetchWorkerSource(url) {
   let timeoutId;
+  const isGithubApi = url.startsWith('https://api.github.com/');
   try {
     return await Promise.race([
-      fetch(url, { headers: { Accept: 'text/plain' } }),
+      fetch(url, {
+        headers: isGithubApi
+          ? { Accept: 'application/vnd.github.raw+json', 'User-Agent': 'Readoshi-Worker' }
+          : { Accept: 'text/plain' },
+      }),
       new Promise((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error('Worker update check timed out')), 4000);
+        timeoutId = setTimeout(() => reject(new Error('Worker update check timed out')), 8000);
       }),
     ]);
   } finally {
@@ -78,27 +91,37 @@ async function checkWorkerUpdate() {
   const sourceUrl = getWorkerSourceUrl(branch);
   try {
     const cache = typeof caches !== 'undefined' ? caches.default : null;
-    let response = cache ? await cache.match(sourceUrl) : null;
-    if (!response) {
-      response = await fetchWorkerSource(sourceUrl);
-      if (!response.ok) throw new Error(`GitHub returned HTTP ${response.status}`);
-      const source = await response.text();
-      if (cache) {
-        const cached = new Response(source, {
-          headers: {
-            'Content-Type': 'text/plain; charset=utf-8',
-            'Cache-Control': 'public, max-age=21600',
-          },
-        });
-        await cache.put(sourceUrl, cached).catch(() => {});
+    const cachedResponse = cache ? await cache.match(sourceUrl).catch(() => null) : null;
+    if (cachedResponse) {
+      const remoteRelease = parseWorkerRelease(await cachedResponse.text());
+      if (Number.isInteger(remoteRelease)) {
+        return { status: remoteRelease > WORKER_RELEASE ? 'update' : 'current', branch, sourceUrl, remoteRelease };
       }
-      const remoteRelease = parseWorkerRelease(source);
-      if (!Number.isInteger(remoteRelease)) throw new Error('Remote Worker release marker missing');
-      return { status: remoteRelease > WORKER_RELEASE ? 'update' : 'current', branch, sourceUrl, remoteRelease };
     }
-    const remoteRelease = parseWorkerRelease(await response.text());
-    if (!Number.isInteger(remoteRelease)) throw new Error('Cached Worker release marker missing');
-    return { status: remoteRelease > WORKER_RELEASE ? 'update' : 'current', branch, sourceUrl, remoteRelease };
+
+    let lastError = null;
+    for (const url of getWorkerSourceUrls(branch)) {
+      try {
+        const response = await fetchWorkerSource(url);
+        if (!response.ok) throw new Error(`GitHub returned HTTP ${response.status}`);
+        const source = await response.text();
+        const remoteRelease = parseWorkerRelease(source);
+        if (!Number.isInteger(remoteRelease)) throw new Error('Remote Worker release marker missing');
+        if (cache) {
+          const cached = new Response(source, {
+            headers: {
+              'Content-Type': 'text/plain; charset=utf-8',
+              'Cache-Control': 'public, max-age=21600',
+            },
+          });
+          await cache.put(sourceUrl, cached).catch(() => {});
+        }
+        return { status: remoteRelease > WORKER_RELEASE ? 'update' : 'current', branch, sourceUrl, remoteRelease };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error('Worker update check failed');
   } catch {
     return { status: 'unavailable', branch, sourceUrl, remoteRelease: null };
   }

@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 
+const workerSource = fs.readFileSync(new URL('../worker.js', import.meta.url), 'utf8');
+const workerRelease = Number(workerSource.match(/const WORKER_RELEASE\s*=\s*(\d+)/)?.[1]);
+
 function createWorker(entries = [], globals = {}) {
   const values = new Map([['tokens', JSON.stringify(['test-token'])], ...entries]);
   let listener = null;
@@ -33,7 +36,7 @@ function createWorker(entries = [], globals = {}) {
     addEventListener(type, callback) { if (type === 'fetch') listener = callback; },
     ...globals,
   };
-  vm.runInNewContext(fs.readFileSync(new URL('../worker.js', import.meta.url), 'utf8'), context);
+  vm.runInNewContext(workerSource, context);
   return async function dispatch(path, { method = 'GET', scope, body } = {}) {
     const headers = { 'x-sync-token': 'test-token' };
     if (scope) headers['x-lrr-server-scope'] = scope;
@@ -92,20 +95,20 @@ test('Worker status checks main by default and reports a newer release', async (
   const dispatch = createWorker([], {
     fetch: async (url) => {
       requestedUrl = String(url);
-      return new Response('const WORKER_RELEASE = 2;', { status: 200 });
+      return new Response(`const WORKER_RELEASE = ${workerRelease + 1};`, { status: 200 });
     },
   });
   const html = await (await dispatch('/')).text();
   assert.match(requestedUrl, /\/main\/worker\.js$/);
   assert.match(html, /发现 Worker 更新/);
-  assert.match(html, /本地 1 · 远端 2/);
+  assert.match(html, new RegExp(`本地 ${workerRelease} · 远端 ${workerRelease + 1}`));
 });
 
 test('Worker status accepts dev and falls back invalid branches to main', async () => {
   const urls = [];
   const remote = async (url) => {
     urls.push(String(url));
-    return new Response('const WORKER_RELEASE = 1;', { status: 200 });
+    return new Response(`const WORKER_RELEASE = ${workerRelease};`, { status: 200 });
   };
   const devHtml = await (await createWorker([], { fetch: remote, WORKER_UPDATE_BRANCH: 'dev' })('/')).text();
   const fallbackHtml = await (await createWorker([], { fetch: remote, WORKER_UPDATE_BRANCH: 'feature' })('/')).text();
@@ -113,6 +116,21 @@ test('Worker status accepts dev and falls back invalid branches to main', async 
   assert.match(urls[1], /\/main\/worker\.js$/);
   assert.match(devHtml, /dev 最新版本/);
   assert.match(fallbackHtml, /main 最新版本/);
+});
+
+test('Worker update check falls back to GitHub API when Raw is unavailable', async () => {
+  const urls = [];
+  const dispatch = createWorker([], {
+    fetch: async (url) => {
+      urls.push(String(url));
+      if (String(url).includes('raw.githubusercontent.com')) throw new Error('raw unavailable');
+      return new Response(`const WORKER_RELEASE = ${workerRelease + 1};`, { status: 200 });
+    },
+  });
+  const html = await (await dispatch('/')).text();
+  assert.match(urls[0], /raw\.githubusercontent\.com/);
+  assert.match(urls[1], /api\.github\.com\/repos\/Kelcoin\/Readoshi\/contents\/worker\.js\?ref=main/);
+  assert.match(html, /发现 Worker 更新/);
 });
 
 test('Worker update failure degrades without breaking status page', async () => {

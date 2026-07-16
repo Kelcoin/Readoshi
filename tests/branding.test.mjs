@@ -22,7 +22,9 @@ test('project branding is consistently Readoshi', () => {
   assert.match(html, /<title>Readoshi<\/title>/);
   assert.match(html, /media="\(prefers-color-scheme: light\)"[^>]+href="\/icons\/favicon-black-32\.png"/);
   assert.match(html, /media="\(prefers-color-scheme: dark\)"[^>]+href="\/icons\/favicon-white-32\.png"/);
-  assert.match(readme, /<h1 align="center">Readoshi <sub><sup>A LANraragi Reader<\/sup><\/sub><\/h1>/);
+  assert.match(readme, /<h1 align="center">Readoshi<\/h1>/);
+  assert.match(readme, /<div align="center"><sub><sub>A LANraragi Reader<\/sub><\/sub><\/div>/);
+  assert.doesNotMatch(readme, /<h1[^>]*>[^<]*Readoshi[^\n]*A LANraragi Reader/);
   assert.doesNotMatch(readme, /<p align="center"><strong>A LANraragi Reader<\/strong><\/p>/);
   assert.match(readme, /public\/logo-black\.png/);
   assert.match(readme, /public\/logo-white\.png/);

@@ -6,7 +6,8 @@
   </picture>
 </p>
 
-<h1 align="center">Readoshi <sub><sup>A LANraragi Reader</sup></sub></h1>
+<h1 align="center">Readoshi</h1>
+<div align="center"><sub><sub>A LANraragi Reader</sub></sub></div>
 
 Readoshi 是一个面向 [LANraragi](https://github.com/Difegue/LANraragi) 的现代阅读器前端，支持 PWA、标签翻译、分类浏览、阅读历史、智能推荐、归档上传、元数据编辑、E-Hentai 评论、重复归档检测和沉浸式阅读。
 

@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const worker = fs.readFileSync(new URL('../worker.js', import.meta.url), 'utf8');
 const client = fs.readFileSync(new URL('../src/lib/worker-kv.js', import.meta.url), 'utf8');
+const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
 test('Worker accepts sync tokens from headers only', () => {
   assert.doesNotMatch(worker, /searchParams\.get\(['"]token['"]\)/);
@@ -34,8 +35,12 @@ test('sync mutations serialize and retain timestamp tombstones', () => {
 
 test('Worker update checks are channel-scoped, cached, and non-blocking', () => {
   assert.match(worker, /const WORKER_RELEASE\s*=\s*\d+/);
+  const appRelease = worker.match(/const APP_RELEASE\s*=\s*['"]([^'"]+)['"]/);
+  assert.equal(appRelease?.[1], pkg.version);
+  assert.match(worker, /`v\$\{APP_RELEASE\}\+worker\.\$\{WORKER_RELEASE\}`/);
   assert.match(worker, /WORKER_UPDATE_BRANCH/);
   assert.match(worker, /\['main', 'dev'\]/);
   assert.match(worker, /raw\.githubusercontent\.com/);
+  assert.match(worker, /api\.github\.com\/repos\/Kelcoin\/Readoshi\/contents\/worker\.js/);
   assert.match(worker, /max-age=21600/);
 });
