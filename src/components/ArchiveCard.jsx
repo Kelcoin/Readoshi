@@ -4,10 +4,15 @@ import { translateTag, categorizeTags, NAMESPACE_COLORS_MAP } from '../lib/tags'
 import { getCachedImage, getImage } from '../lib/imageCache';
 import { navigateHome, parseRouteFromLocation } from '../lib/navigation';
 import { NamespaceGlyph, stripDecoratedLabel } from './AppGlyphs';
+import { useViewportWidth } from '../lib/viewport';
+import { getArchiveProgressPercent } from '../lib/archiveProgress';
+import { encodeApiKey } from '../lib/api';
+import { scopedCacheKey } from '../lib/configScope';
 
 const NAMESPACE_COLORS = NAMESPACE_COLORS_MAP;
+const archiveAspectRatioCache = new Map();
 
-function calculatePanelPosition(cardRect, panelHeight) {
+function calculatePanelPosition(cardRect, panelHeight, pointerY = null) {
   const panelWidth = 320;
   const panelMaxHeight = 440;
   const effectivePanelHeight = Math.min(
@@ -35,10 +40,13 @@ function calculatePanelPosition(cardRect, panelHeight) {
     return { top: aboveTop, left: centeredLeft };
   }
 
-  const sideTop = Math.min(
-    Math.max(sideGap, cardRect.top + (cardRect.height - effectivePanelHeight) / 2),
-    Math.max(sideGap, vh - effectivePanelHeight - sideGap),
-  );
+  const centeredSideTop = cardRect.top + (cardRect.height - effectivePanelHeight) / 2;
+  const pointerSafeTop = pointerY == null
+    ? centeredSideTop
+    : (pointerY + 18 + effectivePanelHeight <= vh - sideGap
+      ? pointerY + 18
+      : pointerY - effectivePanelHeight - 18);
+  const sideTop = Math.min(Math.max(sideGap, pointerSafeTop), Math.max(sideGap, vh - effectivePanelHeight - sideGap));
 
   const rightLeft = cardRect.right + sideGap;
   if (rightLeft + panelWidth <= vw - sideGap) {
@@ -77,58 +85,35 @@ async function readImageAspectRatio(src) {
   }
 }
 
-export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveContextMenu, longPressTitle = '', currentPage, progress, showProgressBar, noCrop, cacheOnly = false, wrapStyle, className, overlay, selectionMode = false, selected = false, onSelectToggle }) {
+export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveContextMenu, longPressTitle = '', currentPage, progress, showProgressBar, reserveProgressSpace = false, noCrop, cacheOnly = false, wrapStyle, className, overlay, selectionMode = false, selected = false, onSelectToggle }) {
+  const id = archive.arcid || archive.id;
   const [hovered, setHovered] = useState(false);
   const [closing, setClosing] = useState(false);
   const [thumbSrc, setThumbSrc] = useState(null);
   const [thumbState, setThumbState] = useState('loading');
   const [retryKey, setRetryKey] = useState(0);
   const [panelPos, setPanelPos] = useState({ top: 0, left: 0 });
-  const [isMobile, setIsMobile] = useState(false);
+  const isMobile = useViewportWidth() < 768;
   const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
-  const [aspectRatio, setAspectRatio] = useState(null);
+  const aspectCacheKey = scopedCacheKey(`aspect:${id}`);
+  const [aspectRatio, setAspectRatio] = useState(() => archiveAspectRatioCache.get(aspectCacheKey) ?? null);
   const cardRef = useRef(null);
   const panelRef = useRef(null);
   const imgRef = useRef(null);
-  const metaRef = useRef(null);
   const leaveTimerRef = useRef(null);
+  const closeTimerRef = useRef(null);
   const thumbObjectUrlRef = useRef(null);
-  const [shouldLoadThumb, setShouldLoadThumb] = useState(cacheOnly);
   const [allowNetworkFallback, setAllowNetworkFallback] = useState(!cacheOnly);
   const longPressTimerRef = useRef(null);
   const longPressTriggeredRef = useRef(false);
   const pointerStartRef = useRef(null);
-  const id = archive.arcid || archive.id;
+  const hoverPointerYRef = useRef(null);
 
   useEffect(() => {
     if (!cacheOnly) {
       setAllowNetworkFallback(true);
     }
   }, [cacheOnly]);
-
-  useEffect(() => {
-    const check = () => setIsMobile(window.innerWidth < 768);
-    check();
-    window.addEventListener('resize', check);
-    return () => window.removeEventListener('resize', check);
-  }, []);
-
-  useEffect(() => {
-    if (cacheOnly || allowNetworkFallback) {
-      setShouldLoadThumb(true);
-      return undefined;
-    }
-    const el = cardRef.current;
-    if (!el) return undefined;
-    const io = new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting) {
-        setShouldLoadThumb(true);
-        io.disconnect();
-      }
-    }, { rootMargin: '400px' });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [allowNetworkFallback, cacheOnly, id]);
 
   const tags = archive.tags?.split(',').map((tag) => tag.trim()).filter(Boolean) || [];
   const categorizedTags = categorizeTags(tags);
@@ -179,87 +164,45 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
     return '';
   })();
 
-  const progressPct = progress != null ? progress : (totalPages > 0 && current > 0 ? Math.round((current / totalPages) * 100) : 0);
-  const showProgress = showProgressBar && ((current > 0 && totalPages > 0) || progress != null);
+  const progressPct = getArchiveProgressPercent(archive, { currentPage, progressPercent: progress });
+  const showProgress = showProgressBar && progressPct != null;
+  const reserveEmptyProgressSpace = reserveProgressSpace && !showProgress;
 
   const isWide = noCrop && aspectRatio != null && aspectRatio > 1.0;
   const baseMetaFontSize = isMobile ? 10.5 : 11;
-  const [metaFontSize, setMetaFontSize] = useState(baseMetaFontSize);
+
+  const rememberAspectRatio = useCallback((next) => {
+    if (!Number.isFinite(next) || next <= 0) return;
+    archiveAspectRatioCache.set(aspectCacheKey, next);
+    setAspectRatio((prev) => (
+      prev != null && Math.abs(prev - next) < 0.001 ? prev : next
+    ));
+  }, [aspectCacheKey]);
 
   const updateAspectRatio = useCallback((img) => {
     const nw = img?.naturalWidth;
     const nh = img?.naturalHeight;
     if (nw && nh) {
-      setAspectRatio((prev) => {
-        const next = nw / nh;
-        return prev != null && Math.abs(prev - next) < 0.001 ? prev : next;
-      });
+      rememberAspectRatio(nw / nh);
     }
-  }, []);
+  }, [rememberAspectRatio]);
 
   const handleImageLoad = useCallback((e) => {
     updateAspectRatio(e.target);
   }, [updateAspectRatio]);
 
   useEffect(() => {
-    setAspectRatio(null);
-  }, [id]);
+    setAspectRatio(archiveAspectRatioCache.get(aspectCacheKey) ?? null);
+  }, [aspectCacheKey]);
 
   useEffect(() => {
     if (thumbState !== 'ready' || !thumbSrc) return;
     updateAspectRatio(imgRef.current);
   }, [thumbSrc, thumbState, updateAspectRatio]);
 
-  useEffect(() => {
-    if (aspectRatio == null) return undefined;
-    const frame = requestAnimationFrame(() => {
-      const el = cardRef.current;
-      const parent = el?.parentElement;
-      if (!el) return;
-      // Wide covers change their CSS grid span after thumbnail decode; forcing
-      // a layout read prevents Chromium from delaying the repaint until scroll.
-      void el.offsetWidth;
-      if (parent) void parent.offsetHeight;
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [aspectRatio, isWide, noCrop]);
-
-  useLayoutEffect(() => {
-    const el = metaRef.current;
-    if (!el) return undefined;
-
-    const update = () => {
-      const width = el.clientWidth;
-      if (!width) return;
-      const previousFontSize = el.style.fontSize;
-      el.style.fontSize = `${baseMetaFontSize}px`;
-      const naturalWidth = el.scrollWidth;
-      el.style.fontSize = previousFontSize;
-      const nextSize = naturalWidth <= width
-        ? baseMetaFontSize
-        : Math.max(5, Math.floor((baseMetaFontSize * width / naturalWidth) * 10) / 10);
-      setMetaFontSize((prev) => (Math.abs(prev - nextSize) < 0.05 ? prev : nextSize));
-    };
-
-    update();
-    if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', update);
-      return () => {
-        window.removeEventListener('resize', update);
-      };
-    }
-
-    const observer = new ResizeObserver(update);
-    observer.observe(el);
-    return () => {
-      observer.disconnect();
-    };
-  }, [baseMetaFontSize, dateAddedStr, pageInfo]);
-
-  // ===== Lazy thumbnail: only load near viewport (biggest memory win) =====
+  // Load immediately so initial paint never depends on a later scroll/click signal.
   useEffect(() => {
     let isMounted = true;
-    if (!shouldLoadThumb) return undefined;
 
     const loadThumbnail = async () => {
       if (!id) { setThumbState('error'); return; }
@@ -274,7 +217,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
               const base = (localStorage.getItem('lrr_server_url') || '').replace(/\/$/, '');
               const key = localStorage.getItem('lrr_api_key') || '';
               const headers = {};
-              if (key) headers['Authorization'] = `Bearer ${btoa(key)}`;
+              if (key) headers['Authorization'] = `Bearer ${encodeApiKey(key)}`;
               const res = await fetch(`${base}/api/archives/${id}/thumbnail`, { headers });
               if (!res.ok) throw new Error(`HTTP ${res.status}`);
               return res.blob();
@@ -283,7 +226,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
         if (src) {
           const ratio = noCrop ? await readImageAspectRatio(src) : null;
           if (!isMounted) return;
-          if (ratio) setAspectRatio(ratio);
+          if (ratio) rememberAspectRatio(ratio);
           thumbObjectUrlRef.current = src;
           setThumbSrc(src);
           setThumbState('ready');
@@ -309,7 +252,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
     return () => {
       isMounted = false;
     };
-  }, [allowNetworkFallback, cacheOnly, id, noCrop, retryKey, shouldLoadThumb]);
+  }, [allowNetworkFallback, cacheOnly, id, noCrop, rememberAspectRatio, retryKey]);
 
   const translateDisplayTag = useCallback((rawTag) => {
     if (!rawTag) return rawTag;
@@ -342,11 +285,11 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
     }
   };
 
-  const updatePanelPosition = useCallback(() => {
+  const updatePanelPosition = useCallback((pointerY = hoverPointerYRef.current) => {
     if (!cardRef.current) return;
     const rect = cardRef.current.getBoundingClientRect();
     const panelHeight = panelRef.current?.getBoundingClientRect().height;
-    const nextPos = calculatePanelPosition(rect, panelHeight);
+    const nextPos = calculatePanelPosition(rect, panelHeight, pointerY);
     setPanelPos((prev) => (
       Math.abs(prev.top - nextPos.top) < 0.5 && Math.abs(prev.left - nextPos.left) < 0.5
         ? prev
@@ -355,20 +298,33 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   }, []);
 
   // ===== Fix 1: 200ms 延迟消失，鼠标可从卡片滑入面板 =====
-  const showPanel = () => {
-    if (cardRef.current?.closest?.('[data-scroll-block]')) return;
+  const clearPanelTimers = () => {
     if (leaveTimerRef.current) {
       clearTimeout(leaveTimerRef.current);
       leaveTimerRef.current = null;
     }
-    updatePanelPosition();
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  };
+
+  const showPanel = (event) => {
+    if (cardRef.current?.closest?.('[data-scroll-block]')) return;
+    clearPanelTimers();
+    hoverPointerYRef.current = event?.clientY ?? null;
+    updatePanelPosition(hoverPointerYRef.current);
+    setClosing(false);
     setHovered(true);
   };
 
   const hidePanelWithDelay = () => {
+    clearPanelTimers();
     leaveTimerRef.current = setTimeout(() => {
+      leaveTimerRef.current = null;
       setClosing(true);
-      setTimeout(() => {
+      closeTimerRef.current = setTimeout(() => {
+        closeTimerRef.current = null;
         setHovered(false);
         setClosing(false);
       }, 100);
@@ -376,17 +332,16 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   };
 
   const keepPanel = () => {
-    if (leaveTimerRef.current) {
-      clearTimeout(leaveTimerRef.current);
-      leaveTimerRef.current = null;
-    }
+    clearPanelTimers();
     setClosing(false);
     setHovered(true);
   };
 
   const hidePanelImmediately = () => {
+    clearPanelTimers();
     setClosing(true);
-    setTimeout(() => {
+    closeTimerRef.current = setTimeout(() => {
+      closeTimerRef.current = null;
       setHovered(false);
       setClosing(false);
     }, 100);
@@ -395,6 +350,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   useEffect(() => {
     return () => {
       if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current);
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
       if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
     };
   }, []);
@@ -417,7 +373,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
         return;
       }
       const panelHeight = panelRef.current?.getBoundingClientRect().height;
-      setPanelPos(calculatePanelPosition(rect, panelHeight));
+      setPanelPos(calculatePanelPosition(rect, panelHeight, hoverPointerYRef.current));
     };
     window.addEventListener('scroll', handleScroll, true);
     return () => window.removeEventListener('scroll', handleScroll, true);
@@ -525,34 +481,33 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   return (
     <div
       ref={cardRef}
-      className={className}
+      className={['archive-card-wrap', isWide ? 'is-wide' : '', className].filter(Boolean).join(' ')}
       style={{
         position: 'relative',
         display: 'inline-block',
         gridColumn: isWide ? 'span 2' : undefined,
-        transform: 'translateZ(0)',
-        backfaceVisibility: 'hidden',
+        transform: isPanelVisible ? 'translateY(-6px)' : undefined,
+        transformOrigin: 'center top',
+        transition: 'transform 0.22s cubic-bezier(0.22, 1, 0.36, 1)',
         ...wrapStyle,
       }}
     >
       {overlay}
       {/* ===== 卡片本体 ===== */}
       <div
-        className="glass-panel"
+        className="glass-panel archive-card-shell"
         title={undefined}
         style={{
           minWidth: isWide ? '316px' : '150px',
           width: isWide ? '316px' : '150px',
           padding: '12px',
           cursor: 'pointer',
-          transition: 'transform 0.28s cubic-bezier(0.25, 0.8, 0.25, 1), box-shadow 0.28s ease',
+          transition: 'transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.22s ease, border-color 0.22s ease',
           display: 'flex',
           flexDirection: 'column',
-          transform: isPanelVisible ? 'translateY(-6px) translateZ(0)' : 'translateY(0) translateZ(0)',
           boxShadow: selected
             ? '0 0 0 2px rgba(74,159,240,0.92), 0 12px 34px rgba(74,159,240,0.20)'
             : (isPanelVisible ? '0 12px 40px 0 rgba(0, 0, 0, 0.5)' : 'var(--shadow)'),
-          transformOrigin: 'center top',
           touchAction: 'pan-x pan-y pinch-zoom',
           WebkitTouchCallout: (selectionMode || onLongPress || onArchiveContextMenu) ? 'none' : undefined,
           WebkitUserSelect: 'none',
@@ -595,9 +550,10 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
             height: '210px',
             borderRadius: '8px',
             overflow: 'hidden',
-            backgroundColor: 'rgba(0,0,0,0.3)',
+            backgroundColor: 'var(--cover-bg)',
             position: 'relative',
           }}
+          className="archive-cover-frame"
         >
           {thumbState === 'loading' && !thumbSrc && (
             <div
@@ -624,14 +580,14 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
                 fontSize: '12px',
               }}
             >
-              加载封面...
+              加载封面…
             </div>
           )}
 
           {thumbState === 'ready' && thumbSrc && (
             <img
               ref={imgRef}
-              className="reader-content-fade-in"
+              className="archive-cover-image"
               src={thumbSrc}
               alt="cover"
               draggable={false}
@@ -642,8 +598,6 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
                 objectFit: 'cover',
                 display: 'block',
                 opacity: 1,
-                transform: 'translateZ(0)',
-                backfaceVisibility: 'hidden',
                 WebkitTouchCallout: 'none',
                 userSelect: 'none',
                 pointerEvents: 'none',
@@ -677,8 +631,8 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
           )}
         </div>
         {showProgress && (
-          <div style={{ width: '100%', height: '3px', background: 'rgba(255,255,255,0.08)', borderRadius: '2px', marginTop: '4px' }}>
-            <div style={{ width: `${Math.min(progressPct, 100)}%`, height: '100%', background: 'var(--accent)', borderRadius: '2px', transition: 'width 0.3s ease' }} />
+          <div className="archive-card-progress" role="progressbar" aria-label="阅读进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow={progressPct}>
+            <div className="archive-card-progress-fill" style={{ width: `${progressPct}%` }} />
           </div>
         )}
         {/* 标题 */}
@@ -688,24 +642,24 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
             handleTitleClick(e);
           }}
           style={{
-            fontSize: '13px', marginTop: '12px',
+            fontSize: '13px', marginTop: reserveEmptyProgressSpace && !(pageInfo || dateAddedStr) ? '17px' : '12px',
             overflow: 'hidden',
             display: '-webkit-box',
             WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
-            lineHeight: '1.4', minHeight: '36.4px',
-            ...(isMobile ? { cursor: 'pointer', color: 'var(--accent)' } : {}),
+            lineHeight: '1.4', height: '36.4px',
+          ...(isMobile ? { cursor: 'pointer' } : {}),
           }}
+          className="archive-title"
         >
           {archive.title}
         </div>
 
         {(pageInfo || dateAddedStr) && (
           <div
-            ref={metaRef}
             style={{
-              fontSize: `${metaFontSize}px`,
+              fontSize: `${baseMetaFontSize}px`,
               color: 'var(--text-sub)',
-              marginTop: isMobile ? '4px' : '6px',
+              marginTop: `${(isMobile ? 4 : 6) + (reserveEmptyProgressSpace ? 5 : 0)}px`,
               display: 'flex',
               justifyContent: 'space-between',
               gap: '6px',
@@ -713,6 +667,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
               lineHeight: 1.35,
               maxWidth: '100%',
               whiteSpace: 'nowrap',
+              overflow: 'hidden',
             }}
           >
             {pageInfo && (
@@ -747,7 +702,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
       {isPanelVisible && categorizedTags.length > 0 && ReactDOM.createPortal(
         <div
           ref={panelRef}
-          className="no-scrollbar"
+          className="no-scrollbar archive-tag-panel"
           onMouseEnter={keepPanel}
           onMouseLeave={hidePanelImmediately}
           style={{
@@ -755,7 +710,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
             top: `${panelPos.top}px`,
             left: `${panelPos.left}px`,
             zIndex: 9999,
-            background: 'rgba(22, 24, 32, 0.96)',
+            background: 'var(--tag-panel-bg)',
             backdropFilter: 'blur(24px)',
             WebkitBackdropFilter: 'blur(24px)',
             border: '1px solid rgba(140, 160, 190, 0.25)',
@@ -774,7 +729,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
             <div
               style={{
                 fontSize: '14px', fontWeight: 700, lineHeight: 1.3,
-                marginBottom: '14px', color: '#fff',
+                marginBottom: '14px', color: 'var(--text-main)',
                 wordBreak: 'break-word',
               }}
             >
@@ -783,15 +738,17 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
 
             {categorizedTags.map((group) => (
               <div key={group.ns} style={{ marginBottom: '8px' }}>
-                <div style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: '3px', alignItems: 'baseline' }}>
+                <div style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: '3px', alignItems: 'center' }}>
                   <span
+                    className="archive-tag-namespace"
                     style={{
                       display: 'inline-flex',
                       alignItems: 'center',
                       gap: '4px',
                       fontSize: '11px',
                       fontWeight: 600,
-                      color: group.color,
+                      '--tag-ns-color': group.color,
+                      color: 'var(--tag-ns-color)',
                       textTransform: 'uppercase',
                       letterSpacing: '0.5px',
                       marginRight: '5px',
@@ -799,7 +756,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    <NamespaceGlyph ns={group.ns} size={14} color={group.color} />
+                    <NamespaceGlyph ns={group.ns} size={14} color="currentColor" />
                     {stripDecoratedLabel(group.label)}
                   </span>
                   {group.tags.map(({ raw }) => (
@@ -808,11 +765,13 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
                       type="button"
                       onClick={(e) => handleTagClick(e, raw)}
                       style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
                         border: `1px solid ${group.color}44`,
                         borderRadius: '5px',
                         padding: '2px 6px',
                         background: `${group.color}15`,
-                        color: '#e3e9f3',
+                        color: 'var(--text-main)',
                         fontSize: '11px',
                         cursor: 'pointer',
                         whiteSpace: 'nowrap',

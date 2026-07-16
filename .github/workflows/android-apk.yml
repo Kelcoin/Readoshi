@@ -31,33 +31,31 @@ jobs:
       - name: Resolve build metadata
         id: metadata
         run: |
-          node <<'NODE'
-          const fs = require('node:fs');
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { resolveAppVersion } from './scripts/app-version.mjs';
 
           const branch = process.env.GITHUB_REF_NAME;
           if (!['dev', 'main'].includes(branch)) {
             throw new Error('Android builds only support dev or main');
           }
 
-          const packageVersion = JSON.parse(fs.readFileSync('package.json', 'utf8')).version;
-          if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(packageVersion)) {
-            throw new Error('package.json version must be valid SemVer');
-          }
-
+          const resolved = resolveAppVersion({ cwd: process.cwd(), hash: process.env.GITHUB_SHA });
+          const packageVersion = resolved.packageVersion;
           const shortSha = process.env.GITHUB_SHA.slice(0, 7);
           const versionCode = Number(process.env.GITHUB_RUN_NUMBER);
           if (!Number.isSafeInteger(versionCode) || versionCode < 1) {
             throw new Error('GITHUB_RUN_NUMBER must be a positive integer');
           }
 
-          const versionName = `v${packageVersion}+${shortSha}`;
+          const versionName = resolved.version;
           const values = {
             package_version: packageVersion,
             release_tag: `v${packageVersion}`,
             short_sha: shortSha,
             version_name: versionName,
             version_code: String(versionCode),
-            apk_prefix: `LRReact-Reader-${versionName}`,
+            apk_prefix: `Readoshi-${versionName}`,
           };
           fs.appendFileSync(
             process.env.GITHUB_OUTPUT,
@@ -66,7 +64,7 @@ jobs:
           NODE
 
       - name: Install web dependencies
-        run: npm install --package-lock=false --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Install temporary Capacitor dependencies
         run: >-
@@ -86,8 +84,8 @@ jobs:
           const path = require('node:path');
 
           const config = {
-            appId: 'com.kelcoin.lanraragireader',
-            appName: 'LRReact Reader',
+            appId: 'com.kelcoin.readoshi',
+            appName: 'Readoshi',
             webDir: 'dist',
             backgroundColor: '#0f1115',
             android: {
@@ -107,9 +105,9 @@ jobs:
           };
           fs.writeFileSync('capacitor.config.json', JSON.stringify(config, null, 2) + '\n');
 
-          if (!fs.existsSync('logo.png')) throw new Error('logo.png missing');
+          if (!fs.existsSync('public/logo-white.png')) throw new Error('public/logo-white.png missing');
           fs.mkdirSync('assets', { recursive: true });
-          fs.copyFileSync('logo.png', path.join('assets', 'logo.png'));
+          fs.copyFileSync('public/logo-white.png', path.join('assets', 'logo.png'));
 
           const indexPath = path.join('dist', 'index.html');
           let html = fs.readFileSync(indexPath, 'utf8');
@@ -196,7 +194,7 @@ jobs:
           const fs = require('node:fs');
           const config = JSON.parse(fs.readFileSync('capacitor.config.json', 'utf8'));
           const checks = [
-            ['app name', config.appName === 'LRReact Reader'],
+            ['app name', config.appName === 'Readoshi'],
             ['webDir', config.webDir === 'dist'],
             ['mixed content', config.android?.allowMixedContent === true],
             ['cleartext', config.server?.cleartext === true],

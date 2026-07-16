@@ -7,6 +7,12 @@ export function markHorizontalScrollActivity(el) {
   el.__horizontalScrollTimer = setTimeout(() => { delete el.dataset.scrollBlock; }, 300);
 }
 
+export function getHorizontalWheelDelta(event, scrollWidth, clientWidth) {
+  if (event.ctrlKey || scrollWidth <= clientWidth + 1) return null;
+  const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+  return delta === 0 ? null : delta;
+}
+
 export function useHorizontalScroller() {
   const scrollerElRef = useRef(null);
   const dragStateRef = useRef({
@@ -47,11 +53,10 @@ export function useHorizontalScroller() {
   }, [finishDrag]);
 
   const handleWheel = useCallback((e) => {
-    if (e.ctrlKey) return;
     const el = e.currentTarget || scrollerElRef.current;
-    if (!el || el.scrollWidth <= el.clientWidth + 1) return;
-    const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-    if (delta === 0) return;
+    if (!el) return;
+    const delta = getHorizontalWheelDelta(e, el.scrollWidth, el.clientWidth);
+    if (delta === null) return;
     if (e.cancelable) e.preventDefault();
     e.stopPropagation();
     el.scrollLeft += delta * 2.4;
@@ -66,16 +71,11 @@ export function useHorizontalScroller() {
     if (node) node.addEventListener('wheel', handleWheel, { capture: true, passive: false });
   }, [handleWheel]);
 
-  useEffect(() => () => {
-    if (scrollerElRef.current) {
-      scrollerElRef.current.removeEventListener('wheel', handleWheel, true);
-      scrollerElRef.current = null;
-    }
-  }, [handleWheel]);
-
   const onWheelCapture = useCallback(() => {
-    // Native passive:false listener does the real wheel lock. Keeping this
-    // prop harmless preserves existing call sites during incremental rollout.
+    // The callback ref exclusively owns the native passive:false listener.
+    // Do not mirror its cleanup in an effect: React StrictMode runs effect
+    // cleanup/setup without necessarily re-running an unchanged callback ref,
+    // which would leave the mounted scroller without a wheel listener.
   }, []);
 
   const onScroll = useCallback((e) => {
@@ -115,6 +115,7 @@ export function useHorizontalScroller() {
     touchAction: 'auto',
     WebkitOverflowScrolling: 'touch',
     overscrollBehaviorX: 'contain',
+    overscrollBehaviorY: 'auto',
   }), []);
 
   const getMouseScrollStyle = useCallback(() => ({

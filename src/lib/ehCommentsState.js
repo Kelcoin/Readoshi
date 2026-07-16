@@ -1,0 +1,49 @@
+const trimDetail = (value) => String(value || '').trim().replace(/\s+/g, ' ').slice(0, 240);
+
+export function classifyEhGalleryPage(htmlText = '', status = 200) {
+  if (status === 403) return 'blocked';
+  if (status === 404 || status === 410) return 'unavailable';
+
+  const html = String(htmlText);
+  const lower = html.toLowerCase();
+  const hasGalleryStructure = (
+    /id=["']cdiv["']/i.test(html) ||
+    /class=["'][^"']*\bc1\b/i.test(html) ||
+    /var\s+gid\s*=\s*\d+/i.test(html) ||
+    /var\s+token\s*=\s*["'][^"']+["']/i.test(html)
+  );
+  if (hasGalleryStructure) return 'available';
+
+  if (lower.includes('gallery not available') ||
+      lower.includes('this gallery is not available') ||
+      lower.includes('gallery has been removed') ||
+      lower.includes('gallery is no longer available')) {
+    return 'unavailable';
+  }
+  return 'available';
+}
+
+const PRESENTATIONS = {
+  Unauthorized: ['Worker 验证失败', 'Token 无效或缺失，请检查同步 Token。', false],
+  TOKEN_MISSING: ['Worker 验证失败', 'Token 无效或缺失，请检查同步 Token。', false],
+  EH_REQUIRES_LOGIN: ['需要 E-Hentai 登录信息', 'Cookie 可能缺失、已过期，或未包含 nw=1。', true],
+  CONTENT_WARNING: ['需要 E-Hentai 登录信息', 'Cookie 可能缺失、已过期，或未包含 nw=1。', true],
+  EH_CLOUDFLARE_BLOCK: ['E-Hentai 暂时拒绝访问', 'Worker 节点可能触发 Cloudflare 验证或 IP 临时限制。', false],
+  ACCESS_BLOCKED: ['E-Hentai 暂时拒绝访问', '画廊访问被拒绝，Cookie 或当前 IP 可能受限。', false],
+  GALLERY_UNAVAILABLE: ['画廊暂时无法访问', '链接可能失效，或上游返回 404/410。', false],
+  NETWORK_ERROR: ['无法获取 E-Hentai 评论', '网络、反向代理或 CORS 配置可能异常。', false],
+  EH_EMPTY_RESPONSE: ['评论页面响应异常', '上游返回空白页面，Cookie 或链接可能已失效。', false],
+  EH_UNEXPECTED_PAGE: ['评论页面格式异常', 'Cookie 可能已过期，或 E-Hentai 页面结构已变化。', false],
+};
+
+export function presentEhError(code, detail = '') {
+  const known = PRESENTATIONS[code];
+  if (known) {
+    return { title: known[0], detail: known[1], needsCookie: known[2] };
+  }
+  return {
+    title: '无法获取 E-Hentai 评论',
+    detail: trimDetail(detail) || 'Worker 返回未知错误，请稍后重试。',
+    needsCookie: false,
+  };
+}

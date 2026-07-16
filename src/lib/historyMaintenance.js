@@ -1,10 +1,9 @@
-import { lrrApi } from './api';
-import { getHistory, hasRemoteHistory, loadHistoryState, pruneHistoryItems } from './history';
+import { getHistory, loadHistoryState } from './history';
+import { getWatchlist, loadWatchlistState } from './watchlist';
 import { getSyncToken, getWorkerUrl } from './worker-config';
 
 const HISTORY_EXISTENCE_CHECK_KEY = 'lrr_history_existence_checked_at';
-const HISTORY_EXISTENCE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
-const HISTORY_EXISTENCE_CHECK_CONCURRENCY = 4;
+const HISTORY_EXISTENCE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 let checkTimer = null;
 let startupTimer = null;
@@ -40,48 +39,17 @@ export function isArchiveMissingError(err) {
   return err?.status === 400 || err?.status === 404;
 }
 
-async function validateHistoryItem(item) {
-  if (!item?.id) return { id: '', missing: false, checked: false };
-  try {
-    await lrrApi.getArchive(item.id);
-    return { id: item.id, missing: false, checked: true };
-  } catch (err) {
-    return { id: item.id, missing: isArchiveMissingError(err), checked: isArchiveMissingError(err) };
-  }
-}
-
-async function validateInBatches(items) {
-  const missingIds = [];
-  let checkedCount = 0;
-  for (let i = 0; i < items.length; i += HISTORY_EXISTENCE_CHECK_CONCURRENCY) {
-    const batch = items.slice(i, i + HISTORY_EXISTENCE_CHECK_CONCURRENCY);
-    const results = await Promise.all(batch.map(validateHistoryItem));
-    results.forEach((result) => {
-      if (result.checked) checkedCount += 1;
-      if (result.missing && result.id) missingIds.push(result.id);
-    });
-  }
-  return { missingIds, checkedCount };
-}
-
 export async function runHistoryExistenceCheck({ force = false } = {}) {
   if (checkInFlight) return checkInFlight;
   const now = Date.now();
   if (!force && now - readLastCheckedAt() < HISTORY_EXISTENCE_CHECK_INTERVAL_MS) return 0;
 
   checkInFlight = (async () => {
-    const history = hasRemoteHistory()
-      ? (await loadHistoryState().catch(() => ({ histories: getHistory() }))).histories
-      : getHistory();
-    if (history.length === 0) {
-      writeLastCheckedAt();
-      return 0;
-    }
-
-    const { missingIds, checkedCount } = await validateInBatches(history);
-    const removed = await pruneHistoryItems(missingIds);
-    if (checkedCount > 0) writeLastCheckedAt();
-    return removed;
+    const before = getHistory().length + getWatchlist().length;
+    const [historyState, watchlistState] = await Promise.all([loadHistoryState(), loadWatchlistState()]);
+    const after = historyState.histories.length + watchlistState.items.length;
+    writeLastCheckedAt();
+    return Math.max(0, before - after);
   })();
 
   try {
@@ -95,10 +63,10 @@ export function startHistoryExistenceCheckTimer() {
   if (checkTimer) return;
   startupTimer = window.setTimeout(() => {
     startupTimer = null;
-    runHistoryExistenceCheck({ force: true }).catch(() => {});
+    if (document.visibilityState === 'visible') runHistoryExistenceCheck().catch(() => {});
   }, 5000);
   checkTimer = window.setInterval(() => {
-    runHistoryExistenceCheck({ force: true }).catch(() => {});
+    if (document.visibilityState === 'visible') runHistoryExistenceCheck().catch(() => {});
   }, HISTORY_EXISTENCE_CHECK_INTERVAL_MS);
 }
 

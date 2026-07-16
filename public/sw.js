@@ -1,11 +1,10 @@
-// Conservative app-shell worker:
-// - never force-reloads or claims an already running page
-// - keeps a cached app shell for cold/background restores
-// - prefers a fresh index.html when the network responds quickly
-const CACHE = 'lrr-shell-runtime-v3';
+// Each build registers /sw.js with a unique version query. The version is also
+// part of the cache name, so code from different deployments can never mix.
+const BUILD_VERSION = new URL(self.location.href).searchParams.get('v') || 'legacy-v4';
+const CACHE_PREFIX = 'lrr-shell-';
+const CACHE = `${CACHE_PREFIX}${BUILD_VERSION}`;
 const APP_SHELL = '/index.html';
 const STATIC_ASSETS = [APP_SHELL, '/manifest.json'];
-const NAVIGATION_NETWORK_TIMEOUT_MS = 900;
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -26,11 +25,12 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     Promise.all([
       caches.keys().then((keys) =>
-        Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key)))
+        Promise.all(keys.filter((key) => (key.startsWith(CACHE_PREFIX) || key === 'lrr-shell-runtime-v3') && key !== CACHE).map((key) => caches.delete(key)))
       ),
       self.registration.navigationPreload
         ? self.registration.navigationPreload.enable().catch(() => {})
         : Promise.resolve(),
+      self.clients.claim(),
     ])
   );
 });
@@ -72,15 +72,9 @@ function isCacheableResponse(response) {
   return response && response.ok && (response.type === 'basic' || response.type === 'default');
 }
 
-function timeout(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
 function offlineAppShellResponse() {
   return new Response(
-    '<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>LRR 阅读器</title></head><body style="margin:0;background:#181a20;color:#e3e9f3;font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px;box-sizing:border-box"><main style="max-width:360px;text-align:center"><h1 style="font-size:20px;margin:0 0 10px">离线状态</h1><p style="font-size:14px;line-height:1.6;color:#a7b1c2;margin:0">暂时无法连接，也没有可用的缓存页面。恢复网络后请重新打开 LRR 阅读器。</p></main></body></html>',
+    '<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Readoshi</title></head><body style="margin:0;background:#181a20;color:#e3e9f3;font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px;box-sizing:border-box"><main style="max-width:360px;text-align:center"><h1 style="font-size:20px;margin:0 0 10px">离线状态</h1><p style="font-size:14px;line-height:1.6;color:#a7b1c2;margin:0">暂时无法连接，也没有可用的缓存页面。恢复网络后请重新打开 Readoshi。</p></main></body></html>',
     {
       status: 503,
       statusText: 'Service Unavailable',
@@ -121,16 +115,11 @@ function fetchStaticAsset(request) {
 async function handleNavigation(network) {
   const cache = await caches.open(CACHE);
   const cached = await cache.match(APP_SHELL);
-
-  if (!cached) {
-    return network.catch(() => caches.match(APP_SHELL).then((fallback) => fallback || offlineAppShellResponse()));
+  try {
+    return await network;
+  } catch {
+    return cached || offlineAppShellResponse();
   }
-
-  const freshOrTimeout = await Promise.race([
-    network.catch(() => cached),
-    timeout(NAVIGATION_NETWORK_TIMEOUT_MS).then(() => cached),
-  ]);
-  return freshOrTimeout || cached;
 }
 
 async function handleStaticAsset(request, network) {
@@ -141,9 +130,11 @@ async function handleStaticAsset(request, network) {
   }
 
   const cached = await cache.match(request, { ignoreVary: true });
-
-  if (cached) return cached;
-  return network;
+  try {
+    return await network;
+  } catch {
+    return cached || Response.error();
+  }
 }
 
 self.addEventListener('fetch', (event) => {

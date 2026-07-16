@@ -1,14 +1,29 @@
 import { lrrApi } from './api';
+import { getConfigScopeId, migrateLegacyStorageKey } from './configScope';
 
 const CACHE_KEY = 'lrr_categories_cache_v1';
 const UPDATE_INTERVAL = 30 * 60 * 1000;
 
 let categoriesCache = null;
 let categoriesPromise = null;
+let categoriesScope = '';
+
+function cacheKey() {
+  return migrateLegacyStorageKey(CACHE_KEY);
+}
+
+function ensureCurrentScope() {
+  const scope = getConfigScopeId();
+  if (scope !== categoriesScope) {
+    categoriesScope = scope;
+    categoriesCache = null;
+    categoriesPromise = null;
+  }
+}
 
 function loadFromCache() {
   try {
-    const raw = localStorage.getItem(CACHE_KEY);
+    const raw = localStorage.getItem(cacheKey());
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (Date.now() - parsed.t < UPDATE_INTERVAL) return parsed.data;
@@ -17,10 +32,11 @@ function loadFromCache() {
 }
 
 function saveToCache(data) {
-  try { localStorage.setItem(CACHE_KEY, JSON.stringify({ t: Date.now(), data })); } catch {}
+  try { localStorage.setItem(cacheKey(), JSON.stringify({ t: Date.now(), data })); } catch {}
 }
 
 export function getCachedCategories() {
+  ensureCurrentScope();
   return categoriesCache;
 }
 
@@ -33,10 +49,12 @@ async function fetchCategories() {
 }
 
 export function getStoredCategories() {
+  ensureCurrentScope();
   return loadFromCache();
 }
 
 export async function loadCategories(options = {}) {
+  ensureCurrentScope();
   const { cacheOnly = false } = options;
   const cached = loadFromCache();
   if (cached) {
@@ -64,13 +82,15 @@ export async function loadCategories(options = {}) {
 }
 
 export function clearCategoriesCache() {
+  ensureCurrentScope();
   categoriesCache = null;
-  try { localStorage.removeItem(CACHE_KEY); } catch {}
+  try { localStorage.removeItem(cacheKey()); } catch {}
 }
 
 let updateTimer = null;
 
 export function startCategoriesUpdateTimer() {
+  ensureCurrentScope();
   stopCategoriesUpdateTimer();
   const doUpdate = async () => {
     try {

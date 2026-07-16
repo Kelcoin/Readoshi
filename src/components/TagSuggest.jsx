@@ -1,22 +1,26 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { searchTags, isDBReady, NAMESPACE_COLORS_MAP, NS_CN_LABELS } from '../lib/tags';
 
 const COLORS = NAMESPACE_COLORS_MAP || {};
 
 const NS_COLORS = {
-  artist: COLORS.artist || '#f0ad4e',
-  parody: COLORS.parody || '#5bc0de',
-  category: COLORS.category || '#a0e7e5',
-  character: COLORS.character || '#a5dc86',
-  female: COLORS.female || '#f27474',
-  male: COLORS.male || '#74b9ff',
-  group: COLORS.group || '#a29bfe',
-  series: COLORS.series || '#fd79a8',
-  language: COLORS.language || '#55efc4',
-  date_added: COLORS.date_added || '#8899aa',
-  timestamp: COLORS.timestamp || '#8899aa',
-  source: COLORS.source || '#7ec8e3',
-  general: COLORS.general || '#b2bec3'
+  artist: COLORS.artist || '#e0994c',
+  parody: COLORS.parody || '#5aa9d4',
+  category: COLORS.category || '#7ec7c5',
+  character: COLORS.character || '#8ec274',
+  female: COLORS.female || '#de7680',
+  male: COLORS.male || '#72a3db',
+  mixed: COLORS.mixed || '#d6aa38',
+  other: COLORS.other || '#a5afb4',
+  group: COLORS.group || '#948cd9',
+  series: COLORS.series || '#e0759e',
+  language: COLORS.language || '#64c9a9',
+  uploader: COLORS.uploader || '#78afc4',
+  date_added: COLORS.date_added || '#8c9baa',
+  timestamp: COLORS.timestamp || '#8c9baa',
+  source: COLORS.source || '#78afc4',
+  general: COLORS.general || '#a5afb4'
 };
 
 export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSetActive }) {
@@ -27,6 +31,7 @@ export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSe
   const debounceRef = useRef(null);
   const dismissTimerRef = useRef(null);
   const [panelShift, setPanelShift] = useState(0); // mobile: px to shift panel left
+  const [anchor, setAnchor] = useState(null);
 
   const updateSuggestions = useCallback((val) => {
     if (!isDBReady()) {
@@ -78,6 +83,24 @@ export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSe
       setPanelShift(parentRect.left - 16);
     }
   }, [visible, isNarrow, containerRef]);
+
+  useEffect(() => {
+    if (!visible || !containerRef?.current) { setAnchor(null); return undefined; }
+    const update = () => {
+      const rect = containerRef.current.getBoundingClientRect();
+      const gap = 6;
+      const viewportGap = 12;
+      const below = window.innerHeight - rect.bottom - gap - viewportGap;
+      const above = rect.top - gap - viewportGap;
+      const openAbove = below < 180 && above > below;
+      const maxHeight = Math.max(120, Math.min(320, openAbove ? above : below));
+      setAnchor({ left: Math.max(viewportGap, Math.min(rect.left, window.innerWidth - rect.width - viewportGap)), top: openAbove ? Math.max(viewportGap, rect.top - gap - maxHeight) : rect.bottom + gap, width: rect.width, maxHeight });
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => { window.removeEventListener('resize', update); window.removeEventListener('scroll', update, true); };
+  }, [containerRef, visible]);
 
   // ── Dismiss on outside click/tap ──
   // Panel uses stopPropagation to prevent events from reaching document.
@@ -146,19 +169,29 @@ export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSe
     overflowY: 'auto',
     overflowX: 'hidden',
     WebkitOverflowScrolling: 'touch',
-    background: 'rgba(22, 24, 32, 0.98)',
+    background: 'var(--dropdown-bg)',
     backdropFilter: 'blur(24px)',
     WebkitBackdropFilter: 'blur(24px)',
-    border: '1px solid rgba(255,255,255,0.12)',
+    border: '1px solid var(--glass-border)',
     borderRadius: '12px',
-    boxShadow: '0 12px 40px rgba(0,0,0,0.55)',
+    boxShadow: 'var(--shadow)',
     padding: '6px 0',
   };
 
   // Desktop: absolute, anchored below the input
   // Mobile: absolute with negative left shift, fills viewport width
   let panelStyle;
-  if (isNarrow) {
+  if (anchor) {
+    panelStyle = {
+      ...basePanel,
+      position: 'fixed',
+      left: anchor.left,
+      top: anchor.top,
+      width: anchor.width,
+      maxHeight: anchor.maxHeight,
+      zIndex: 200000,
+    };
+  } else if (isNarrow) {
     panelStyle = {
       ...basePanel,
       position: 'absolute',
@@ -182,12 +215,13 @@ export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSe
     };
   }
 
-  return (
-    <div onKeyDown={handleKeyDown} tabIndex={-1} style={{ outline: 'none', position: 'relative' }}>
+  return createPortal(
       <div
         ref={listRef}
         className="dropdown-animate no-scrollbar"
         style={panelStyle}
+        onKeyDown={handleKeyDown}
+        tabIndex={-1}
         onMouseDown={(e) => e.stopPropagation()}
         onTouchStart={(e) => e.stopPropagation()}
       >
@@ -216,7 +250,7 @@ export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSe
                   display: 'flex',
                   flexDirection: 'column',
                   gap: '2px',
-                  background: activeIndex === idx ? 'rgba(255,255,255,0.1)' : 'transparent',
+                  background: activeIndex === idx ? 'var(--accent-soft)' : 'transparent',
                   transition: 'background 0.1s',
                   userSelect: 'none',
                   WebkitUserSelect: 'none',
@@ -228,8 +262,8 @@ export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSe
                     fontSize: '10px',
                     fontWeight: 600,
                     color: nsColor,
-                    background: `${nsColor}22`,
-                    border: `1px solid ${nsColor}44`,
+                    background: `${nsColor}24`,
+                    border: `1px solid ${nsColor}66`,
                     borderRadius: '4px',
                     padding: '1px 5px',
                     whiteSpace: 'nowrap',
@@ -240,7 +274,7 @@ export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSe
                     {nsLabel}
                   </span>
                   <span style={{
-                    color: '#e0e6f0',
+                    color: 'var(--text-main)',
                     fontSize: '13px',
                     flex: 1,
                     minWidth: 0,
@@ -254,7 +288,7 @@ export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSe
                 {/* Row 2: original tag (small, gray) */}
                 <span style={{
                   fontSize: '10px',
-                  color: '#888',
+                  color: 'var(--text-muted)',
                   whiteSpace: 'nowrap',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
@@ -280,7 +314,7 @@ export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSe
                 alignItems: 'center',
                 gap: '10px',
                 fontSize: '13px',
-                background: activeIndex === idx ? 'rgba(255,255,255,0.1)' : 'transparent',
+                background: activeIndex === idx ? 'var(--accent-soft)' : 'transparent',
                 transition: 'background 0.1s',
                 userSelect: 'none',
               }}
@@ -289,8 +323,8 @@ export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSe
                 fontSize: '10px',
                 fontWeight: 600,
                 color: nsColor,
-                background: `${nsColor}22`,
-                border: `1px solid ${nsColor}44`,
+                background: `${nsColor}24`,
+                border: `1px solid ${nsColor}66`,
                 borderRadius: '4px',
                 padding: '1px 5px',
                 whiteSpace: 'nowrap',
@@ -300,16 +334,16 @@ export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSe
               }}>
                 {nsLabel}
               </span>
-              <span style={{ color: '#e0e6f0', flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              <span style={{ color: 'var(--text-main)', flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {label}
               </span>
-              <span style={{ fontSize: '10px', color: '#888', whiteSpace: 'nowrap', flexShrink: 0 }}>
+              <span style={{ fontSize: '10px', color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>
                 {tag.length > 30 ? tag.slice(0, 30) + '...' : tag}
               </span>
             </div>
           );
         })}
-      </div>
-    </div>
+      </div>,
+    document.body,
   );
 }

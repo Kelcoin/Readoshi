@@ -2,7 +2,7 @@ import React, { useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 
 function clampMenuPosition(x, y, height = 178) {
-  const width = 178;
+  const width = 150;
   const gap = 8;
   return {
     left: Math.min(Math.max(gap, x), Math.max(gap, window.innerWidth - width - gap)),
@@ -14,29 +14,21 @@ function MenuButton({ children, danger = false, onClick }) {
   return (
     <button
       type="button"
+      role="menuitem"
+      className={`archive-context-menu-item${danger ? ' is-danger' : ''}`}
       onClick={onClick}
-      style={{
-        width: '100%',
-        padding: '9px 12px',
-        border: 'none',
-        borderRadius: '6px',
-        background: 'transparent',
-        color: danger ? '#ff8f8f' : '#e8edf5',
-        fontSize: '13px',
-        textAlign: 'left',
-        cursor: 'pointer',
-      }}
-      onMouseEnter={(e) => { e.currentTarget.style.background = danger ? 'rgba(244,67,54,0.14)' : 'rgba(255,255,255,0.08)'; }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
     >
       {children}
     </button>
   );
 }
 
-export default function ArchiveContextMenu({ menu, onClose, onRead, onDownload, onDelete, onCopyLink, onRemoveHistory }) {
+export default function ArchiveContextMenu({ menu, onClose, onRead, onEditMetadata, onDownload, onDelete, onCopyLink, onRemoveHistory, onAddWatchlist, onRemoveWatchlist }) {
   const showRemoveHistory = !!menu?.showRemoveHistory && !!onRemoveHistory;
-  const menuHeight = showRemoveHistory ? 214 : 178;
+  const showRemoveWatchlist = !!menu?.showRemoveWatchlist && !!onRemoveWatchlist;
+  const showAddWatchlist = !showRemoveWatchlist && !!onAddWatchlist;
+  const extraRows = (showRemoveHistory ? 1 : 0) + (showRemoveWatchlist || showAddWatchlist ? 1 : 0) + (onDelete ? 1 : 0) + (onEditMetadata ? 1 : 0);
+  const menuHeight = 142 + extraRows * 36;
   const pos = useMemo(() => clampMenuPosition(menu?.x || 0, menu?.y || 0, menuHeight), [menu?.x, menu?.y, menuHeight]);
 
   useEffect(() => {
@@ -68,29 +60,23 @@ export default function ArchiveContextMenu({ menu, onClose, onRead, onDownload, 
   return createPortal(
     <div
       role="menu"
+      className="archive-context-menu dropdown-animate"
       onPointerDown={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
       style={{
-        position: 'fixed',
         left: `${pos.left}px`,
         top: `${pos.top}px`,
-        zIndex: 100000,
-        width: '178px',
-        padding: '6px',
-        borderRadius: '8px',
-        border: '1px solid rgba(255,255,255,0.12)',
-        background: 'rgba(18,20,27,0.98)',
-        boxShadow: '0 14px 42px rgba(0,0,0,0.48)',
-        backdropFilter: 'blur(18px)',
-        WebkitBackdropFilter: 'blur(18px)',
       }}
     >
       <MenuButton onClick={run(onRead)}>阅读</MenuButton>
+      {onEditMetadata && <MenuButton onClick={run(onEditMetadata)}>编辑元数据</MenuButton>}
       <MenuButton onClick={run(onDownload)}>下载</MenuButton>
       <MenuButton onClick={run(onCopyLink)}>复制链接</MenuButton>
+      {showAddWatchlist && <MenuButton onClick={run(onAddWatchlist)}>加入待看</MenuButton>}
+      {showRemoveWatchlist && <MenuButton danger onClick={run(onRemoveWatchlist)}>取消待看</MenuButton>}
       {showRemoveHistory && <MenuButton danger onClick={run(onRemoveHistory)}>删除历史记录</MenuButton>}
-      <div style={{ height: '1px', background: 'rgba(255,255,255,0.08)', margin: '4px 2px' }} />
-      <MenuButton danger onClick={run(onDelete)}>删除</MenuButton>
+      {onDelete && <div className="archive-context-menu-divider" />}
+      {onDelete && <MenuButton danger onClick={run(onDelete)}>删除</MenuButton>}
     </div>,
     document.body,
   );

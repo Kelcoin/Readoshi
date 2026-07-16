@@ -5,15 +5,35 @@ addEventListener('fetch', (event) => {
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, x-sync-token',
+  'Access-Control-Allow-Headers': 'Content-Type, Content-Encoding, x-sync-token, x-lrr-server-scope',
   'Access-Control-Max-Age': '86400',
 };
+
+const DEDUPE_KEY_PREFIX = 'dedupe:';
+const SYNC_SCHEMA_VERSION = 3;
+const PROJECT_NAME = 'Readoshi';
+const PROJECT_URL = 'https://github.com/Kelcoin/Readoshi';
+const FALLBACK_APP_VERSION = 'v1.1.0+944d658';
+// Increment when Worker behavior changes so deployed copies can detect updates.
+const WORKER_RELEASE = 1;
+const WORKER_UPDATE_BRANCHES = ['main', 'dev'];
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
     headers: Object.assign({}, CORS, { 'Content-Type': 'application/json' }),
   });
+}
+
+async function readJsonBody(request) {
+  const encoding = (request.headers.get('content-encoding') || '').trim().toLowerCase();
+  if (!encoding || encoding === 'identity') return request.json();
+  if (encoding !== 'gzip') throw new Error('Unsupported Content-Encoding: ' + encoding);
+  if (!request.body || typeof DecompressionStream === 'undefined') {
+    throw new Error('Gzip request decoding is unavailable');
+  }
+  const stream = request.body.pipeThrough(new DecompressionStream('gzip'));
+  return new Response(stream, { headers: { 'Content-Type': 'application/json' } }).json();
 }
 
 function text(data, status = 200, extraHeaders = {}) {
@@ -23,11 +43,104 @@ function text(data, status = 200, extraHeaders = {}) {
   });
 }
 
+function getWorkerUpdateBranch() {
+  const configured = typeof WORKER_UPDATE_BRANCH !== 'undefined'
+    ? String(WORKER_UPDATE_BRANCH).trim().toLowerCase()
+    : '';
+  return WORKER_UPDATE_BRANCHES.includes(configured) ? configured : 'main';
+}
+
+function getWorkerSourceUrl(branch) {
+  return `https://raw.githubusercontent.com/Kelcoin/Readoshi/${branch}/worker.js`;
+}
+
+function parseWorkerRelease(source) {
+  const match = String(source || '').match(/const WORKER_RELEASE\s*=\s*(\d+)\s*;/);
+  return match ? Number(match[1]) : null;
+}
+
+async function fetchWorkerSource(url) {
+  let timeoutId;
+  try {
+    return await Promise.race([
+      fetch(url, { headers: { Accept: 'text/plain' } }),
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('Worker update check timed out')), 4000);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+async function checkWorkerUpdate() {
+  const branch = getWorkerUpdateBranch();
+  const sourceUrl = getWorkerSourceUrl(branch);
+  try {
+    const cache = typeof caches !== 'undefined' ? caches.default : null;
+    let response = cache ? await cache.match(sourceUrl) : null;
+    if (!response) {
+      response = await fetchWorkerSource(sourceUrl);
+      if (!response.ok) throw new Error(`GitHub returned HTTP ${response.status}`);
+      const source = await response.text();
+      if (cache) {
+        const cached = new Response(source, {
+          headers: {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Cache-Control': 'public, max-age=21600',
+          },
+        });
+        await cache.put(sourceUrl, cached).catch(() => {});
+      }
+      const remoteRelease = parseWorkerRelease(source);
+      if (!Number.isInteger(remoteRelease)) throw new Error('Remote Worker release marker missing');
+      return { status: remoteRelease > WORKER_RELEASE ? 'update' : 'current', branch, sourceUrl, remoteRelease };
+    }
+    const remoteRelease = parseWorkerRelease(await response.text());
+    if (!Number.isInteger(remoteRelease)) throw new Error('Cached Worker release marker missing');
+    return { status: remoteRelease > WORKER_RELEASE ? 'update' : 'current', branch, sourceUrl, remoteRelease };
+  } catch {
+    return { status: 'unavailable', branch, sourceUrl, remoteRelease: null };
+  }
+}
+
 // ── Memory-Cached State (loaded once at first request) ──────────
 let tokenLoadPromise = null;      // Promise that resolves once KV tokens are loaded
 let cachedTokens = new Set();     // Set<string>; empty set means no token can pass
 let authEnabled = true;           // Worker auth is mandatory for sync and EH proxy routes
 let requestCount = 0;             // in-memory counter, seeded from KV on first load
+let statusSummaryCache = null;
+let statusSummaryLoadedAt = 0;
+let statusSummaryPromise = null;
+const STATUS_SUMMARY_TTL_MS = 5 * 60 * 1000;
+const mutationLocks = new Map();
+
+async function withMutationLock(key, operation) {
+  const previous = mutationLocks.get(key) || Promise.resolve();
+  const current = previous.catch(() => {}).then(operation);
+  mutationLocks.set(key, current);
+  try {
+    return await current;
+  } finally {
+    if (mutationLocks.get(key) === current) mutationLocks.delete(key);
+  }
+}
+
+async function readKvJson(key, fallback) {
+  const raw = await HISTORY_KV.get(key);
+  return raw ? JSON.parse(raw) : fallback;
+}
+
+async function readScopedKvJson(key, legacyKey, fallback) {
+  const raw = await HISTORY_KV.get(key);
+  if (raw) return JSON.parse(raw);
+  if (!legacyKey) return fallback;
+  const legacyRaw = await HISTORY_KV.get(legacyKey);
+  if (!legacyRaw) return fallback;
+  await HISTORY_KV.put(key, legacyRaw);
+  await HISTORY_KV.delete(legacyKey);
+  return JSON.parse(legacyRaw);
+}
 
 // ── IP Rate Limiter ────────────────────────────────────────────
 // In-memory only (resets on cold start).  Tracks failed auths per IP.
@@ -159,8 +272,7 @@ async function requireAuth(request) {
     }, 429);
   }
 
-  const url = new URL(request.url);
-  const token = request.headers.get('x-sync-token') || url.searchParams.get('token') || '';
+  const token = request.headers.get('x-sync-token') || '';
 
   if (!isValidToken(token)) {
     recordAuthFailure(ip);
@@ -182,6 +294,41 @@ function buildEHHeaders(hostname, cookie) {
   };
   if (cookie) h['Cookie'] = cookie;
   return h;
+}
+
+const EH_HOSTS = new Set(['e-hentai.org', 'exhentai.org', 'api.e-hentai.org']);
+
+function parseAllowedEhUrl(value, { galleryOnly = false } = {}) {
+  let url;
+  try { url = new URL(value); } catch { return null; }
+  const hostname = url.hostname.toLowerCase();
+  if (url.protocol !== 'https:') return null;
+  if (url.port && url.port !== '443') return null;
+  if (galleryOnly ? !['e-hentai.org', 'exhentai.org'].includes(hostname) : !EH_HOSTS.has(hostname)) return null;
+  if (url.username || url.password) return null;
+  return url;
+}
+
+async function safeEhFetch(input, init = {}, { galleryOnly = false, maxRedirects = 5 } = {}) {
+  let url = parseAllowedEhUrl(input, { galleryOnly });
+  if (!url) throw new Error('Invalid EH target');
+  let options = { ...init, redirect: 'manual' };
+  for (let redirects = 0; redirects <= maxRedirects; redirects += 1) {
+    const response = await fetch(url.toString(), options);
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    if (redirects === maxRedirects) throw new Error('Too many EH redirects');
+    const location = response.headers.get('location');
+    const nextUrl = location ? parseAllowedEhUrl(new URL(location, url).toString(), { galleryOnly }) : null;
+    if (!nextUrl) throw new Error('Blocked EH redirect');
+    if (nextUrl.origin !== url.origin) throw new Error('Blocked cross-origin EH redirect');
+    if (response.status === 303 || ((response.status === 301 || response.status === 302) && options.method === 'POST')) {
+      const headers = new Headers(options.headers || {});
+      headers.delete('Content-Type');
+      options = { ...options, method: 'GET', body: undefined, headers };
+    }
+    url = nextUrl;
+  }
+  throw new Error('Too many EH redirects');
 }
 
 // ── EH Gallery Proxy (POST /) ──────────────────────────────────
@@ -221,18 +368,16 @@ async function ehProxy(request) {
 
   let targetUrl = url;
   if (!/^https?:\/\//i.test(targetUrl)) targetUrl = 'https://' + targetUrl;
-
-  const u = new URL(targetUrl);
-  if (!/(exhentai\.org|e-hentai\.org)$/i.test(u.hostname)) {
+  const u = parseAllowedEhUrl(targetUrl, { galleryOnly: true });
+  if (!u) {
     return json({ error: 'Invalid host' }, 403);
   }
 
   try {
-    const res = await fetch(targetUrl, {
+    const res = await safeEhFetch(targetUrl, {
       headers: buildEHHeaders(u.hostname, cookie),
-      redirect: 'follow',
       cf: { cacheEverything: false },
-    });
+    }, { galleryOnly: true });
 
     const htmlText = await res.text();
 
@@ -258,7 +403,13 @@ async function ehProxy(request) {
       return json({ error: 'EH_EMPTY_RESPONSE', status: 200, detail: 'EH 返回了空白或极短页面' }, 403);
     }
 
-    if (!htmlText.includes('#cdiv') && !htmlText.includes('commentthread') && !htmlText.includes('gid')) {
+    const hasGalleryStructure = (
+      /id=["']cdiv["']/i.test(htmlText) ||
+      /class=["'][^"']*\bc1\b/i.test(htmlText) ||
+      /var\s+gid\s*=\s*\d+/i.test(htmlText) ||
+      /var\s+token\s*=\s*["'][^"']+["']/i.test(htmlText)
+    );
+    if (!hasGalleryStructure) {
       return json({
         error: 'EH_UNEXPECTED_PAGE',
         status: 200,
@@ -268,7 +419,7 @@ async function ehProxy(request) {
 
     return text(htmlText, 200, { 'Cache-Control': 'no-store' });
   } catch (err) {
-    return text('Fetch failed: ' + err.message, 502);
+    return json({ error: 'EH_FETCH_FAILED' }, 502);
   }
 }
 
@@ -286,8 +437,8 @@ async function ehApiProxy(request) {
   const { apiUrl, cookie, payload } = body || {};
   if (!apiUrl || !payload) return json({ error: 'Missing apiUrl or payload' }, 400);
 
-  const u = new URL(apiUrl);
-  if (!/(e-hentai\.org|exhentai\.org)$/i.test(u.hostname)) {
+  const u = parseAllowedEhUrl(apiUrl);
+  if (!u) {
     return json({ error: 'Invalid API host' }, 403);
   }
 
@@ -299,7 +450,7 @@ async function ehApiProxy(request) {
   if (cookie) headers['Cookie'] = cookie;
 
   try {
-    const res = await fetch(apiUrl, {
+    const res = await safeEhFetch(apiUrl, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload),
@@ -307,7 +458,7 @@ async function ehApiProxy(request) {
     const data = await res.json();
     return json(data, res.status);
   } catch (err) {
-    return json({ error: 'API request failed: ' + err.message }, 502);
+    return json({ error: 'EH_API_REQUEST_FAILED' }, 502);
   }
 }
 
@@ -325,8 +476,8 @@ async function ehCommentProxy(request) {
   const { galleryUrl, cookie, formBody, referer } = body || {};
   if (!galleryUrl || !formBody) return json({ error: 'Missing galleryUrl or formBody' }, 400);
 
-  const u = new URL(galleryUrl);
-  if (!/(exhentai\.org|e-hentai\.org)$/i.test(u.hostname)) {
+  const u = parseAllowedEhUrl(galleryUrl, { galleryOnly: true });
+  if (!u) {
     return json({ error: 'Invalid host' }, 403);
   }
 
@@ -339,15 +490,14 @@ async function ehCommentProxy(request) {
   if (cookie) headers['Cookie'] = cookie;
 
   try {
-    const res = await fetch(galleryUrl, {
+    const res = await safeEhFetch(galleryUrl, {
       method: 'POST',
       headers,
       body: formBody,
-      redirect: 'follow',
-    });
+    }, { galleryOnly: true });
     return text(await res.text(), res.status, { 'Cache-Control': 'no-store' });
   } catch (err) {
-    return json({ error: 'Comment post failed: ' + err.message }, 502);
+    return json({ error: 'EH_COMMENT_FAILED' }, 502);
   }
 }
 
@@ -356,8 +506,8 @@ function parseEhGalleryUrl(rawUrl) {
   let targetUrl = (rawUrl || '').replace(/^source:\s*/i, '').trim();
   if (!targetUrl) return null;
   if (!/^https?:\/\//i.test(targetUrl)) targetUrl = 'https://' + targetUrl;
-  const u = new URL(targetUrl);
-  if (!/(exhentai\.org|e-hentai\.org)$/i.test(u.hostname)) return null;
+  const u = parseAllowedEhUrl(targetUrl, { galleryOnly: true });
+  if (!u) return null;
   const match = u.pathname.match(/^\/g\/(\d+)\/([0-9a-f]+)\/?/i);
   if (!match) return null;
   return {
@@ -428,11 +578,10 @@ async function ehFavoriteProxy(request) {
   headers.Referer = parsed.galleryUrl;
 
   try {
-    const popupRes = await fetch(popupUrl, {
+    const popupRes = await safeEhFetch(popupUrl, {
       headers,
-      redirect: 'follow',
       cf: { cacheEverything: false },
-    });
+    }, { galleryOnly: true });
     const popupHtml = await popupRes.text();
     if (!popupRes.ok) return json({ error: 'EH_POPUP_FAILED', detail: `获取收藏表单失败 (HTTP ${popupRes.status})` }, popupRes.status);
 
@@ -451,17 +600,19 @@ async function ehFavoriteProxy(request) {
 
     const formBody = new URLSearchParams(payload).toString();
     const actionUrl = findGalpopAction(popupHtml, popupUrl);
+    if (!parseAllowedEhUrl(actionUrl, { galleryOnly: true })) {
+      return json({ error: 'EH_FAVORITE_ACTION_BLOCKED' }, 502);
+    }
     const postHeaders = buildEHHeaders(parsed.hostname, cookie);
     postHeaders['Content-Type'] = 'application/x-www-form-urlencoded';
     postHeaders.Referer = popupUrl;
 
-    const postRes = await fetch(actionUrl, {
+    const postRes = await safeEhFetch(actionUrl, {
       method: 'POST',
       headers: postHeaders,
       body: formBody,
-      redirect: 'follow',
       cf: { cacheEverything: false },
-    });
+    }, { galleryOnly: true });
     const postText = await postRes.text();
     if (!postRes.ok) return json({ error: 'EH_FAVORITE_REMOVE_FAILED', detail: `提交收藏夹移除失败 (HTTP ${postRes.status})` }, postRes.status);
 
@@ -471,14 +622,113 @@ async function ehFavoriteProxy(request) {
 
     return json({ ok: true, gid: parsed.gid, action: 'removed' });
   } catch (err) {
-    return json({ error: 'EH_FAVORITE_REQUEST_FAILED', detail: err.message }, 502);
+    return json({ error: 'EH_FAVORITE_REQUEST_FAILED' }, 502);
   }
 }
 
 // ── History Sync (GET/PUT /history) ────────────────────────────
 function getToken(request) {
-  const url = new URL(request.url);
-  return request.headers.get('x-sync-token') || url.searchParams.get('token') || '';
+  return request.headers.get('x-sync-token') || '';
+}
+
+function normalizePairKey(value) {
+  const parts = String(value || '').split('|').map(part => part.trim()).filter(Boolean);
+  if (parts.length !== 2 || parts[0] === parts[1]) return '';
+  return parts.sort().join('|');
+}
+
+function normalizePairKeys(values) {
+  return Array.from(new Set((Array.isArray(values) ? values : [])
+    .map(normalizePairKey)
+    .filter(Boolean)))
+    .sort();
+}
+
+function getDedupeKey(request) {
+  const scope = getServerScope(request);
+  if (!scope) return '';
+  return `${DEDUPE_KEY_PREFIX}${getToken(request)}:${scope}:non-duplicates`;
+}
+
+function getServerScope(request) {
+  const scope = (request.headers.get('x-lrr-server-scope') || '').trim().toLowerCase();
+  return /^[a-f0-9]{32}$/.test(scope) ? scope : '';
+}
+
+function getSyncKey(kind, request) {
+  const scope = getServerScope(request);
+  return scope ? `${kind}:${getToken(request)}:${scope}` : '';
+}
+
+const DEFAULT_HISTORY_RETENTION_DAYS = 90;
+let cachedHistoryRetentionDays = null;
+let historyRetentionLoadedAt = 0;
+const HISTORY_RETENTION_CACHE_MS = 60 * 1000;
+
+async function getHistoryRetentionDays() {
+  const now = Date.now();
+  if (cachedHistoryRetentionDays != null && now - historyRetentionLoadedAt < HISTORY_RETENTION_CACHE_MS) return cachedHistoryRetentionDays;
+  try {
+    const raw = await HISTORY_KV.get('history_retention_days');
+    const days = Number(raw);
+    cachedHistoryRetentionDays = Number.isFinite(days) && days > 0 ? days : DEFAULT_HISTORY_RETENTION_DAYS;
+  } catch {
+    cachedHistoryRetentionDays = DEFAULT_HISTORY_RETENTION_DAYS;
+  }
+  historyRetentionLoadedAt = now;
+  return cachedHistoryRetentionDays;
+}
+
+function historyTimestamp(item) {
+  const value = Number(item?.time || item?.updatedAt || item?.date || 0);
+  return value > 0 && value < 1e12 ? value * 1000 : value;
+}
+
+function normalizeHistoryItems(values) {
+  const merged = new Map();
+  for (const item of Array.isArray(values) ? values : []) {
+    const id = String(item?.id || item?.arcid || '').trim();
+    if (!id) continue;
+    const normalized = {
+      id,
+      page: Math.max(0, Number(item.page) || 0),
+      time: historyTimestamp(item),
+    };
+    const old = merged.get(id);
+    if (!old || normalized.time >= old.time) merged.set(id, normalized);
+  }
+  return Array.from(merged.values());
+}
+
+function normalizeDeletedItems(values, retentionDays = DEFAULT_HISTORY_RETENTION_DAYS, now = Date.now()) {
+  const cutoff = now - retentionDays * 24 * 60 * 60 * 1000;
+  const merged = new Map();
+  for (const item of Array.isArray(values) ? values : []) {
+    const id = String(item?.id || item?.arcid || '').trim();
+    if (!id) continue;
+    const deletedAt = Number(item.deletedAt) || 0;
+    if (deletedAt >= cutoff && deletedAt >= (merged.get(id) || 0)) merged.set(id, deletedAt);
+  }
+  return Array.from(merged.entries())
+    .map(([id, deletedAt]) => ({ id, deletedAt }))
+    .sort((a, b) => b.deletedAt - a.deletedAt);
+}
+
+function pruneHistoriesByRetention(histories, retentionDays, now = Date.now()) {
+  const cutoff = now - retentionDays * 24 * 60 * 60 * 1000;
+  return normalizeHistoryItems(histories)
+    .filter((item) => item?.id && historyTimestamp(item) >= cutoff)
+    .sort((a, b) => historyTimestamp(b) - historyTimestamp(a));
+}
+
+function compactHistoryState(state, retentionDays) {
+  return {
+    schemaVersion: SYNC_SCHEMA_VERSION,
+    histories: pruneHistoriesByRetention(state?.histories, retentionDays),
+    hideRead: !!state?.hideRead,
+    deleted: normalizeDeletedItems(state?.deleted, retentionDays),
+    lastSync: Number(state?.lastSync) || 0,
+  };
 }
 
 async function getHistory(request) {
@@ -486,11 +736,14 @@ async function getHistory(request) {
   if (authErr) return authErr;
   incrementCounter();
 
-  const token = getToken(request);
+  const historyKey = getSyncKey('history', request);
+  if (!historyKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
   try {
-    const raw = await HISTORY_KV.get('history:' + token);
-    if (!raw) return json({ histories: [], hideRead: false, deleted: [], lastSync: 0 });
-    return json(JSON.parse(raw));
+    const state = await readScopedKvJson(historyKey, 'history:' + getToken(request), null);
+    if (!state) return json({ schemaVersion: SYNC_SCHEMA_VERSION, histories: [], hideRead: false, deleted: [], lastSync: 0 });
+    const retentionDays = await getHistoryRetentionDays();
+    const compacted = compactHistoryState(state, retentionDays);
+    return json({ ...compacted, retentionDays });
   } catch (err) {
     return json({ error: 'KV read failed: ' + err.message }, 500);
   }
@@ -501,11 +754,9 @@ async function putHistory(request) {
   if (authErr) return authErr;
   incrementCounter();
 
-  const token = getToken(request);
-
   let payload;
-  try { payload = await request.json(); } catch {
-    return json({ error: 'Invalid JSON' }, 400);
+  try { payload = await readJsonBody(request); } catch (err) {
+    return json({ error: 'Invalid JSON', detail: err.message }, 400);
   }
 
   const { histories, history, hideRead, deleted } = payload || {};
@@ -514,12 +765,11 @@ async function putHistory(request) {
   if (deleted !== undefined && !Array.isArray(deleted)) return json({ error: 'Invalid deleted array' }, 400);
   const incomingHistories = Array.isArray(histories) ? histories : (history ? [history] : []);
 
-  const existing = await (async () => {
-    try {
-      const raw = await HISTORY_KV.get('history:' + token);
-      return raw ? JSON.parse(raw) : { histories: [], hideRead: false, deleted: [] };
-    } catch { return { histories: [], hideRead: false, deleted: [] }; }
-  })();
+  const historyKey = getSyncKey('history', request);
+  if (!historyKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
+  try {
+    return await withMutationLock(historyKey, async () => {
+      const existing = await readScopedKvJson(historyKey, 'history:' + getToken(request), { histories: [], hideRead: false, deleted: [] });
 
   const deletedMap = new Map();
   for (const item of Array.isArray(existing.deleted) ? existing.deleted : []) {
@@ -545,7 +795,7 @@ async function putHistory(request) {
     const deletedAt = deletedMap.get(h.id) || 0;
     if ((h.time || 0) <= deletedAt) continue;
     const old = merged.get(h.id);
-    if (!old || (h.time && h.time > (old.time || 0))) {
+    if (!old || (h.time && h.time > (old.time || 0)) || (h.time === old.time && h.page !== old.page)) {
       merged.set(h.id, h);
     }
   }
@@ -557,25 +807,20 @@ async function putHistory(request) {
     }
   }
 
-  const normalizedDeleted = Array.from(deletedMap.entries())
-    .map(([id, deletedAt]) => ({ id, deletedAt }))
-    .sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0))
-    .slice(0, 200);
+      const retentionDays = await getHistoryRetentionDays();
+      const result = {
+        schemaVersion: SYNC_SCHEMA_VERSION,
+        histories: pruneHistoriesByRetention(Array.from(merged.values()), retentionDays),
+        hideRead: hideRead !== undefined ? hideRead : existing.hideRead !== undefined ? existing.hideRead : false,
+        deleted: normalizeDeletedItems(Array.from(deletedMap.entries()).map(([id, deletedAt]) => ({ id, deletedAt })), retentionDays),
+        lastSync: Date.now(),
+      };
 
-  const result = {
-    histories: Array.from(merged.values())
-      .sort((a, b) => (b.time || 0) - (a.time || 0))
-      .slice(0, 50),
-    hideRead: hideRead !== undefined ? hideRead : existing.hideRead !== undefined ? existing.hideRead : false,
-    deleted: normalizedDeleted,
-    lastSync: Date.now(),
-  };
-
-  try {
-    await HISTORY_KV.put('history:' + token, JSON.stringify(result));
-    return json({ ok: true, count: result.histories.length });
+      await HISTORY_KV.put(historyKey, JSON.stringify(result));
+      return json({ ok: true, count: result.histories.length });
+    });
   } catch (err) {
-    return json({ error: 'KV write failed: ' + err.message }, 500);
+    return json({ error: 'KV mutation failed' }, 500);
   }
 }
 
@@ -585,49 +830,380 @@ async function deleteHistory(request) {
   if (authErr) return authErr;
   incrementCounter();
 
-  const token = getToken(request);
   let payload;
-  try { payload = await request.json(); } catch {
-    return json({ error: 'Invalid JSON' }, 400);
+  try { payload = await readJsonBody(request); } catch (err) {
+    return json({ error: 'Invalid JSON', detail: err.message }, 400);
+  }
+
+  const ids = Array.isArray(payload?.ids) ? payload.ids.map(id => String(id).trim()).filter(Boolean) : [];
+  if (ids.length === 0) return json({ error: 'Missing ids array' }, 400);
+  const removeSet = new Set(ids);
+  const historyKey = getSyncKey('history', request);
+  if (!historyKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
+  try {
+    return await withMutationLock(historyKey, async () => {
+      const existing = await readScopedKvJson(historyKey, 'history:' + getToken(request), { histories: [], hideRead: false, deleted: [] });
+      const now = Date.now();
+      const deletedMap = new Map();
+      for (const item of Array.isArray(existing.deleted) ? existing.deleted : []) {
+        if (!item || !item.id) continue;
+        deletedMap.set(item.id, item.deletedAt || 0);
+      }
+      ids.forEach((id) => deletedMap.set(id, now));
+
+      const retentionDays = await getHistoryRetentionDays();
+      const result = {
+        schemaVersion: SYNC_SCHEMA_VERSION,
+        histories: pruneHistoriesByRetention(
+          (Array.isArray(existing.histories) ? existing.histories : []).filter((item) => item?.id && !removeSet.has(item.id)),
+          retentionDays,
+          now,
+        ),
+        hideRead: existing.hideRead !== undefined ? existing.hideRead : false,
+        deleted: normalizeDeletedItems(Array.from(deletedMap.entries()).map(([id, deletedAt]) => ({ id, deletedAt })), retentionDays, now),
+        lastSync: now,
+      };
+      await HISTORY_KV.put(historyKey, JSON.stringify(result));
+      return json({ ok: true, removed: ids.length, count: result.histories.length });
+    });
+  } catch (err) {
+    return json({ error: 'KV mutation failed' }, 500);
+  }
+}
+
+function normalizeWatchlistItems(values) {
+  const merged = new Map();
+  for (const item of Array.isArray(values) ? values : []) {
+    const id = item?.id || item?.arcid;
+    if (!id) continue;
+    const normalized = { id: String(id), addedAt: Number(item.addedAt) || 0 };
+    const old = merged.get(normalized.id);
+    if (!old || (normalized.addedAt || 0) >= (old.addedAt || 0)) merged.set(normalized.id, normalized);
+  }
+  return Array.from(merged.values())
+    .sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0))
+    .slice(0, 500);
+}
+
+async function readWatchlistState(key, request) {
+  return readScopedKvJson(key, 'watchlist:' + getToken(request), { items: [], deleted: [], lastSync: 0 });
+}
+
+function compactWatchlistState(state, now = Date.now()) {
+  const deleted = normalizeDeletedItems(state?.deleted, DEFAULT_HISTORY_RETENTION_DAYS, now);
+  const deletedMap = new Map(deleted.map((item) => [item.id, item.deletedAt]));
+  const items = normalizeWatchlistItems(state?.items)
+    .filter((item) => (item.addedAt || 0) > (deletedMap.get(item.id) || 0));
+  return { schemaVersion: SYNC_SCHEMA_VERSION, items, deleted, lastSync: Number(state?.lastSync) || 0 };
+}
+
+async function getWatchlist(request) {
+  const authErr = await requireAuth(request);
+  if (authErr) return authErr;
+  incrementCounter();
+
+  const watchlistKey = getSyncKey('watchlist', request);
+  if (!watchlistKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
+  try {
+    const state = await readWatchlistState(watchlistKey, request);
+    const compacted = compactWatchlistState(state);
+    return json(compacted);
+  } catch (err) {
+    return json({ error: 'KV read failed: ' + err.message }, 500);
+  }
+}
+
+async function putWatchlist(request) {
+  const authErr = await requireAuth(request);
+  if (authErr) return authErr;
+  incrementCounter();
+
+  let payload;
+  try { payload = await readJsonBody(request); } catch (err) {
+    return json({ error: 'Invalid JSON', detail: err.message }, 400);
+  }
+
+  const incoming = Array.isArray(payload?.items) ? payload.items : (payload?.item ? [payload.item] : []);
+  if (incoming.length === 0) return json({ error: 'Missing item or items' }, 400);
+
+  const watchlistKey = getSyncKey('watchlist', request);
+  if (!watchlistKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
+  try {
+    return await withMutationLock(watchlistKey, async () => {
+      const existing = compactWatchlistState(await readWatchlistState(watchlistKey, request));
+      const deletedMap = new Map(existing.deleted.map((item) => [item.id, item.deletedAt]));
+      const accepted = normalizeWatchlistItems(incoming)
+        .filter((item) => (item.addedAt || 0) > (deletedMap.get(item.id) || 0));
+      for (const item of accepted) deletedMap.delete(item.id);
+      const result = compactWatchlistState({
+        items: [...existing.items, ...accepted],
+        deleted: Array.from(deletedMap, ([id, deletedAt]) => ({ id, deletedAt })),
+        lastSync: Date.now(),
+      });
+      await HISTORY_KV.put(watchlistKey, JSON.stringify(result));
+      return json({ ok: true, count: result.items.length });
+    });
+  } catch (err) {
+    return json({ error: 'KV mutation failed' }, 500);
+  }
+}
+
+async function deleteWatchlist(request) {
+  const authErr = await requireAuth(request);
+  if (authErr) return authErr;
+  incrementCounter();
+
+  let payload;
+  try { payload = await readJsonBody(request); } catch (err) {
+    return json({ error: 'Invalid JSON', detail: err.message }, 400);
   }
 
   const ids = Array.isArray(payload?.ids) ? payload.ids.map(id => String(id).trim()).filter(Boolean) : [];
   if (ids.length === 0) return json({ error: 'Missing ids array' }, 400);
   const removeSet = new Set(ids);
 
-  const existing = await (async () => {
-    try {
-      const raw = await HISTORY_KV.get('history:' + token);
-      return raw ? JSON.parse(raw) : { histories: [], hideRead: false, deleted: [] };
-    } catch { return { histories: [], hideRead: false, deleted: [] }; }
-  })();
-
-  const now = Date.now();
-  const deletedMap = new Map();
-  for (const item of Array.isArray(existing.deleted) ? existing.deleted : []) {
-    if (!item || !item.id) continue;
-    deletedMap.set(item.id, item.deletedAt || 0);
+  const watchlistKey = getSyncKey('watchlist', request);
+  if (!watchlistKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
+  try {
+    return await withMutationLock(watchlistKey, async () => {
+      const existing = compactWatchlistState(await readWatchlistState(watchlistKey, request));
+      const now = Date.now();
+      const deletedMap = new Map(existing.deleted.map((item) => [item.id, item.deletedAt]));
+      ids.forEach((id) => deletedMap.set(id, now));
+      const result = compactWatchlistState({
+        items: existing.items.filter((item) => !removeSet.has(item.id)),
+        deleted: Array.from(deletedMap, ([id, deletedAt]) => ({ id, deletedAt })),
+        lastSync: now,
+      }, now);
+      await HISTORY_KV.put(watchlistKey, JSON.stringify(result));
+      return json({ ok: true, removed: ids.length, count: result.items.length });
+    });
+  } catch (err) {
+    return json({ error: 'KV mutation failed' }, 500);
   }
-  ids.forEach((id) => deletedMap.set(id, now));
+}
 
-  const result = {
-    histories: (Array.isArray(existing.histories) ? existing.histories : [])
-      .filter((item) => item?.id && !removeSet.has(item.id))
-      .sort((a, b) => (b.time || 0) - (a.time || 0))
-      .slice(0, 50),
-    hideRead: existing.hideRead !== undefined ? existing.hideRead : false,
-    deleted: Array.from(deletedMap.entries())
-      .map(([id, deletedAt]) => ({ id, deletedAt }))
-      .sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0))
-      .slice(0, 200),
-    lastSync: now,
+async function getNonDuplicatePairs(request) {
+  const authErr = await requireAuth(request);
+  if (authErr) return authErr;
+  incrementCounter();
+  if (typeof HISTORY_KV === 'undefined') return json({ error: 'KV is not bound' }, 500);
+
+  const dedupeKey = getDedupeKey(request);
+  if (!dedupeKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
+  try {
+    let raw = await HISTORY_KV.get(dedupeKey);
+    if (!raw) {
+      raw = await HISTORY_KV.get('dedupe:non-duplicates');
+      if (raw) {
+        await HISTORY_KV.put(dedupeKey, raw);
+        await HISTORY_KV.delete('dedupe:non-duplicates');
+      }
+    }
+    return json({ pairs: normalizePairKeys(raw ? JSON.parse(raw) : []) });
+  } catch (err) {
+    return json({ error: 'KV read failed: ' + err.message }, 500);
+  }
+}
+
+async function putNonDuplicatePairs(request) {
+  const authErr = await requireAuth(request);
+  if (authErr) return authErr;
+  incrementCounter();
+  if (typeof HISTORY_KV === 'undefined') return json({ error: 'KV is not bound' }, 500);
+
+  let payload;
+  try { payload = await request.json(); } catch {
+    return json({ error: 'Invalid JSON' }, 400);
+  }
+
+  const incoming = normalizePairKeys(payload?.pairs);
+  if (incoming.length === 0) return json({ error: 'Missing pairs array' }, 400);
+  const dedupeKey = getDedupeKey(request);
+  if (!dedupeKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
+
+  try {
+    return await withMutationLock(dedupeKey, async () => {
+      let raw = await HISTORY_KV.get(dedupeKey);
+      if (!raw) {
+        raw = await HISTORY_KV.get('dedupe:non-duplicates');
+        if (raw) await HISTORY_KV.delete('dedupe:non-duplicates');
+      }
+      const existing = normalizePairKeys(raw ? JSON.parse(raw) : []);
+      const next = normalizePairKeys([...existing, ...incoming]);
+      await HISTORY_KV.put(dedupeKey, JSON.stringify(next));
+      return json({ ok: true, count: next.length, added: incoming.length });
+    });
+  } catch (err) {
+    return json({ error: 'KV write failed: ' + err.message }, 500);
+  }
+}
+
+async function listKVKeys(prefix) {
+  const names = [];
+  let cursor;
+  do {
+    const page = await HISTORY_KV.list({ prefix, cursor });
+    for (const key of page.keys || []) names.push(key.name);
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  return names;
+}
+
+function firstObjectValue(obj) {
+  if (!obj || typeof obj !== 'object') return undefined;
+  const values = Object.values(obj);
+  return values.length ? values[0] : undefined;
+}
+
+async function exportKV(request) {
+  let payload;
+  try { payload = await request.json(); } catch {
+    return json({ error: 'Invalid JSON' }, 400);
+  }
+  const authErr = await requireAuth(request);
+  if (authErr) return authErr;
+  incrementCounter();
+  if (typeof HISTORY_KV === 'undefined') return json({ error: 'KV is not bound' }, 500);
+
+  const selected = payload?.sections || {};
+  const includeHistory = selected.history !== false;
+  const includeWatchlist = selected.watchlist !== false;
+  const includeDedupe = selected.dedupe !== false;
+  const historyKey = getSyncKey('history', request);
+  const watchlistKey = getSyncKey('watchlist', request);
+  if ((includeHistory || includeWatchlist) && (!historyKey || !watchlistKey)) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
+  const dedupeKey = getDedupeKey(request);
+  if (includeDedupe && !dedupeKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
+  const data = {
+    version: 3,
+    scope: 'token-and-server-md5',
+    serverScope: getServerScope(request),
+    exportedAt: new Date().toISOString(),
+    sections: {},
   };
 
   try {
-    await HISTORY_KV.put('history:' + token, JSON.stringify(result));
-    return json({ ok: true, removed: ids.length, count: result.histories.length });
+    if (includeHistory) {
+      const raw = await HISTORY_KV.get(historyKey);
+      data.sections.history = { [historyKey]: raw || '' };
+    }
+    if (includeWatchlist) {
+      const raw = await HISTORY_KV.get(watchlistKey);
+      data.sections.watchlist = { [watchlistKey]: raw || '' };
+    }
+    if (includeDedupe) {
+      const raw = await HISTORY_KV.get(dedupeKey);
+      data.sections.dedupe = { [dedupeKey]: raw || '[]' };
+    }
+    return json({ ok: true, data });
   } catch (err) {
-    return json({ error: 'KV write failed: ' + err.message }, 500);
+    return json({ error: 'KV export failed: ' + err.message }, 500);
+  }
+}
+
+async function importKV(request) {
+  let payload;
+  try { payload = await request.json(); } catch {
+    return json({ error: 'Invalid JSON' }, 400);
+  }
+  const authErr = await requireAuth(request);
+  if (authErr) return authErr;
+  incrementCounter();
+  if (typeof HISTORY_KV === 'undefined') return json({ error: 'KV is not bound' }, 500);
+
+  const selected = payload?.sections || {};
+  const input = payload?.data?.sections ? payload.data.sections : payload?.data;
+  if (!input || typeof input !== 'object') return json({ error: 'Invalid import data' }, 400);
+  const dedupeKey = getDedupeKey(request);
+  if (selected.dedupe !== false && input.dedupe && !dedupeKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
+
+  let imported = 0;
+  try {
+    if (selected.history !== false && input.history && typeof input.history === 'object') {
+      const historyKey = getSyncKey('history', request);
+      if (!historyKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
+      const value = input.history[historyKey] ?? firstObjectValue(input.history);
+      if (value !== undefined && value !== null && value !== '') {
+        await HISTORY_KV.put(historyKey, typeof value === 'string' ? value : JSON.stringify(value));
+        imported += 1;
+      }
+    }
+    if (selected.watchlist !== false && input.watchlist && typeof input.watchlist === 'object') {
+      const watchlistKey = getSyncKey('watchlist', request);
+      if (!watchlistKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
+      const value = input.watchlist[watchlistKey] ?? firstObjectValue(input.watchlist);
+      if (value !== undefined && value !== null && value !== '') {
+        await HISTORY_KV.put(watchlistKey, typeof value === 'string' ? value : JSON.stringify(value));
+        imported += 1;
+      }
+    }
+    if (selected.dedupe !== false && input.dedupe && typeof input.dedupe === 'object') {
+      const raw = input.dedupe[dedupeKey] || input.dedupe.pairs || firstObjectValue(input.dedupe) || [];
+      const incoming = normalizePairKeys(typeof raw === 'string' ? JSON.parse(raw || '[]') : raw);
+      await withMutationLock(dedupeKey, async () => {
+        const existingRaw = await HISTORY_KV.get(dedupeKey);
+        const existing = normalizePairKeys(existingRaw ? JSON.parse(existingRaw) : []);
+        const next = normalizePairKeys([...existing, ...incoming]);
+        await HISTORY_KV.put(dedupeKey, JSON.stringify(next));
+      });
+      imported += incoming.length;
+    }
+    return json({ ok: true, imported });
+  } catch (err) {
+    return json({ error: 'KV import failed: ' + err.message }, 500);
+  }
+}
+
+async function getStatusSummary({ force = false } = {}) {
+  if (!force && statusSummaryCache && Date.now() - statusSummaryLoadedAt < STATUS_SUMMARY_TTL_MS) return statusSummaryCache;
+  if (statusSummaryPromise) return statusSummaryPromise;
+  statusSummaryPromise = (async () => {
+    if (typeof HISTORY_KV === 'undefined') {
+      return { totalArchives: 'N/A', userCount: 'N/A', watchlistCount: 'N/A', dedupeCount: 'N/A' };
+    }
+    try {
+      const [historyKeys, watchlistKeys, dedupeKeys] = await Promise.all([
+        listKVKeys('history:'),
+        listKVKeys('watchlist:'),
+        listKVKeys(DEDUPE_KEY_PREFIX),
+      ]);
+      const allIds = new Set();
+      const historyValues = await Promise.all(historyKeys.map((key) => HISTORY_KV.get(key).catch(() => null)));
+      historyValues.forEach((raw) => {
+        try {
+          const data = raw ? JSON.parse(raw) : null;
+          for (const item of Array.isArray(data?.histories) ? data.histories : []) if (item?.id) allIds.add(item.id);
+        } catch {}
+      });
+      const watchlistValues = await Promise.all(watchlistKeys.map((key) => HISTORY_KV.get(key).catch(() => null)));
+      let watchlistCount = 0;
+      watchlistValues.forEach((raw) => {
+        try {
+          const data = raw ? JSON.parse(raw) : null;
+          watchlistCount += Array.isArray(data?.items) ? data.items.length : 0;
+        } catch {}
+      });
+      const dedupeValues = await Promise.all(dedupeKeys.map((key) => HISTORY_KV.get(key).catch(() => null)));
+      const dedupeCount = dedupeValues.reduce((sum, raw) => {
+        try { return sum + normalizePairKeys(raw ? JSON.parse(raw) : []).length; } catch { return sum; }
+      }, 0);
+      return {
+        totalArchives: allIds.size,
+        userCount: historyKeys.length,
+        watchlistCount,
+        dedupeCount,
+      };
+    } catch {
+      return { totalArchives: '错误', userCount: '错误', watchlistCount: '错误', dedupeCount: '错误' };
+    }
+  })();
+  try {
+    statusSummaryCache = await statusSummaryPromise;
+    statusSummaryLoadedAt = Date.now();
+    return statusSummaryCache;
+  } finally {
+    statusSummaryPromise = null;
   }
 }
 
@@ -636,6 +1212,7 @@ async function statusPage(request) {
   const reloadParam = new URL(request.url).searchParams.get('reload');
   if (reloadParam === '1') {
     await reloadTokens();
+    statusSummaryCache = null;
     const nextUrl = new URL(request.url);
     nextUrl.searchParams.delete('reload');
     return Response.redirect(nextUrl.toString(), 302);
@@ -644,33 +1221,22 @@ async function statusPage(request) {
   await ensureTokensLoaded();
   const kvOk = tokenLoadPromise ? (await tokenLoadPromise) : false;
   const reqCount = requestCount;
-  const { totalArchives, userCount } = await (async () => {
-    if (typeof HISTORY_KV === 'undefined') return { totalArchives: 'N/A', userCount: 'N/A' };
-    try {
-      const list = await HISTORY_KV.list({ prefix: 'history:' });
-      const allIds = new Set();
-      for (const key of list.keys) {
-        try {
-          const raw = await HISTORY_KV.get(key.name);
-          const data = raw ? JSON.parse(raw) : null;
-          if (data && Array.isArray(data.histories)) {
-            for (const h of data.histories) {
-              if (h.id) allIds.add(h.id);
-            }
-          }
-        } catch {}
-      }
-      return { totalArchives: allIds.size, userCount: list.keys.length };
-    } catch { return { totalArchives: '错误', userCount: '错误' }; }
-  })();
+  const { totalArchives, userCount, watchlistCount, dedupeCount } = await getStatusSummary();
   const hasKV = typeof HISTORY_KV !== 'undefined';
   const tokenCount = cachedTokens ? cachedTokens.size : 0;
+  const workerUpdate = await checkWorkerUpdate();
 
   const tokenStatusHtml = authEnabled
     ? (tokenCount > 0
       ? `<div class="stat"><span class="label">Token 认证</span><span class="ok">已启用 (${tokenCount} 个)</span></div>`
       : `<div class="stat"><span class="label">⚠ Token 认证</span><span class="err">已启用但 KV tokens 为空，所有受保护接口都会拒绝</span></div>`)
     : `<div class="stat"><span class="label">Token 认证</span><span class="err">强制启用</span></div>`;
+  const appVersion = typeof APP_VERSION !== 'undefined' && APP_VERSION
+    ? String(APP_VERSION)
+    : FALLBACK_APP_VERSION;
+  const workerUpdateHtml = workerUpdate.status === 'update'
+    ? `<div class="warning">发现 Worker 更新：本地 ${WORKER_RELEASE} · 远端 ${workerUpdate.remoteRelease}。<a href="${workerUpdate.sourceUrl}" target="_blank" rel="noreferrer">查看 ${workerUpdate.branch} 源码</a></div>`
+    : `<div class="stat"><span class="label">Worker 更新</span><span class="${workerUpdate.status === 'current' ? 'ok' : 'warn'}">${workerUpdate.status === 'current' ? `${workerUpdate.branch} 最新版本` : '更新检查暂时不可用'}</span></div>`;
 
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -695,7 +1261,26 @@ async function statusPage(request) {
   .warn { color:#fbbf24; font-size:13px; }
   .divider { border-top:1px solid rgba(255,255,255,0.06); margin:24px 0 20px; }
   .section-title { color:#9ca3af; font-size:12px; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px; }
-  .footer { font-size:11px; color:#4b5563; text-align:center; margin-top:20px; }
+  .footer { display:flex; align-items:center; justify-content:center; gap:9px; flex-wrap:wrap;
+            font-size:11px; color:#6b7280; text-align:center; margin-top:22px; }
+  .footer a { color:#60a5fa; text-decoration:none; }
+  .footer a:hover { color:#93c5fd; text-decoration:underline; }
+  .card { max-width:560px; }
+  .warning { border:1px solid rgba(248,113,113,.45); background:rgba(248,113,113,.12); color:#fecaca;
+             padding:12px 14px; border-radius:10px; margin:0 0 18px; font-size:13px; line-height:1.5; }
+  .warning a { color:#93c5fd; }
+  .tool { display:grid; gap:10px; margin-top:10px; }
+  .hidden { display:none; }
+  .hint { color:#9ca3af; font-size:12px; line-height:1.5; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .checks { display:flex; gap:14px; flex-wrap:wrap; color:#cbd5e1; font-size:13px; }
+  input, textarea { width:100%; background:#111827; border:1px solid rgba(255,255,255,.09); color:#e5e7eb;
+                    border-radius:8px; padding:9px 10px; font:inherit; }
+  textarea { min-height:110px; resize:vertical; }
+  button { background:#2563eb; border:0; border-radius:8px; color:white; padding:9px 12px; cursor:pointer; font-weight:650; }
+  button.secondary { background:#374151; }
+  button.subtle { background:#1f2937; color:#cbd5e1; }
+  #kvResult { color:#9ca3af; font-size:12px; white-space:pre-wrap; line-height:1.5; }
 </style>
 </head>
 <body>
@@ -704,19 +1289,139 @@ async function statusPage(request) {
 
   <div class="section-title">服务概览</div>
   <div class="stat"><span class="label">服务状态</span><span class="ok">● 运行中</span></div>
+  ${workerUpdateHtml}
   <div class="stat"><span class="label">请求计数</span><span class="value">${reqCount}</span></div>
   <div class="stat"><span class="label">同步用户数</span><span class="value">${userCount}</span></div>
   <div class="stat"><span class="label">阅读记录数</span><span class="value">${totalArchives}</span></div>
+  <div class="stat"><span class="label">待看记录数</span><span class="value">${watchlistCount}</span></div>
   <div class="stat"><span class="label">KV 存储</span><span class="${hasKV ? 'ok' : 'warn'}">${hasKV ? '已绑定' : '未绑定'}</span></div>
   <div class="stat"><span class="label">KV 读取</span><span class="${kvOk ? 'ok' : 'err'}">${kvOk ? '正常' : '失败'}</span></div>
+  <div class="stat"><span class="label">非重复归档记录</span><span class="value">${dedupeCount}</span></div>
 
   <div class="divider"></div>
   <div class="section-title">认证状态</div>
   ${tokenStatusHtml}
   <div class="stat"><span class="label">部署时间</span><span class="value">${new Date().toISOString().slice(0, 19).replace('T', ' ')} UTC</span></div>
 
-  <div class="footer">LRR Modern Reader · Cloudflare Worker</div>
+  <div class="divider"></div>
+  <div class="section-title">KV 导入 / 导出</div>
+  <div id="kvClosed" class="tool">
+    <button id="openKvTool" type="button">打开导入 / 导出菜单</button>
+  </div>
+  <div id="kvAuth" class="tool hidden">
+    <div class="hint">请输入 KV tokens 中配置的访问 Token。验证通过后，只能导入 / 导出该 Token 对应的阅读历史与非重复记录。</div>
+    <input id="syncTokenInput" type="password" placeholder="访问 Token">
+    <div class="row">
+      <button id="validateTokenBtn" type="button">验证 Token</button>
+      <button id="cancelKvBtn" class="subtle" type="button">取消</button>
+    </div>
+  </div>
+  <div id="kvPanel" class="tool hidden">
+    <div class="hint">已通过 Token 验证。请输入 LANraragi 服务器地址的 32 位 MD5 作用域；数据按 Token 与服务器共同隔离。</div>
+    <input id="serverScopeInput" type="text" inputmode="text" maxlength="32" placeholder="服务器地址 MD5（32 位小写十六进制）">
+    <div class="checks">
+      <label><input id="sectionHistory" type="checkbox" checked style="width:auto"> 阅读历史</label>
+      <label><input id="sectionWatchlist" type="checkbox" checked style="width:auto"> 待看归档</label>
+      <label><input id="sectionDedupe" type="checkbox" checked style="width:auto"> 非重复 arcid</label>
+    </div>
+    <button id="exportBtn" type="button">导出选中数据</button>
+    <textarea id="importData" placeholder="粘贴导出的 JSON 后点击导入"></textarea>
+    <div class="row">
+      <button id="importBtn" class="secondary" type="button">导入选中数据</button>
+      <button id="switchTokenBtn" class="subtle" type="button">更换 Token</button>
+    </div>
+  </div>
+  <div id="kvResult"></div>
+
+  <div class="footer">
+    <span>${PROJECT_NAME} · Cloudflare Worker</span>
+    <span>${appVersion}</span>
+    <a href="${PROJECT_URL}" target="_blank" rel="noreferrer">GitHub</a>
+  </div>
 </div>
+<script>
+const result = document.getElementById('kvResult');
+const kvClosed = document.getElementById('kvClosed');
+const kvAuth = document.getElementById('kvAuth');
+const kvPanel = document.getElementById('kvPanel');
+const syncTokenInput = document.getElementById('syncTokenInput');
+const serverScopeInput = document.getElementById('serverScopeInput');
+let syncToken = '';
+function serverScope() {
+  const value = serverScopeInput.value.trim().toLowerCase();
+  if (!/^[a-f0-9]{32}$/.test(value)) throw new Error('请输入有效的 32 位服务器 MD5 作用域');
+  return value;
+}
+function sections() {
+  return {
+    history: document.getElementById('sectionHistory').checked,
+    watchlist: document.getElementById('sectionWatchlist').checked,
+    dedupe: document.getElementById('sectionDedupe').checked,
+  };
+}
+async function call(path, body) {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-sync-token': syncToken, 'x-lrr-server-scope': serverScope() },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error((data && (data.detail || data.error)) || 'HTTP ' + res.status);
+  return data;
+}
+function showClosed() {
+  syncToken = '';
+  syncTokenInput.value = '';
+  kvClosed.classList.remove('hidden');
+  kvAuth.classList.add('hidden');
+  kvPanel.classList.add('hidden');
+}
+document.getElementById('openKvTool').onclick = () => {
+  result.textContent = '';
+  kvClosed.classList.add('hidden');
+  kvAuth.classList.remove('hidden');
+  syncTokenInput.focus();
+};
+document.getElementById('cancelKvBtn').onclick = showClosed;
+document.getElementById('switchTokenBtn').onclick = () => {
+  result.textContent = '';
+  syncToken = '';
+  kvPanel.classList.add('hidden');
+  kvAuth.classList.remove('hidden');
+  syncTokenInput.focus();
+};
+document.getElementById('validateTokenBtn').onclick = async () => {
+  try {
+    const token = syncTokenInput.value.trim();
+    if (!token) throw new Error('请输入 Token');
+    result.textContent = '正在验证 Token...';
+    const res = await fetch('/health', { headers: { 'x-sync-token': token } });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((data && (data.detail || data.error)) || 'Token 无效');
+    syncToken = token;
+    kvAuth.classList.add('hidden');
+    kvPanel.classList.remove('hidden');
+    result.textContent = 'Token 验证通过。';
+  } catch (e) { result.textContent = e.message; }
+};
+document.getElementById('exportBtn').onclick = async () => {
+  try {
+    result.textContent = '正在导出...';
+    const data = await call('/kv/export', { sections: sections() });
+    document.getElementById('importData').value = JSON.stringify(data.data, null, 2);
+    result.textContent = '导出完成，JSON 已填入文本框。';
+  } catch (e) { result.textContent = e.message; }
+};
+document.getElementById('importBtn').onclick = async () => {
+  try {
+    const raw = document.getElementById('importData').value.trim();
+    if (!raw) throw new Error('请先粘贴导入 JSON');
+    result.textContent = '正在导入...';
+    const data = await call('/kv/import', { sections: sections(), data: JSON.parse(raw) });
+    result.textContent = '导入完成：' + data.imported + ' 项。';
+  } catch (e) { result.textContent = e.message; }
+};
+</script>
 </body>
 </html>`;
   return new Response(html, {
@@ -769,6 +1474,27 @@ async function handleRequest(request) {
     if (request.method === 'PUT') return putHistory(request);
     if (request.method === 'DELETE') return deleteHistory(request);
     return json({ error: 'Method not allowed' }, 405);
+  }
+
+  if (url.pathname === '/watchlist') {
+    if (request.method === 'GET') return getWatchlist(request);
+    if (request.method === 'PUT') return putWatchlist(request);
+    if (request.method === 'DELETE') return deleteWatchlist(request);
+    return json({ error: 'Method not allowed' }, 405);
+  }
+
+  if (url.pathname === '/dedupe/non-duplicates') {
+    if (request.method === 'GET') return getNonDuplicatePairs(request);
+    if (request.method === 'PUT') return putNonDuplicatePairs(request);
+    return json({ error: 'Method not allowed' }, 405);
+  }
+
+  if (url.pathname === '/kv/export' && request.method === 'POST') {
+    return exportKV(request);
+  }
+
+  if (url.pathname === '/kv/import' && request.method === 'POST') {
+    return importKV(request);
   }
 
   if (url.pathname === '/api' && request.method === 'POST') {

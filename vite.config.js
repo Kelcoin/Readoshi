@@ -4,6 +4,7 @@ import http from 'node:http';
 import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveAppVersion } from './scripts/app-version.mjs';
 
 function readEnvLocal(cwd) {
   const filePath = path.resolve(cwd, '.env.local');
@@ -30,6 +31,7 @@ export default defineConfig(({ mode }) => {
 
   // Fallback: manually parse .env.local in case Vite's loadEnv doesn't pick it up
   const localEnv = readEnvLocal(cwd);
+  const appVersion = resolveAppVersion({ cwd });
 
   const forceIPv4 = env.VITE_FORCE_IPV4 === 'true';
   const httpAgent = forceIPv4
@@ -56,14 +58,6 @@ export default defineConfig(({ mode }) => {
           return trimmed;
         }).filter(Boolean);
 
-        // also allow bare-domain wildcard: reader.example.com -> .example.com
-        const wildcards = new Set();
-        hosts.forEach((h) => {
-          const dots = h.split('.');
-          if (dots.length >= 2) wildcards.add('.' + dots.slice(1).join('.'));
-        });
-        for (const w of wildcards) { if (!hosts.includes(w)) hosts.push(w); }
-
         console.log('[vite] allowedHosts:', hosts);
         return hosts;
       })()
@@ -74,7 +68,6 @@ export default defineConfig(({ mode }) => {
   proxy['/eh'] = {
     target: 'https://exhentai.org',
     changeOrigin: true,
-    secure: false,
     agent: httpsAgent,
     rewrite: (path) => path.replace(/^\/eh/, ''),
     configure: (proxyServer) => {
@@ -113,6 +106,16 @@ export default defineConfig(({ mode }) => {
     }
   };
 
+  const lrrProxyTarget = env.VITE_LRR_PROXY_TARGET || localEnv.VITE_LRR_PROXY_TARGET || '';
+  if (lrrProxyTarget) {
+    const target = new URL(lrrProxyTarget).origin;
+    proxy['/api'] = {
+      target,
+      changeOrigin: true,
+      agent: target.startsWith('https:') ? httpsAgent : httpAgent,
+    };
+  }
+
   const serverConfig = {
     proxy,
     cors: true,
@@ -127,6 +130,10 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
+    define: {
+      __APP_BUILD_ID__: JSON.stringify(appVersion.buildId),
+      __APP_VERSION__: JSON.stringify(appVersion.version),
+    },
     plugins: [
       react(),
       {

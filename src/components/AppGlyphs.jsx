@@ -39,6 +39,14 @@ function renderSectionGlyph(name) {
           <path d="M7.25 18.5h9.5" opacity="0.58" />
         </>
       );
+    case 'watchlist':
+      return (
+        <>
+          <rect x="5.5" y="4.75" width="13" height="15.5" rx="2.4" fill="currentColor" fillOpacity="0.12" stroke="none" />
+          <path d="M8 5.5h8a2.5 2.5 0 0 1 2.5 2.5v11.5l-6.5-3.25-6.5 3.25V8A2.5 2.5 0 0 1 8 5.5z" />
+          <path d="M12 8.7l.85 1.72 1.9.28-1.38 1.34.33 1.9L12 13.05l-1.7.89.33-1.9-1.38-1.34 1.9-.28L12 8.7z" fill="currentColor" fillOpacity="0.22" />
+        </>
+      );
     case 'random':
       return (
         <>
@@ -195,6 +203,25 @@ function renderToolbarGlyph(name) {
       return <path d="M19 12H5M12 19l-7-7 7-7" />;
     case 'history':
       return <path d="M12 8v4l3 3M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />;
+    case 'quickJump':
+      return (
+        <>
+          <circle cx="12" cy="12" r="8.25" />
+          <path d="M14.9 8.1 13.1 13.1 8.1 14.9l1.8-5 5-1.8z" />
+          <circle cx="12" cy="12" r="1.15" fill="currentColor" stroke="none" />
+        </>
+      );
+    case 'random':
+      return <path d="M4 7h2.2c5.6 0 5.6 10 11.6 10H20M17 14l3 3-3 3M4 17h2.2c2.3 0 3.7-1.7 4.9-3.6M14 7.6c1-0.4 2.2-0.6 3.8-0.6H20M17 4l3 3-3 3" />;
+    case 'edit':
+      return (
+        <>
+          <path d="M4.75 19.25h3.4L18.8 8.6a1.8 1.8 0 0 0 0-2.55l-.85-.85a1.8 1.8 0 0 0-2.55 0L4.75 15.85v3.4z" />
+          <path d="m13.9 6.7 3.4 3.4M4.75 15.85l3.4 3.4" opacity="0.72" />
+        </>
+      );
+    case 'watchlist':
+      return <path d="M6 4.5h12v16l-6-3-6 3v-16z" />;
     case 'play':
       return <path d="M5 3l14 9-14 9V3z" />;
     case 'pause':
@@ -203,6 +230,54 @@ function renderToolbarGlyph(name) {
       return <path d="M3 3h7v7H3V3zM14 3h7v7h-7V3zM14 14h7v7h-7V14zM3 14h7v7H3V14z" />;
     case 'settings':
       return <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />;
+    case 'metadata':
+      return (
+        <>
+          <path d="M6.5 4.5h7.25l3.75 3.75v11.25h-11V4.5z" />
+          <path d="M13.5 4.75V8.5h3.75" />
+          <path d="M8.75 12.25h6.5M8.75 15h4.25" opacity="0.72" />
+          <path d="M15.6 14.85l2.05 2.05M16.1 14.35l-2.95 2.95-.45 1.65 1.65-.45 2.95-2.95a.86.86 0 0 0-1.2-1.2z" />
+        </>
+      );
+    case 'upload':
+      return (
+        <>
+          <path d="M12 3v12M7.5 7.5 12 3l4.5 4.5" />
+          <path d="M5 14.5v4A2.5 2.5 0 0 0 7.5 21h9a2.5 2.5 0 0 0 2.5-2.5v-4" />
+          <path d="M5 14.5h3l1.5 2h5l1.5-2h3" opacity="0.72" />
+        </>
+      );
+    case 'cloudDownload':
+      return (
+        <>
+          <path d="M7.5 18.5H6a4 4 0 0 1-.4-7.98A6.5 6.5 0 0 1 18.2 9a4.75 4.75 0 0 1-.7 9.5H16" />
+          <path d="M12 11.5v9M8.75 17.25 12 20.5l3.25-3.25" />
+        </>
+      );
+    case 'external':
+      return (
+        <>
+          <path d="M13.5 5H19v5.5" />
+          <path d="M19 5l-8 8" />
+          <path d="M10 7H6.75A1.75 1.75 0 0 0 5 8.75v8.5A1.75 1.75 0 0 0 6.75 19h8.5A1.75 1.75 0 0 0 17 17.25V14" opacity="0.82" />
+        </>
+      );
+    case 'reload':
+      return (
+        <>
+          <path d="M19 8V4.5l-2.15 2.15A7.5 7.5 0 1 0 19.2 14" />
+          <path d="M19 4.5h-3.5" opacity="0.72" />
+        </>
+      );
+    case 'cover':
+      return (
+        <>
+          <rect x="4" y="5" width="16" height="14" rx="2.5" />
+          <path d="M7.5 15.5l3.2-3.4 2.2 2.3 1.5-1.6 2.2 2.7" />
+          <circle cx="15.5" cy="9" r="1.2" />
+          <path d="M8 3.5h8" opacity="0.6" />
+        </>
+      );
     case 'fullscreen':
       return <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" />;
     case 'fullscreenExit':
@@ -212,10 +287,42 @@ function renderToolbarGlyph(name) {
   }
 }
 
+function renderThemeModeGlyph(mode) {
+  switch (mode) {
+    case 'light':
+      return (
+        <>
+          <circle cx="12" cy="12" r="3.7" fill="currentColor" fillOpacity="0.16" />
+          <circle cx="12" cy="12" r="3.15" />
+          <path d="M12 3.75v1.7M12 18.55v1.7M4.55 12h-1.7M21.15 12h-1.7M6.75 6.75l-1.2-1.2M18.45 18.45l-1.2-1.2M17.25 6.75l1.2-1.2M5.55 18.45l1.2-1.2" />
+        </>
+      );
+    case 'dark':
+      return (
+        <>
+          <path d="M18.55 15.15A7.1 7.1 0 0 1 8.85 5.45 7.75 7.75 0 1 0 18.55 15.15z" fill="currentColor" fillOpacity="0.12" />
+          <path d="M18.55 15.15A7.1 7.1 0 0 1 8.85 5.45 7.75 7.75 0 1 0 18.55 15.15z" />
+          <path d="M15.6 5.3l.55 1.25 1.25.55-1.25.55-.55 1.25-.55-1.25-1.25-.55 1.25-.55.55-1.25z" fill="currentColor" stroke="none" />
+        </>
+      );
+    case 'auto':
+    default:
+      return (
+        <>
+          <rect x="4.5" y="5.75" width="15" height="10.5" rx="2.2" fill="currentColor" fillOpacity="0.1" />
+          <rect x="4.5" y="5.75" width="15" height="10.5" rx="2.2" />
+          <path d="M9 20.25h6M12 16.25v4" opacity="0.72" />
+          <path d="M8.35 10.65a2.2 2.2 0 0 1 3.75-1.55 2.9 2.9 0 0 0 3.55 3.55 3.85 3.85 0 0 1-7.3-2z" />
+        </>
+      );
+  }
+}
+
 const SECTION_GLYPH_COLORS = {
-  continue: '#66d19e',
-  random: '#65c6ff',
-  archives: '#f0b35f',
+  continue: '#3cbf8c',
+  watchlist: '#e6a246',
+  random: '#409eff',
+  archives: '#a482d6',
 };
 
 export function HomeSectionGlyph({ name, size = 18, color = 'currentColor', style }) {
@@ -238,6 +345,14 @@ export function ToolbarGlyph({ name, size = 20, color = 'currentColor', style })
   return (
     <GlyphBase size={size} color={color} strokeWidth={2} style={style}>
       {renderToolbarGlyph(name)}
+    </GlyphBase>
+  );
+}
+
+export function ThemeModeGlyph({ mode = 'auto', size = 18, color = 'currentColor', style }) {
+  return (
+    <GlyphBase size={size} color={color} strokeWidth={1.85} style={style}>
+      {renderThemeModeGlyph(mode)}
     </GlyphBase>
   );
 }

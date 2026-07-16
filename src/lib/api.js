@@ -2,9 +2,16 @@ const getBaseUrl = () => {
   return (localStorage.getItem('lrr_server_url') || '').replace(/\/$/, '');
 };
 
+export function encodeApiKey(key = '') {
+  const bytes = new TextEncoder().encode(String(key));
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
 const encodeKey = () => {
   const key = localStorage.getItem('lrr_api_key') || '';
-  return btoa(key);
+  return encodeApiKey(key);
 };
 
 const getAuthHeaders = () => ({ Authorization: `Bearer ${encodeKey()}` });
@@ -21,6 +28,23 @@ function createApiError(status, message) {
   return err;
 }
 
+async function readResponse(res) {
+  if (!res.ok) {
+    if (res.status === 401) throw createApiError(res.status, 'API Error: 401 (API Key 错误或未授权)');
+    let message = '';
+    try { message = await res.text(); } catch {}
+    throw createApiError(res.status, message || `API Error: ${res.status}`);
+  }
+
+  const text = await res.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
 const request = async (endpoint, method = 'GET', body = null, options = {}) => {
   const base = getBaseUrl();
   if (!base) throw new Error('未配置服务器地址');
@@ -33,31 +57,135 @@ const request = async (endpoint, method = 'GET', body = null, options = {}) => {
     headers,
     body: body ? JSON.stringify(body) : null,
     signal: options.signal,
+    keepalive: !!options.keepalive,
   });
 
-  if (!res.ok) {
-    if (res.status === 401) throw createApiError(res.status, 'API Error: 401 (API Key 错误或未授权)');
-    throw createApiError(res.status, `API Error: ${res.status}`);
-  }
-
-  const text = await res.text();
-  if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
+  return readResponse(res);
 };
 
+function abortReason(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  const error = new Error('操作已取消');
+  error.name = 'AbortError';
+  return error;
+}
+
+function wait(ms, signal) {
+  if (signal?.aborted) return Promise.reject(abortReason(signal));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    const abort = () => {
+      clearTimeout(timer);
+      reject(abortReason(signal));
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal) {
+      setTimeout(() => signal.removeEventListener('abort', abort), ms);
+    }
+  });
+}
+
+export async function waitForMinionJob(job, {
+  signal,
+  timeoutMs = 5 * 60 * 1000,
+  pollMs = 1000,
+  onProgress,
+  getStatus = (jobId) => lrrApi.getMinionStatus(jobId, { signal }),
+} = {}) {
+  const jobId = Number(job?.job ?? job);
+  if (!Number.isFinite(jobId) || jobId <= 0) return null;
+  const deadline = Date.now() + Math.max(1, Number(timeoutMs) || 1);
+  while (Date.now() <= deadline) {
+    if (signal?.aborted) throw abortReason(signal);
+    const status = await getStatus(jobId);
+    onProgress?.(status);
+    const state = String(status?.state || '').toLowerCase();
+    if (state === 'finished') return status;
+    if (state === 'failed' || state === 'error') {
+      throw new Error(status?.error || 'LANraragi 后台任务失败');
+    }
+    if (Date.now() >= deadline) break;
+    await wait(Math.max(0, Number(pollMs) || 0), signal);
+  }
+  throw new Error('LANraragi 后台任务等待超时');
+}
+
+export function normalizeUntaggedArchiveIds(response) {
+  const items = Array.isArray(response)
+    ? response
+    : (Array.isArray(response?.data)
+      ? response.data
+      : (Array.isArray(response?.archives) ? response.archives : response?.ids));
+  return (Array.isArray(items) ? items : [])
+    .map((item) => (typeof item === 'string' ? item : (item?.arcid || item?.id)))
+    .filter(Boolean);
+}
+
+export async function loadArchiveMetadataBatch(ids, loadArchive, { concurrency = 6, signal, ignoreMissing = false } = {}) {
+  const archiveIds = Array.isArray(ids) ? ids.filter(Boolean) : [];
+  if (archiveIds.length === 0) return [];
+  const results = new Array(archiveIds.length);
+  let cursor = 0;
+  const workerCount = Math.min(archiveIds.length, Math.max(1, Math.floor(Number(concurrency) || 1)));
+  const abortError = () => {
+    if (signal?.reason) return signal.reason;
+    const error = new Error('Archive metadata request aborted');
+    error.name = 'AbortError';
+    return error;
+  };
+  const worker = async () => {
+    while (cursor < archiveIds.length) {
+      if (signal?.aborted) throw abortError();
+      const index = cursor;
+      cursor += 1;
+      try {
+        results[index] = await loadArchive(archiveIds[index]);
+      } catch (error) {
+        if (ignoreMissing && (error?.status === 400 || error?.status === 404)) continue;
+        throw error;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: workerCount }, worker));
+  return results.filter((item) => item !== undefined);
+}
+
 export const lrrApi = {
-  search: (filter = '', start = 0, sortby = 'date_added', order = 'desc') =>
-    request(`/search?filter=${encodeURIComponent(filter)}&start=${start}&sortby=${sortby}&order=${order}`),
+  search: (filter = '', start = 0, sortby = 'date_added', order = 'desc', options = {}) =>
+    request(`/search?filter=${encodeURIComponent(filter)}&start=${start}&sortby=${sortby}&order=${order}`, 'GET', null, options),
   clearSearchCache: () => request('/search/cache', 'DELETE'),
 
   getRandom: (count = 10, options = {}) => request(`/search/random?count=${count}`, 'GET', null, options),
-  getArchive: (id) => request(`/archives/${id}/metadata`),
-  getArchiveFiles: (id) => request(`/archives/${id}/files`),
+  getUntaggedArchives: async (options = {}) => normalizeUntaggedArchiveIds(await request('/archives/untagged', 'GET', null, options)),
+  getArchive: (id, options = {}) => request(`/archives/${id}/metadata`, 'GET', null, options),
+  updateArchiveMetadata: (id, { title = '', tags = '', summary = '' }, options = {}) => {
+    const params = new URLSearchParams({ title, tags, summary });
+    return request(`/archives/${encodeURIComponent(id)}/metadata?${params}`, 'PUT', null, options);
+  },
+  getMetadataPlugins: (options = {}) => request('/plugins/metadata', 'GET', null, options),
+  getDownloadPlugins: () => request('/plugins/download'),
+  useMetadataPlugin: (id, plugin, arg = '', options = {}) => {
+    const params = new URLSearchParams({ id, plugin, arg });
+    return request(`/plugins/use?${params}`, 'POST', null, options);
+  },
+  useDownloadPlugin: (plugin, arg) => {
+    const params = new URLSearchParams({ plugin, arg });
+    return request(`/plugins/use?${params}`, 'POST');
+  },
+  uploadArchive: async (file) => {
+    const body = new FormData();
+    body.append('file', file, file.name);
+    const res = await fetch(getApiUrl('/archives/upload'), {
+      method: 'PUT',
+      headers: getAuthHeaders(),
+      body,
+    });
+    return readResponse(res);
+  },
+  getArchiveFiles: (id, options = {}) => request(`/archives/${id}/files`, 'GET', null, options),
   deleteArchive: (id) => request(`/archives/${encodeURIComponent(id)}`, 'DELETE'),
+  setArchiveThumbnail: (id, page) =>
+    request(`/archives/${encodeURIComponent(id)}/thumbnail?page=${encodeURIComponent(page)}`, 'PUT'),
   downloadArchive: async (id) => {
     const res = await fetch(getApiUrl(`/archives/${encodeURIComponent(id)}/download`), {
       headers: getAuthHeaders(),
@@ -73,20 +201,23 @@ export const lrrApi = {
       : `${id}.zip`;
     return { blob: await res.blob(), filename };
   },
-  getArchiveThumbnail: async (id, { page = 1, noFallback = false } = {}) => {
+  getArchiveThumbnail: async (id, { page = null, noFallback = false } = {}) => {
     const base = getBaseUrl();
     if (!base) throw new Error('未配置服务器地址');
 
     const params = new URLSearchParams();
-    if (page > 0) params.set('page', String(page));
+    if (page !== undefined && page !== null) params.set('page', String(page));
     if (noFallback) params.set('no_fallback', 'true');
 
-    const res = await fetch(`${base}/api/archives/${id}/thumbnail?${params.toString()}`, {
+    const query = params.toString();
+    const res = await fetch(`${base}/api/archives/${encodeURIComponent(id)}/thumbnail${query ? `?${query}` : ''}`, {
       headers: getAuthHeaders(),
     });
 
     if (res.status === 202) {
-      return { status: 202, blob: null };
+      let job = null;
+      try { job = await res.json(); } catch {}
+      return { status: 202, blob: null, job };
     }
     if (!res.ok) {
       if (res.status === 401) throw createApiError(res.status, 'API Error: 401 (API Key 错误或未授权)');
@@ -94,11 +225,13 @@ export const lrrApi = {
     }
     return { status: res.status, blob: await res.blob() };
   },
+  regenerateThumbnails: (force = false) => request(`/regen_thumbs?force=${force ? 1 : 0}`, 'POST'),
+  getMinionStatus: (job, options = {}) => request(`/minion/${encodeURIComponent(job)}`, 'GET', null, options),
   queueArchivePageThumbnails: (id, force = false) =>
     request(`/archives/${id}/files/thumbnails${force ? '?force=true' : ''}`, 'POST'),
-  extractArchive: (id) => request(`/archives/${id}/extract`, 'POST'),
+  extractArchive: (id, options = {}) => request(`/archives/${id}/extract`, 'POST', null, options),
   clearCache: (id) => request(`/archives/${id}/extract`, 'DELETE'),
-  updateProgress: (id, page) => request(`/archives/${id}/progress/${page}`, 'PUT'),
+  updateProgress: (id, page, options = {}) => request(`/archives/${id}/progress/${page}`, 'PUT', null, options),
   getCategories: () => request('/categories'),
   getServerInfo: () => request('/info'),
 };
@@ -108,7 +241,7 @@ export const checkServerStatus = async (url, key) => {
   if (!base) throw new Error('未配置服务器地址');
 
   const headers = {};
-  if (key) headers['Authorization'] = `Bearer ${btoa(key)}`;
+  if (key) headers['Authorization'] = `Bearer ${encodeApiKey(key)}`;
 
   const res = await fetch(`${base}/api/info`, { headers });
   if (!res.ok) {

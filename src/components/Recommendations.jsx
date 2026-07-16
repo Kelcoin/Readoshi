@@ -2,10 +2,12 @@ import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { lrrApi } from '../lib/api';
 import { getCropCover } from '../lib/history';
 import { useHorizontalScroller } from '../lib/horizontalScroller';
-import { navigateToArchive } from '../lib/navigation';
+import { navigateToArchive, navigateToMetadata } from '../lib/navigation';
 import ArchiveCard from './ArchiveCard';
 import ArchiveContextMenu from './ArchiveContextMenu';
 import ConfirmDialog from './ConfirmDialog';
+import { useViewportWidth } from '../lib/viewport';
+import { ARCHIVE_PROGRESS_VISIBILITY, readArchiveProgressVisibility, shouldShowArchiveProgress } from '../lib/archiveProgress';
 
 const CUSTOM_WEIGHT_TAGS = {
   'female:ahegao': 1.5, 'female:anal intercourse': 2, 'female:anal': 2,
@@ -85,24 +87,21 @@ function calculateSimilarity(sourceTagsLower, archive) {
 }
 
 export default function Recommendations({ currentArchive }) {
+  const [progressBarVisibility] = useState(readArchiveProgressVisibility);
+  const showGlobalArchiveProgress = shouldShowArchiveProgress(progressBarVisibility, false);
+  const reserveGlobalProgressSpace = progressBarVisibility === ARCHIVE_PROGRESS_VISIBILITY.GLOBAL;
   const [tab, setTab] = useState('sim');
   const [collapsed, setCollapsed] = useState(false);
   const [simData, setSimData] = useState([]);
   const [artistData, setArtistData] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [isNarrow, setIsNarrow] = useState(window.innerWidth < 600);
+  const isNarrow = useViewportWidth() < 600;
   const [retryTick, setRetryTick] = useState(0);
   const [archiveMenu, setArchiveMenu] = useState(null);
   const [archiveDeleteTarget, setArchiveDeleteTarget] = useState(null);
   const retryTimerRef = useRef(null);
   const retryCountRef = useRef(0);
   const scroller = useHorizontalScroller();
-  useEffect(() => {
-    const check = () => setIsNarrow(window.innerWidth < 600);
-    window.addEventListener('resize', check);
-    return () => window.removeEventListener('resize', check);
-  }, []);
-
   const sourceTagsLower = useMemo(() => {
     if (!currentArchive?.tags) return new Set();
     return new Set(currentArchive.tags.split(',').map(t => t.trim().toLowerCase()).filter(Boolean));
@@ -110,13 +109,25 @@ export default function Recommendations({ currentArchive }) {
 
   const noCrop = useMemo(() => !getCropCover(), [currentArchive?.arcid]);
 
-  const artistTags = useMemo(() => {
+  const archiveTags = useMemo(() => {
     if (!currentArchive?.tags) return [];
-    return currentArchive.tags.split(',').map(t => t.trim()).filter(Boolean).filter(t => {
-      const p = t.split(':')[0].toLowerCase();
-      return p === 'artist' || p === 'group';
-    });
+    return currentArchive.tags.split(',').map(t => t.trim()).filter(Boolean);
   }, [currentArchive?.tags]);
+
+  const isCosplayWithCosplayer = useMemo(() => {
+    const hasCosplay = archiveTags.some((tag) => tag.toLowerCase() === 'category:cosplay');
+    const hasCosplayer = archiveTags.some((tag) => /^cosplayer:\s*\S/i.test(tag));
+    return hasCosplay && hasCosplayer;
+  }, [archiveTags]);
+
+  const sameCreatorTags = useMemo(() => {
+    return archiveTags.filter(t => {
+      const p = t.split(':')[0].toLowerCase();
+      return isCosplayWithCosplayer ? p === 'cosplayer' : p === 'artist' || p === 'group';
+    });
+  }, [archiveTags, isCosplayWithCosplayer]);
+  const sameCreatorType = isCosplayWithCosplayer ? 'cosplayer' : 'artist';
+  const sameCreatorLabel = isCosplayWithCosplayer ? '同Coser' : '同作者';
 
   const sourceCategoryLower = useMemo(() => {
     if (!currentArchive?.tags) return new Set();
@@ -125,7 +136,7 @@ export default function Recommendations({ currentArchive }) {
 
   useEffect(() => {
     if (!currentArchive?.arcid || !currentArchive?.tags) return;
-    const cacheKey = `lrr_rec_cache_v2_${currentArchive.arcid}`;
+    const cacheKey = `lrr_rec_cache_v3_${sameCreatorType}_${currentArchive.arcid}`;
     let cancelled = false;
 
     const fetchAll = async () => {
@@ -147,7 +158,7 @@ export default function Recommendations({ currentArchive }) {
 
         const [sim, artist] = await Promise.all([
           buildYouMayLike(),
-          buildSameAuthor(),
+          buildSameCreator(),
         ]);
 
         if (cancelled) return;
@@ -161,7 +172,7 @@ export default function Recommendations({ currentArchive }) {
     };
     fetchAll();
     return () => { cancelled = true; };
-  }, [currentArchive?.arcid, retryTick]);
+  }, [currentArchive?.arcid, retryTick, sameCreatorType]);
 
   const buildYouMayLike = async () => {
     const tags = currentArchive.tags.split(',').map(t => t.trim()).filter(Boolean);
@@ -220,11 +231,11 @@ export default function Recommendations({ currentArchive }) {
     return picked;
   };
 
-  const buildSameAuthor = async () => {
-    if (artistTags.length === 0) return [];
+  const buildSameCreator = async () => {
+    if (sameCreatorTags.length === 0) return [];
     const map = new Map();
 
-    for (const tag of shuffle(artistTags)) {
+    for (const tag of shuffle(sameCreatorTags)) {
       if (map.size >= PER_VIEW_LIMIT * 2) break;
       try {
         const res = await lrrApi.search(`${tag}$`);
@@ -248,12 +259,12 @@ export default function Recommendations({ currentArchive }) {
   };
 
   const refreshCache = useCallback(async () => {
-    const cacheKey = `lrr_rec_cache_v2_${currentArchive.arcid}`;
+    const cacheKey = `lrr_rec_cache_v3_${sameCreatorType}_${currentArchive.arcid}`;
     try { localStorage.removeItem(cacheKey); } catch {}
     retryCountRef.current = 0;
     setLoading(true);
     try {
-      const [sim, artist] = await Promise.all([buildYouMayLike(), buildSameAuthor()]);
+      const [sim, artist] = await Promise.all([buildYouMayLike(), buildSameCreator()]);
       setSimData(sim);
       setArtistData(artist);
       if (sim.length || artist.length) {
@@ -261,12 +272,12 @@ export default function Recommendations({ currentArchive }) {
       }
     } catch {}
     setLoading(false);
-  }, [currentArchive]);
+  }, [currentArchive, sameCreatorType]);
 
   useEffect(() => {
     if (!currentArchive?.arcid) return undefined;
     if (loading) return undefined;
-    if (simData.length > 0 || artistData.length > 0 || artistTags.length === 0) {
+    if (simData.length > 0 || artistData.length > 0 || sameCreatorTags.length === 0) {
       retryCountRef.current = 0;
       return undefined;
     }
@@ -278,7 +289,7 @@ export default function Recommendations({ currentArchive }) {
     return () => {
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
     };
-  }, [artistData.length, artistTags.length, currentArchive?.arcid, loading, simData.length]);
+  }, [artistData.length, currentArchive?.arcid, loading, sameCreatorTags.length, simData.length]);
 
   const toggleCollapse = () => setCollapsed(v => !v);
   const data = tab === 'sim' ? simData : artistData;
@@ -338,7 +349,7 @@ export default function Recommendations({ currentArchive }) {
     }
   }, [archiveDeleteTarget]);
 
-  if (!currentArchive || (!loading && simData.length === 0 && artistData.length === 0 && artistTags.length === 0)) return null;
+  if (!currentArchive || (!loading && simData.length === 0 && artistData.length === 0 && sameCreatorTags.length === 0)) return null;
 
   return (
     <>
@@ -365,7 +376,7 @@ export default function Recommendations({ currentArchive }) {
                 border: tab === 'sim' ? '1px solid var(--accent)' : '1px solid rgba(255,255,255,0.15)',
                 color: tab === 'sim' ? '#fff' : '#a7b1c2',
                 fontSize: '13px', fontWeight: 600, cursor: 'pointer',
-                padding: '5px 12px', borderRadius: '6px', transition: 'all 0.2s',
+                padding: '5px 12px', borderRadius: '6px', transition: 'background-color 0.2s, border-color 0.2s, color 0.2s',
               }}
             >猜你喜欢</button>
             {hasArtist && (
@@ -377,15 +388,21 @@ export default function Recommendations({ currentArchive }) {
                   border: tab === 'artist' ? '1px solid var(--accent)' : '1px solid rgba(255,255,255,0.15)',
                   color: tab === 'artist' ? '#fff' : '#a7b1c2',
                   fontSize: '13px', fontWeight: 600, cursor: 'pointer',
-                  padding: '5px 12px', borderRadius: '6px', transition: 'all 0.2s',
+                  padding: '5px 12px', borderRadius: '6px', transition: 'background-color 0.2s, border-color 0.2s, color 0.2s',
                 }}
-              >同作者</button>
+              >{sameCreatorLabel}</button>
             )}
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
-            <button onClick={refreshCache} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ccc', opacity: 0.7, padding: '4px', borderRadius: '4px', display: 'flex' }} title="清理缓存并刷新">
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+            <button
+              className="btn"
+              onClick={refreshCache}
+              disabled={loading}
+              style={{ padding: '6px 12px', fontSize: '12px', opacity: loading ? 0.72 : 1 }}
+              title="清理缓存并刷新"
+            >
+              {loading ? '刷新中' : '刷新'}
             </button>
             <button onClick={toggleCollapse} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ccc', opacity: 0.8, padding: '4px', borderRadius: '4px', display: 'flex' }}>
               <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" style={{ transition: 'transform 0.3s', transform: collapsed ? 'rotate(180deg)' : 'rotate(0deg)' }}><path d="M6 15l6-6 6 6z"/></svg>
@@ -402,7 +419,7 @@ export default function Recommendations({ currentArchive }) {
           onDragStart={scroller.onDragStart}
           style={{
             display: 'flex', flexDirection: 'row', overflowX: 'auto', overflowY: 'hidden',
-            gap: '10px', padding: isNarrow ? '10px 14px 16px' : '14px 20px 16px', scrollBehavior: 'smooth',
+            gap: '10px', padding: isNarrow ? '10px 14px 16px' : '14px 20px 16px',
             scrollbarWidth: 'none',
             overscrollBehaviorY: 'contain',
             ...scroller.getTouchScrollStyle(),
@@ -410,7 +427,7 @@ export default function Recommendations({ currentArchive }) {
           }}
           className="no-scrollbar"
         >
-          <div key={contentKey} className="component-content-fade" style={{ display: 'flex', gap: '10px', padding: loading ? '4px 0' : 0, flexShrink: 0, minWidth: 'max-content' }}>
+          <div key={contentKey} className="component-content-fade" style={{ display: 'flex', gap: '10px', padding: loading ? '4px 0' : 0, flex: '0 0 auto', width: 'max-content' }}>
             {loading ? (
               <>
               {Array.from({ length: skeletonCount }).map((_, i) => (
@@ -418,7 +435,7 @@ export default function Recommendations({ currentArchive }) {
                   flexShrink: 0, width: '150px', minWidth: '150px',
                   background: 'rgba(255,255,255,0.04)', borderRadius: '12px',
                   border: '1px solid rgba(255,255,255,0.06)',
-                  overflow: 'hidden', display: 'flex', flexDirection: 'column',
+                  overflow: 'hidden', display: 'flex', flexDirection: 'column', padding: '12px',
                 }}>
                   <div style={{
                     width: '100%', height: '210px',
@@ -426,12 +443,10 @@ export default function Recommendations({ currentArchive }) {
                     backgroundSize: '200% 100%',
                     animation: 'shimmer 1.5s infinite',
                   }} />
-                  <div style={{ padding: '8px 10px 10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    <div style={{ height: '10px', borderRadius: '4px', background: 'rgba(255,255,255,0.06)', width: '80%' }} />
-                    <div style={{ height: '3px', borderRadius: '2px', background: 'rgba(255,255,255,0.08)', width: '100%' }}>
-                      <div style={{ height: '100%', borderRadius: '2px', background: 'rgba(255,255,255,0.04)', width: '40%' }} />
-                    </div>
-                    <div style={{ height: '8px', borderRadius: '4px', background: 'rgba(255,255,255,0.04)', width: '60%' }} />
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ height: '12px', borderRadius: '4px', background: 'rgba(255,255,255,0.06)', width: '84%', marginTop: '12px' }} />
+                    <div style={{ height: '12px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', width: '66%', marginTop: '8px' }} />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '10px' }}><span style={{ height: '8px', width: '36%', borderRadius: '4px', background: 'rgba(255,255,255,0.04)' }} /><span style={{ height: '8px', width: '30%', borderRadius: '4px', background: 'rgba(255,255,255,0.04)' }} /></div>
                   </div>
                 </div>
               ))}
@@ -440,7 +455,7 @@ export default function Recommendations({ currentArchive }) {
               <div style={{ padding: '24px 8px', color: 'var(--text-sub)', fontStyle: 'italic', fontSize: '13px' }}>暂无推荐结果。</div>
             ) : (
               data.map(arc => (
-                <ArchiveCard key={arc.arcid || arc.id} archive={arc} onClick={() => handleCardClick(arc)} onArchiveContextMenu={handleOpenArchiveMenu} noCrop={noCrop} />
+                <ArchiveCard key={arc.arcid || arc.id} archive={arc} onClick={() => handleCardClick(arc)} onArchiveContextMenu={handleOpenArchiveMenu} showProgressBar={showGlobalArchiveProgress} reserveProgressSpace={reserveGlobalProgressSpace} noCrop={noCrop} />
               ))
             )}
           </div>
@@ -451,6 +466,7 @@ export default function Recommendations({ currentArchive }) {
       menu={archiveMenu}
       onClose={() => setArchiveMenu(null)}
       onRead={(archive) => handleCardClick(archive)}
+      onEditMetadata={(archive) => navigateToMetadata(archive.arcid || archive.id)}
       onDownload={handleArchiveDownload}
       onCopyLink={handleArchiveCopyLink}
       onDelete={(archive) => setArchiveDeleteTarget(archive)}

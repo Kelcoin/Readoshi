@@ -1,10 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ArchiveCard from '../components/ArchiveCard';
+import ArchiveContextMenu from '../components/ArchiveContextMenu';
 import ConfirmDialog from '../components/ConfirmDialog';
+import ArchiveSearchBox from '../components/ArchiveSearchBox';
+import EhFavoriteDeleteSwitch from '../components/EhFavoriteDeleteSwitch';
 import { HomeSectionGlyph, getSectionGlyphColor } from '../components/AppGlyphs';
-import { getCropCover, getHideRead, getHistory, hasRemoteHistory, loadHistoryState, removeHistoryItems, setHideRead } from '../lib/history';
-import { runHistoryExistenceCheck } from '../lib/historyMaintenance';
+import { getCropCover, getHideRead, getHistory, loadHistoryState, removeHistoryItems, setHideRead } from '../lib/history';
+import { isArchiveMissingError, runHistoryExistenceCheck } from '../lib/historyMaintenance';
 import { getSyncToken, getWorkerUrl } from '../lib/worker-config';
+import { archiveMatchesSearch } from '../lib/archiveSearch';
+import { lrrApi } from '../lib/api';
+import { deleteArchiveWithFavoriteSync } from '../lib/archiveDeletion';
+import { getEhFavoriteDeleteSync } from '../lib/ehFavoriteSync';
+import { navigateToMetadata } from '../lib/navigation';
+import { removeWatchlistItem } from '../lib/watchlist';
+import { ARCHIVE_PROGRESS_VISIBILITY, readArchiveProgressVisibility, shouldShowArchiveProgress } from '../lib/archiveProgress';
 
 function HeaderGlyph() {
   return <HomeSectionGlyph name="continue" size={24} color={getSectionGlyphColor('continue')} />;
@@ -41,10 +51,10 @@ function historyPeriodFor(time, todayStart = startOfLocalDay(Date.now())) {
     return { key: 'yesterday', title: '昨天' };
   }
   if (ageDays < 7) {
-    return { key: 'week', title: '一周前' };
+    return { key: 'week', title: '最近 7 天' };
   }
   if (ageDays < 30) {
-    return { key: 'month', title: '一个月前' };
+    return { key: 'month', title: '最近 30 天' };
   }
   return { key: 'older', title: '更久以前' };
 }
@@ -69,21 +79,28 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
   const [history, setHistoryState] = useState(() => getHistory());
   const [hideRead, setHideReadState] = useState(getHideRead);
   const [cropCover] = useState(getCropCover);
+  const [progressBarVisibility] = useState(readArchiveProgressVisibility);
+  const showHistoricalArchiveProgress = shouldShowArchiveProgress(progressBarVisibility, true);
+  const reserveGlobalProgressSpace = progressBarVisibility === ARCHIVE_PROGRESS_VISIBILITY.GLOBAL;
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [menu, setMenu] = useState(null);
+  const [archiveDeleteTarget, setArchiveDeleteTarget] = useState(null);
+  const [archiveDeleting, setArchiveDeleting] = useState(false);
+  const [archiveDeleteSyncConfirmed, setArchiveDeleteSyncConfirmed] = useState(true);
+  const [notice, setNotice] = useState('');
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [lastSelectedId, setLastSelectedId] = useState(null);
   const [selectionMode, setSelectionMode] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [checking, setChecking] = useState(false);
   const [isNarrow, setIsNarrow] = useState(window.innerWidth < 600);
+  const [query, setQuery] = useState('');
 
   useEffect(() => {
-    if (hasRemoteHistory()) {
-      loadHistoryState().then((state) => {
-        setHistoryState(state.histories);
-        setHideReadState(state.hideRead);
-      }).catch(() => setHistoryState(getHistory()));
-    }
+    loadHistoryState().then((state) => {
+      setHistoryState(state.histories);
+      setHideReadState(state.hideRead);
+    }).catch(() => setHistoryState(getHistory()));
   }, []);
 
   useEffect(() => {
@@ -109,7 +126,11 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
     return history.filter((h) => !(h.total > 0 && h.page >= h.total));
   }, [history, hideRead]);
 
-  const groupedHistory = useMemo(() => groupHistoryByPeriod(filteredHistory), [filteredHistory]);
+  const searchedHistory = useMemo(() => (
+    filteredHistory.filter((item) => archiveMatchesSearch(item, query))
+  ), [filteredHistory, query]);
+
+  const groupedHistory = useMemo(() => groupHistoryByPeriod(searchedHistory), [searchedHistory]);
 
   const selectedCount = selectedIds.size;
 
@@ -136,7 +157,7 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
     if (!getWorkerUrl() || !getSyncToken() || syncing) return;
     setSyncing(true);
     try {
-      const state = await loadHistoryState();
+      const state = await loadHistoryState({ force: true });
       setHistoryState(state.histories);
       setHideReadState(state.hideRead);
     } finally {
@@ -160,7 +181,7 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (event?.shiftKey && lastSelectedId) {
-        const ids = filteredHistory.map((item) => item.id);
+        const ids = searchedHistory.map((item) => item.id);
         const from = ids.indexOf(lastSelectedId);
         const to = ids.indexOf(id);
         if (from >= 0 && to >= 0) {
@@ -177,12 +198,12 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
       return next;
     });
     setLastSelectedId(id);
-  }, [filteredHistory, lastSelectedId]);
+  }, [lastSelectedId, searchedHistory]);
 
   const selectAllVisible = useCallback(() => {
-    setSelectedIds(new Set(filteredHistory.map((item) => item.id)));
-    setLastSelectedId(filteredHistory[0]?.id || null);
-  }, [filteredHistory]);
+    setSelectedIds(new Set(searchedHistory.map((item) => item.id)));
+    setLastSelectedId(searchedHistory[0]?.id || null);
+  }, [searchedHistory]);
 
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
@@ -210,9 +231,69 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
     setDeleteTarget(null);
   }, [deleteTarget]);
 
+  const handleDownload = useCallback(async (archive) => {
+    const archiveId = archive?.arcid || archive?.id;
+    if (!archiveId) return;
+    try {
+      const { blob, filename } = await lrrApi.downloadArchive(archiveId);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename || `${archiveId}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      setNotice(`下载失败：${error?.message || '未知错误'}`);
+    }
+  }, []);
+
+  const handleCopyLink = useCallback(async (archive) => {
+    const archiveId = archive?.arcid || archive?.id;
+    if (!archiveId) return;
+    const url = `${window.location.origin}/?id=${encodeURIComponent(archiveId)}`;
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      setNotice(`无法自动复制，请手动复制：${url}`);
+    }
+  }, []);
+
+  const requestArchiveDelete = useCallback((archive) => {
+    setArchiveDeleteSyncConfirmed(true);
+    setArchiveDeleteTarget(archive);
+  }, []);
+
+  const handleArchiveDelete = useCallback(async () => {
+    if (!archiveDeleteTarget || archiveDeleting) return;
+    const archiveId = archiveDeleteTarget.arcid || archiveDeleteTarget.id;
+    setArchiveDeleting(true);
+    try {
+      await deleteArchiveWithFavoriteSync(archiveDeleteTarget, {
+        syncEnabled: getEhFavoriteDeleteSync(),
+        confirmationEnabled: archiveDeleteSyncConfirmed,
+      });
+      await Promise.all([removeHistoryItems([archiveId]), removeWatchlistItem(archiveId)]);
+      setHistoryState(getHistory());
+      setArchiveDeleteTarget(null);
+    } catch (error) {
+      if (isArchiveMissingError(error)) {
+        await removeHistoryItems([archiveId]);
+        setHistoryState(getHistory());
+        setArchiveDeleteTarget(null);
+        setNotice('归档已不存在于 LANraragi，相关历史记录已清理。');
+      } else {
+        setNotice(`删除失败：${error?.message || '未知错误'}`);
+      }
+    } finally {
+      setArchiveDeleting(false);
+    }
+  }, [archiveDeleteSyncConfirmed, archiveDeleteTarget, archiveDeleting]);
+
   return (
     <>
-      <div style={{ padding: isNarrow ? '16px 10px' : '24px 16px', maxWidth: '1400px', margin: '0 auto' }}>
+      <div style={{ padding: isNarrow ? '16px 10px' : '24px 20px', maxWidth: '1680px', margin: '0 auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: '16px', marginBottom: '24px', flexWrap: 'wrap' }}>
           <div>
             <h1 style={{ fontWeight: 600, margin: '0 0 8px 0', fontSize: '28px', display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -220,7 +301,7 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
               阅读历史
             </h1>
             <div style={{ color: 'var(--text-sub)', fontSize: '14px' }}>
-              共 {history.length} 条记录{hideRead ? `，当前显示 ${filteredHistory.length} 条` : ''}
+              共 {history.length} 条记录{hideRead ? `，当前显示 ${filteredHistory.length} 条` : ''}{query.trim() ? `，搜索结果 ${searchedHistory.length} 条` : ''}
             </div>
           </div>
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
@@ -254,10 +335,10 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
                   <button className="btn" onClick={clearSelection} style={{ padding: '6px 12px', fontSize: '12px' }}>取消选择</button>
                 </>
               )}
-              {selectionMode && selectedCount === 0 && filteredHistory.length > 0 && (
+              {selectionMode && selectedCount === 0 && searchedHistory.length > 0 && (
                 <button className="btn" onClick={selectAllVisible} style={{ padding: '6px 12px', fontSize: '12px' }}>全选当前</button>
               )}
-              {filteredHistory.length > 0 && (
+              {searchedHistory.length > 0 && (
                 <button
                   className="btn"
                   onClick={toggleSelectionMode}
@@ -272,7 +353,7 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
                   {selectionMode ? '退出多选' : '多选'}
                 </button>
               )}
-              <span>隐藏已读完</span>
+              <span>历史记录中隐藏已读完</span>
               <button
                 type="button"
                 onClick={handleToggleHideRead}
@@ -287,7 +368,7 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
                   transition: 'background 0.2s ease',
                   flexShrink: 0,
                 }}
-                title={hideRead ? '显示已读完' : '隐藏已读完'}
+                title={hideRead ? '历史记录中显示已读完' : '历史记录中隐藏已读完'}
               >
                 <span style={{
                   position: 'absolute',
@@ -303,7 +384,9 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
             </div>
           </div>
 
-          {filteredHistory.length > 0 ? (
+          <ArchiveSearchBox query={query} setQuery={setQuery} placeholder="在阅读历史中搜索标题或标签" />
+
+          {searchedHistory.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: isNarrow ? '22px' : '28px' }}>
               {groupedHistory.map((group) => (
                 <div key={group.key} style={{ display: 'flex', flexDirection: 'column', gap: isNarrow ? '12px' : '16px' }}>
@@ -323,7 +406,7 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
                     </div>
                   </div>
 
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gridAutoFlow: 'dense', gap: isNarrow ? '10px' : '16px', justifyItems: 'center' }}>
+                  <div className="archive-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: isNarrow ? '10px' : '16px', '--archive-grid-half-gap': isNarrow ? '5px' : '8px' }}>
                     {group.items.map((h) => {
                       const selected = selectedIds.has(h.id);
                       return (
@@ -367,10 +450,11 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
                               onSelectArchive(h.id);
                             }
                           }}
-                          onLongPress={() => requestSingleDelete(h)}
-                          longPressTitle="删除阅读记录"
+                          onArchiveContextMenu={(archive, point) => setMenu({ archive, x: point.x, y: point.y, showRemoveHistory: true })}
+                          longPressTitle="打开菜单"
                           currentPage={h.page}
-                          showProgressBar
+                          showProgressBar={showHistoricalArchiveProgress}
+                          reserveProgressSpace={reserveGlobalProgressSpace}
                           noCrop={!cropCover}
                         />
                       );
@@ -382,11 +466,21 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
             </div>
           ) : (
             <div style={{ textAlign: 'center', padding: '48px 16px', color: 'var(--text-sub)', fontSize: '14px' }}>
-              {hideRead && history.length > 0 ? '所有归档均已读完' : '暂无阅读历史'}
+              {query.trim() ? '没有匹配的阅读历史' : (hideRead && history.length > 0 ? '所有归档均已读完' : '暂无阅读历史')}
             </div>
           )}
         </section>
       </div>
+      <ArchiveContextMenu
+        menu={menu}
+        onClose={() => setMenu(null)}
+        onRead={(archive) => onSelectArchive(archive.arcid || archive.id)}
+        onEditMetadata={(archive) => navigateToMetadata(archive.arcid || archive.id)}
+        onDownload={handleDownload}
+        onCopyLink={handleCopyLink}
+        onRemoveHistory={requestSingleDelete}
+        onDelete={requestArchiveDelete}
+      />
       <ConfirmDialog
         open={!!deleteTarget}
         title="确认删除阅读记录"
@@ -395,6 +489,31 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
         cancelLabel="取消"
         onConfirm={handleRemoveHistory}
         onCancel={() => setDeleteTarget(null)}
+      />
+      <ConfirmDialog
+        open={!!archiveDeleteTarget}
+        title="确认删除归档"
+        message={archiveDeleteTarget ? `将从 LANraragi 中删除“${archiveDeleteTarget.title || archiveDeleteTarget.arcid || archiveDeleteTarget.id}”。此操作不可撤销。` : ''}
+        confirmLabel={archiveDeleting ? '删除中…' : '确认删除'}
+        cancelLabel="取消"
+        onConfirm={handleArchiveDelete}
+        onCancel={() => { if (!archiveDeleting) setArchiveDeleteTarget(null); }}
+        confirmDisabled={archiveDeleting}
+      >
+        {getEhFavoriteDeleteSync() && (
+          <EhFavoriteDeleteSwitch checked={archiveDeleteSyncConfirmed} onChange={setArchiveDeleteSyncConfirmed} disabled={archiveDeleting} />
+        )}
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={!!notice}
+        title="操作提示"
+        message={notice}
+        confirmLabel="知道了"
+        showCancel={false}
+        destructive={false}
+        initialFocusSelector="[data-dialog-confirm]"
+        onConfirm={() => setNotice('')}
+        onCancel={() => setNotice('')}
       />
     </>
   );

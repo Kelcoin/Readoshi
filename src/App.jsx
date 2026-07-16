@@ -2,16 +2,30 @@ import React, { useState, useEffect } from 'react';
 import Reader from './pages/Reader';
 import Home from './pages/Home';
 import HistoryPage from './pages/HistoryPage';
+import WatchlistPage from './pages/WatchlistPage';
+import DeduplicatePage from './pages/DeduplicatePage';
+import MetadataPage from './pages/MetadataPage';
+import UploadPage from './pages/UploadPage';
 import { loadTagDB } from './lib/tags';
 import { checkServerStatus } from './lib/api';
-import { navigateHome, navigateToArchive, parseRouteFromLocation } from './lib/navigation';
+import { canNavigate, navigateHome, navigateToArchive, parseRouteFromLocation } from './lib/navigation';
 import { startHistoryExistenceCheckTimer, stopHistoryExistenceCheckTimer } from './lib/historyMaintenance';
 import { getWorkerUrl, setWorkerUrl, getSyncToken, setSyncToken, exportConfig, importConfig } from './lib/worker-config';
+import { applyThemeMode, getNextThemeMode, readStoredThemeMode, watchSystemTheme, writeStoredThemeMode } from './lib/theme';
 import PwaStatus from './components/PwaStatus';
+import AppVersion from './components/AppVersion';
+import ConfigTransferDialog from './components/ConfigTransferDialog';
+import { cacheServerInfo } from './lib/serverInfoCache';
+import { resolveInitialRoute } from './lib/sessionState';
 import './index.css';
 
 export default function App() {
-  const [route, setRoute] = useState(() => parseRouteFromLocation());
+  const [route, setRoute] = useState(() => resolveInitialRoute(parseRouteFromLocation()));
+  const [themeMode, setThemeMode] = useState(() => {
+    const mode = readStoredThemeMode();
+    applyThemeMode(mode);
+    return mode;
+  });
   
   const [savedConfig, setSavedConfig] = useState({
     url: localStorage.getItem('lrr_server_url') || '',
@@ -25,13 +39,38 @@ export default function App() {
     syncToken: getSyncToken(),
   });
 
-  const [loginError, setLoginError] = useState('');
+  const [loginNotice, setLoginNotice] = useState(null);
   const [loginLoading, setLoginLoading] = useState(false);
-  const [workerConfigOpen, setWorkerConfigOpen] = useState(false);
+  const [workerCollapsed, setWorkerCollapsed] = useState(true);
+  const [configTransfer, setConfigTransfer] = useState(null);
+
+  useEffect(() => {
+    if (loginNotice?.type !== 'success') return undefined;
+    const timer = setTimeout(() => setLoginNotice(null), 3000);
+    return () => clearTimeout(timer);
+  }, [loginNotice]);
   
   useEffect(() => {
-    loadTagDB(); 
+    const run = () => loadTagDB();
+    if (typeof requestIdleCallback === 'function') {
+      const id = requestIdleCallback(run, { timeout: 1500 });
+      return () => cancelIdleCallback(id);
+    }
+    const timer = setTimeout(run, 250);
+    return () => clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    applyThemeMode(themeMode);
+    writeStoredThemeMode(themeMode);
+    return watchSystemTheme(() => {
+      if (themeMode === 'auto') applyThemeMode(themeMode);
+    });
+  }, [themeMode]);
+
+  const handleThemeModeChange = () => {
+    setThemeMode((mode) => getNextThemeMode(mode));
+  };
 
   useEffect(() => {
     const applyRoute = (route) => {
@@ -42,7 +81,12 @@ export default function App() {
       applyRoute(event.detail || parseRouteFromLocation());
     };
     const handlePopState = () => {
-      applyRoute(parseRouteFromLocation());
+      const next = parseRouteFromLocation();
+      if (!canNavigate(next)) {
+        window.history.go(1);
+        return;
+      }
+      applyRoute(next);
     };
 
     window.addEventListener('lrr:navigate', handleNavigate);
@@ -61,121 +105,103 @@ export default function App() {
 
   const handleConnect = async (e) => {
     e.preventDefault();
-    setLoginError('');
+    setLoginNotice(null);
     setLoginLoading(true);
     try {
-      await checkServerStatus(tempConfig.url, tempConfig.key);
+      const serverInfo = await checkServerStatus(tempConfig.url, tempConfig.key);
       localStorage.setItem('lrr_server_url', tempConfig.url);
       localStorage.setItem('lrr_api_key', tempConfig.key);
+      cacheServerInfo(serverInfo);
       setWorkerUrl(tempConfig.workerUrl);
       setSyncToken(tempConfig.syncToken);
       setSavedConfig({ url: tempConfig.url, key: tempConfig.key });
     } catch (err) {
-      setLoginError(err.message || '无法连接到服务器，请检查地址和 API Key 是否正确，以及 LRR 服务是否在运行');
+      setLoginNotice({ type: 'error', text: err.message || '无法连接到服务器，请检查 LANraragi 地址和 LANraragi API Key 是否正确，以及 LANraragi 服务是否在运行' });
     } finally {
       setLoginLoading(false);
     }
   };
 
   const handleExportConfig = () => {
-    let cfg = {};
-    try { cfg = JSON.parse(atob(exportConfig())); } catch {}
-    if (tempConfig.url) cfg.lrr_server_url = tempConfig.url;
-    if (tempConfig.key) cfg.lrr_api_key = tempConfig.key;
-    if (tempConfig.workerUrl) cfg.lrr_worker_url = tempConfig.workerUrl;
-    if (tempConfig.syncToken) cfg.lrr_sync_token = tempConfig.syncToken;
-    const encoded = btoa(JSON.stringify(cfg));
-    navigator.clipboard.writeText(encoded).then(() => {
-      alert('配置已复制到剪贴板。在其他设备粘贴导入即可。');
-    }).catch(() => {
-      prompt('复制以下文本到其他设备导入:', encoded);
+    const encoded = exportConfig({
+      lrr_server_url: tempConfig.url,
+      lrr_api_key: tempConfig.key,
+      lrr_worker_url: tempConfig.workerUrl,
+      lrr_sync_token: tempConfig.syncToken,
     });
+    setConfigTransfer({ mode: 'export', value: encoded });
   };
 
   const handleImportConfig = async () => {
     let encoded = '';
     try { encoded = await navigator.clipboard.readText(); } catch {}
-    if (!encoded) encoded = prompt('粘贴从其他设备导出的配置文本:') || '';
-    if (!encoded) return;
-    try {
-      const count = importConfig(encoded);
-      const next = {
-        url: localStorage.getItem('lrr_server_url') || '',
-        key: localStorage.getItem('lrr_api_key') || '',
-        workerUrl: getWorkerUrl(),
-        syncToken: getSyncToken(),
-      };
-      setTempConfig(next);
-      alert(`已导入 ${count} 项配置`);
-    } catch (err) {
-      setLoginError(err.message || '导入失败');
-    }
+    setConfigTransfer({ mode: 'import', value: encoded });
+  };
+
+  const handleConfirmImportConfig = async (encoded) => {
+    const count = importConfig(encoded);
+    const next = {
+      url: localStorage.getItem('lrr_server_url') || '',
+      key: localStorage.getItem('lrr_api_key') || '',
+      workerUrl: getWorkerUrl(),
+      syncToken: getSyncToken(),
+    };
+    setTempConfig(next);
+    const nextThemeMode = readStoredThemeMode();
+    applyThemeMode(nextThemeMode);
+    setThemeMode(nextThemeMode);
+    setConfigTransfer(null);
+    setLoginNotice({ type: 'success', text: `已导入 ${count} 项配置` });
   };
 
   if (!savedConfig.url || !savedConfig.key) {
     return (
       <>
-        <div style={{ display: 'flex', minHeight: '100vh', alignItems: 'center', justifyContent: 'center', padding: '20px', overflowY: 'auto', boxSizing: 'border-box' }}>
-          <form onSubmit={handleConnect} className="glass-panel" style={{ padding: '36px 30px', display: 'flex', flexDirection: 'column', gap: '20px', width: '100%', maxWidth: '440px', margin: 'auto 0' }}>
-            <div style={{ textAlign: 'center', marginBottom: '8px' }}>
-              <h2 style={{ margin: '0 0 8px 0', fontSize: '24px' }}>配置 LANraragi</h2>
-              <div style={{ fontSize: '13px', color: 'var(--text-sub)' }}>连接到你的专属私人漫画库</div>
+        <div className="login-shell">
+          <div className="login-stack">
+          <form onSubmit={handleConnect} className={`glass-panel login-card${workerCollapsed ? ' is-worker-collapsed' : ''}`}>
+            <div className="login-brand-lockup">
+              <img className="login-brand-logo is-dark" src="/logo-white.png" alt="" aria-hidden="true" />
+              <img className="login-brand-logo is-light" src="/logo-black.png" alt="" aria-hidden="true" />
+              <h2 className="login-title">Readoshi</h2>
             </div>
             
             <div>
-              <label style={{ display: 'block', fontSize: '13px', marginBottom: '8px', color: 'var(--text-sub)' }}>服务器地址 *</label>
-              <input type="text" className="input-glass" placeholder="如 http://192.168.1.10:3000" value={tempConfig.url} onChange={e => setTempConfig({...tempConfig, url: e.target.value})} required />
+              <label className="field-label" htmlFor="server-url">LANraragi 地址 *</label>
+              <input id="server-url" name="server-url" type="url" inputMode="url" autoComplete="url" spellCheck={false} className="input-glass" value={tempConfig.url} onChange={e => setTempConfig({...tempConfig, url: e.target.value})} required />
             </div>
             
             <div>
-              <label style={{ display: 'block', fontSize: '13px', marginBottom: '8px', color: 'var(--text-sub)' }}>API Key *</label>
-              <input type="password" className="input-glass" placeholder="在 LRR 设置页面获取" value={tempConfig.key} onChange={e => setTempConfig({...tempConfig, key: e.target.value})} required />
+              <label className="field-label" htmlFor="api-key">LANraragi API Key *</label>
+              <input id="api-key" name="api-key" type="password" autoComplete="off" spellCheck={false} className="input-glass" value={tempConfig.key} onChange={e => setTempConfig({...tempConfig, key: e.target.value})} required />
             </div>
 
-            <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '14px' }}>
-              <button
-                type="button"
-                onClick={() => setWorkerConfigOpen(v => !v)}
-                title={workerConfigOpen ? '收起Worker设置' : '展开Worker设置'}
-                style={{
-                  width: '100%',
-                  padding: '0 4px',
-                  fontSize: '13px',
-                  color: 'var(--text-sub)',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  background: 'transparent',
-                  border: 'none',
-                  cursor: 'pointer',
-                }}
-              >
-                <span>Worker 相关设置</span>
-                <span style={{ color: '#ccc', opacity: 0.8, padding: '4px', display: 'flex' }}>
-                  <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" style={{ transition: 'transform 0.3s', transform: workerConfigOpen ? 'rotate(0deg)' : 'rotate(180deg)' }}>
+            <div className="login-worker-section-content">
+              <div className="login-worker-heading">
+                <span>Worker 设置</span>
+                <button
+                  type="button"
+                  className="login-collapse-button"
+                  onClick={() => setWorkerCollapsed(value => !value)}
+                  aria-expanded={!workerCollapsed}
+                  aria-controls="login-worker-fields"
+                  aria-label={workerCollapsed ? '展开 Worker 设置' : '收起 Worker 设置'}
+                >
+                  <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true">
                     <path d="M6 15l6-6 6 6z" />
                   </svg>
-                </span>
-              </button>
-              <div style={{
-                overflow: 'hidden',
-                maxHeight: workerConfigOpen ? '230px' : '0px',
-                opacity: workerConfigOpen ? 1 : 0,
-                transition: 'max-height 0.28s cubic-bezier(0.4,0,0.2,1), opacity 0.2s ease',
-              }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '14px' }}>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '13px', marginBottom: '8px', color: 'var(--text-sub)' }}>Cloudflare Worker 端点</label>
-                    <input type="text" className="input-glass" placeholder="https://lrr-sync.xxx.workers.dev" value={tempConfig.workerUrl} onChange={e => setTempConfig({...tempConfig, workerUrl: e.target.value})} />
-                    <div style={{ fontSize: '11px', color: 'var(--text-sub)', marginTop: '5px', lineHeight: 1.5 }}>
-                      用于 EH 评论代理与远端阅读历史
-                    </div>
-                  </div>
-
-                  <div>
-                    <label style={{ display: 'block', fontSize: '13px', marginBottom: '8px', color: 'var(--text-sub)' }}>访问 Token</label>
-                    <input type="password" className="input-glass" placeholder="需与 KV 空间 tokens 字段中的 Token 保持一致" value={tempConfig.syncToken} onChange={e => setTempConfig({...tempConfig, syncToken: e.target.value})} />
-                  </div>
+                </button>
+              </div>
+              <div id="login-worker-fields" className={`login-worker-fields${workerCollapsed ? ' is-collapsed' : ''}`}>
+                <div>
+                  <label className="field-label" htmlFor="worker-url">Cloudflare Worker 端点</label>
+                  <input id="worker-url" name="worker-url" type="url" inputMode="url" autoComplete="off" spellCheck={false} className="input-glass" value={tempConfig.workerUrl} onChange={e => setTempConfig({...tempConfig, workerUrl: e.target.value})} />
+                </div>
+                <div>
+                  <label className="field-label" htmlFor="sync-token">访问 Token</label>
+                  <span className="secret-input-shell" data-secret={tempConfig.syncToken}>
+                    <input id="sync-token" name="sync-token" type="text" autoComplete="off" spellCheck={false} className="input-glass secret-input" value={tempConfig.syncToken} onChange={e => setTempConfig({...tempConfig, syncToken: e.target.value})} />
+                  </span>
                 </div>
               </div>
             </div>
@@ -189,22 +215,29 @@ export default function App() {
               </button>
             </div>
 
-            <button type="submit" className="btn" style={{ marginTop: '8px', padding: '12px' }} disabled={loginLoading}>
-              {loginLoading ? '正在验证连接...' : '开始阅读'}
+            <button type="submit" className="btn" style={{ marginTop: '8px', padding: '12px', background: 'var(--accent)', borderColor: 'rgba(141,216,255,0.58)', color: '#fff' }} disabled={loginLoading}>
+              {loginLoading ? '正在验证连接…' : '开始阅读'}
             </button>
 
-            {loginError && (
-              <div style={{
-                background: 'rgba(244,67,54,0.12)', border: '1px solid rgba(244,67,54,0.3)',
-                borderRadius: '8px', padding: '10px 14px', fontSize: '13px', color: '#f44336',
-                lineHeight: 1.5
-              }}>
-                {loginError}
-              </div>
-            )}
           </form>
+          {loginNotice && (
+            <div className="login-stack-notice">
+              <div className={`login-notice is-${loginNotice.type}`} role={loginNotice.type === 'error' ? 'alert' : 'status'}>
+                {loginNotice.text}
+              </div>
+            </div>
+          )}
+          <AppVersion />
+          </div>
         </div>
         <PwaStatus />
+        <ConfigTransferDialog
+          open={!!configTransfer}
+          mode={configTransfer?.mode}
+          initialValue={configTransfer?.value}
+          onCancel={() => setConfigTransfer(null)}
+          onConfirm={handleConfirmImportConfig}
+        />
       </>
     );
   }
@@ -218,6 +251,8 @@ export default function App() {
     );
   }
 
+  if (route.kind === 'metadata') return <><MetadataPage archiveId={route.archiveId} /><PwaStatus /></>;
+
   if (route.kind === 'history') {
     return (
       <>
@@ -226,6 +261,26 @@ export default function App() {
       </>
     );
   }
+
+  if (route.kind === 'watchlist') {
+    return (
+      <>
+        <WatchlistPage onSelectArchive={(id) => navigateToArchive(id)} onBack={() => navigateHome()} />
+        <PwaStatus />
+      </>
+    );
+  }
+
+  if (route.kind === 'dedupe') {
+    return (
+      <>
+        <DeduplicatePage onBack={() => navigateHome()} />
+        <PwaStatus />
+      </>
+    );
+  }
+
+  if (route.kind === 'upload') return <><UploadPage /><PwaStatus /></>;
 
   return (
     <>
@@ -240,7 +295,7 @@ export default function App() {
           syncToken: getSyncToken(),
         });
         navigateHome({ replace: true });
-      }} />
+      }} themeMode={themeMode} onThemeModeChange={handleThemeModeChange} />
       <PwaStatus />
     </>
   );

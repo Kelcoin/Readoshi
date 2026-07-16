@@ -1,7 +1,7 @@
 {
-  "name": "LRReact Reader",
-  "short_name": "LRReact Reader",
-  "description": "Modern LANraragi reader with cloud sync & E-Hentai comments",
+  "name": "Readoshi",
+  "short_name": "Readoshi",
+  "description": "Readoshi — A LANraragi Reader",
   "start_url": "/",
   "display": "standalone",
   "display_override": ["standalone", "minimal-ui"],

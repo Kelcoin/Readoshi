@@ -1,27 +1,41 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useReducer } from 'react';
 import { createPortal } from 'react-dom';
-import { lrrApi } from '../lib/api';
-import { getHistory, getHideRead, setHideRead, getCropCover, setCropCover, removeHistoryItem, loadHistoryState, hasRemoteHistory } from '../lib/history';
+import { loadArchiveMetadataBatch, lrrApi } from '../lib/api';
+import { getHistory, getHideRead, setHideRead, getCropCover, setCropCover, getArchiveBrowseMode, setArchiveBrowseMode, removeHistoryItem, loadHistoryState } from '../lib/history';
+import { addWatchlistItem, getWatchlist, getWatchlistAutoRemoveIds, loadWatchlistState, mergeWatchlistProgress, removeWatchlistItem, removeWatchlistItems } from '../lib/watchlist';
 import { loadTagDB, startTagDBUpdateTimer, stopTagDBUpdateTimer } from '../lib/tags';
 import { getWorkerUrl, setWorkerUrl, getSyncToken, setSyncToken, exportConfig, importConfig } from '../lib/worker-config';
-import { extractEhGalleryUrl, getEhCookie, getEhFavoriteDeleteSync, removeEhFavorite, setEhFavoriteDeleteSync } from '../lib/ehFavoriteSync';
+import { runHistoryExistenceCheck } from '../lib/historyMaintenance';
+import { getEhCookie, getEhFavoriteDeleteSync, hasValidEhCookie, setEhFavoriteDeleteSync } from '../lib/ehFavoriteSync';
+import { acquireBodyScrollLock } from '../lib/bodyScrollLock';
+import { deleteArchiveWithFavoriteSync } from '../lib/archiveDeletion';
 import ArchiveCard from '../components/ArchiveCard';
 import ArchiveContextMenu from '../components/ArchiveContextMenu';
 import ConfirmDialog from '../components/ConfirmDialog';
+import TextInputDialog from '../components/TextInputDialog';
 import CustomSelect from '../components/CustomSelect';
 import TagSuggest from '../components/TagSuggest';
-import { HomeSectionGlyph, getSectionGlyphColor } from '../components/AppGlyphs';
+import CacheSettings from '../components/CacheSettings';
+import EhFavoriteDeleteSwitch from '../components/EhFavoriteDeleteSwitch';
+import ToggleSwitch from '../components/ToggleSwitch';
+import AppVersion from '../components/AppVersion';
+import ConfigTransferDialog from '../components/ConfigTransferDialog';
+import SettingHint from '../components/SettingHint';
+import { HomeSectionGlyph, ThemeModeGlyph, ToolbarGlyph, getSectionGlyphColor } from '../components/AppGlyphs';
+import { deleteFilterPreset, readFilterPresets, renameFilterPreset, saveFilterPreset } from '../lib/filterPresets';
 import { getStoredCategories, loadCategories, startCategoriesUpdateTimer, stopCategoriesUpdateTimer } from '../lib/categories';
-import { clearImageCache } from '../lib/imageCache';
 import { claimColdRestoreRoute, consumeHomeNavigationSnapshot, getBootState, loadHomeSnapshot, markBackground, saveHomeNavigationSnapshot, saveHomeSnapshot } from '../lib/sessionState';
 import { getStoredServerInfo, loadServerInfo } from '../lib/serverInfoCache';
 import { useHorizontalScroller } from '../lib/horizontalScroller';
-import { navigateHistory, navigateHome } from '../lib/navigation';
+import { navigateDeduplicate, navigateHistory, navigateHome, navigateToMetadata, navigateUpload, navigateWatchlist } from '../lib/navigation';
+import { ARCHIVE_BROWSE_MODES, ARCHIVE_PAGE_SIZE, clampArchivePage, getArchivePageAfterResize, getArchivePageCount, getArchivePageStart, getSmartArchivePageSize, observeLastArchiveRowCentering } from '../lib/archivePagination';
+import { reduceArchiveRefreshPhase } from '../lib/archiveRefreshMotion';
+import { ARCHIVE_PROGRESS_VISIBILITY, normalizeArchiveProgressVisibility, shouldShowArchiveProgress } from '../lib/archiveProgress';
 
 const FILTER_KEY = 'lrr_filter';
-const PRESETS_KEY = 'lrr_filter_presets';
 const RANDOMS_RECENT_KEY = 'lrr_random_recent_v1';
 const RANDOMS_BATCH_SIZE = 8;
+const RANDOMS_DEFAULT_BATCHES = 2;
 const RANDOMS_FILL_MAX_ITEMS = 24;
 const RANDOMS_FETCH_ATTEMPTS = 3;
 const RANDOMS_RECENT_LIMIT = 48;
@@ -37,6 +51,14 @@ const FILTER_INPUT_MIN_WIDTH = 400;
 const FILTER_ACTIONS_MIN_WIDTH = 320;
 const FILTER_LAYOUT_GAP = 12;
 const FILTER_STACK_BREAKPOINT = FILTER_INPUT_MIN_WIDTH + FILTER_ACTIONS_MIN_WIDTH + FILTER_LAYOUT_GAP;
+const HOME_CAROUSEL_GLOW_PADDING = 44;
+const HOME_CAROUSEL_EXPANDED_HEIGHT = '420px';
+const UNTAGGED_CATEGORY_ID = '__untagged__';
+const UNTAGGED_CATEGORY = Object.freeze({ id: UNTAGGED_CATEGORY_ID, name: '无标签' });
+
+function getHomeCarouselPadding(isNarrow) {
+  return `${HOME_CAROUSEL_GLOW_PADDING}px ${isNarrow ? 14 : 20}px`;
+}
 
 function readFilter() {
   try {
@@ -95,15 +117,6 @@ function replaceCurrentFilterToken(query, token) {
   return formatFilterTokens(tokens, { trailingComma: true });
 }
 
-function readPresets() {
-  try {
-    return JSON.parse(localStorage.getItem(PRESETS_KEY)) || [];
-  } catch { return []; }
-}
-function writePresets(p) {
-  localStorage.setItem(PRESETS_KEY, JSON.stringify(p));
-}
-
 function readRecentRandomIds() {
   try {
     const parsed = JSON.parse(localStorage.getItem(RANDOMS_RECENT_KEY));
@@ -141,6 +154,12 @@ function scoreRandomBatch(items, currentIds, recentIds) {
 
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function waitForPaint() {
+  return new Promise(resolve => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
 }
 
 async function withAbortTimeout(task, timeoutMs) {
@@ -204,7 +223,7 @@ function SkeletonCard({ showProgress = false }) {
   return (
     <div style={{
       flexShrink: 0, minWidth: '150px', width: '150px',
-      background: 'rgba(22, 24, 32, 0.85)',
+      background: 'var(--surface-1)',
       borderRadius: '14px',
       border: '1px solid rgba(255,255,255,0.08)',
       display: 'flex', flexDirection: 'column', padding: '12px',
@@ -220,12 +239,12 @@ function SkeletonCard({ showProgress = false }) {
         <div className="shimmer-strip" style={{ position: 'absolute', inset: 0 }} />
       </div>
       {showProgress && (
-        <div style={{ width: '48px', height: '4px', borderRadius: '999px', background: 'rgba(74,159,240,0.22)', marginTop: '8px' }} />
+        <div style={{ width: '100%', height: '3px', marginTop: '2px', borderRadius: '999px', background: 'rgba(74,159,240,0.22)' }} />
       )}
       <div style={{
         height: '12px', borderRadius: '4px',
         background: 'rgba(255,255,255,0.05)',
-        width: '84%', marginTop: showProgress ? '10px' : '12px',
+        width: '84%', marginTop: '12px',
       }} />
       <div style={{
         height: '12px', borderRadius: '4px',
@@ -280,16 +299,58 @@ function CollapseButton({ collapsed, onClick, title }) {
       type="button"
       onClick={onClick}
       title={title}
-      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ccc', opacity: 0.8, padding: '4px', borderRadius: '4px', display: 'flex' }}
+      aria-label={title}
+      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-sub)', opacity: 0.8, padding: '4px', borderRadius: '4px', display: 'flex' }}
     >
-      <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" style={{ transition: 'transform 0.3s', transform: collapsed ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true" style={{ transition: 'transform 0.3s', transform: collapsed ? 'rotate(180deg)' : 'rotate(0deg)' }}>
         <path d="M6 15l6-6 6 6z" />
       </svg>
     </button>
   );
 }
 
-export default function Home({ onSelectArchive, onLogout }) {
+const THEME_MODE_LABELS = {
+  auto: '自适应',
+  dark: '深色',
+  light: '浅色',
+};
+const READER_SETTINGS_KEY = 'lrr_reader_settings';
+const DEFAULT_READER_EH_SETTINGS = {
+  ehEnabled: false,
+  ehCookie: '',
+  ehMinScore: 0,
+  ehMaxComments: 45,
+  ehSortMethod: 'score',
+  ehSortOrder: 'desc',
+  progressBarVisibility: ARCHIVE_PROGRESS_VISIBILITY.HISTORY,
+};
+
+function readReaderSettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(READER_SETTINGS_KEY) || '{}');
+    const standaloneCookie = (localStorage.getItem('lrr_eh_cookie') || '').trim();
+    const settings = saved && typeof saved === 'object' ? saved : {};
+    return {
+      ...DEFAULT_READER_EH_SETTINGS,
+      ...settings,
+      progressBarVisibility: normalizeArchiveProgressVisibility(settings.progressBarVisibility),
+      ehCookie: typeof settings.ehCookie === 'string' && settings.ehCookie.trim()
+        ? settings.ehCookie
+        : standaloneCookie,
+    };
+  } catch {
+    return { ...DEFAULT_READER_EH_SETTINGS };
+  }
+}
+
+function writeReaderSettings(settings) {
+  localStorage.setItem(READER_SETTINGS_KEY, JSON.stringify(settings));
+  const cookie = String(settings?.ehCookie || '').trim();
+  if (cookie) localStorage.setItem('lrr_eh_cookie', cookie);
+  else localStorage.removeItem('lrr_eh_cookie');
+}
+
+export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', onThemeModeChange }) {
   const [navSnapshot] = useState(() => consumeHomeNavigationSnapshot());
   const [coldRestoreBoot] = useState(() => {
     const params = new URLSearchParams(window.location.search);
@@ -324,22 +385,33 @@ export default function Home({ onSelectArchive, onLogout }) {
     return cachedKey === snapshotFilterKey ? snapshot : null;
   })();
   const [history, setHistory] = useState([]);
+  const [watchlist, setWatchlist] = useState([]);
   const [hideRead, setHideReadState] = useState(getHideRead);
   const [cropCover, setCropCoverState] = useState(getCropCover);
+  const [archiveBrowseMode, setArchiveBrowseModeState] = useState(() => getArchiveBrowseMode());
   const [showConfig, setShowConfig] = useState(false);
+  const [configTransfer, setConfigTransfer] = useState(null);
+  const [configNotice, setConfigNotice] = useState(null);
   const [historyDeleteTarget, setHistoryDeleteTarget] = useState(null);
   const [archiveMenu, setArchiveMenu] = useState(null);
   const [archiveDeleteTarget, setArchiveDeleteTarget] = useState(null);
+  const [archiveDeleteSyncConfirmed, setArchiveDeleteSyncConfirmed] = useState(true);
   const [archiveSelectionMode, setArchiveSelectionMode] = useState(false);
+  const [archiveSelectionActionsMounted, setArchiveSelectionActionsMounted] = useState(false);
   const [selectedArchiveIds, setSelectedArchiveIds] = useState(() => new Set());
   const [bulkDeletePending, setBulkDeletePending] = useState(false);
+  const [bulkDeleteSyncConfirmed, setBulkDeleteSyncConfirmed] = useState(true);
   const [archiveDeleting, setArchiveDeleting] = useState(false);
   const [ehFavoriteDeleteSync, setEhFavoriteDeleteSyncState] = useState(getEhFavoriteDeleteSync);
   const [historySyncing, setHistorySyncing] = useState(false);
+  const [watchlistChecking, setWatchlistChecking] = useState(false);
 
   const [cfgWorkerUrl, setCfgWorkerUrl] = useState(getWorkerUrl());
   const [cfgSyncToken, setCfgSyncToken] = useState(getSyncToken());
-  const [workerConfigOpen, setWorkerConfigOpen] = useState(false);
+  const [readerSettings, setReaderSettings] = useState(readReaderSettings);
+  const showHistoricalArchiveProgress = shouldShowArchiveProgress(readerSettings.progressBarVisibility, true);
+  const showGlobalArchiveProgress = shouldShowArchiveProgress(readerSettings.progressBarVisibility, false);
+  const reserveGlobalProgressSpace = readerSettings.progressBarVisibility === ARCHIVE_PROGRESS_VISIBILITY.GLOBAL;
   const [randoms, setRandoms] = useState(() => {
     if (homeSnapshot && Array.isArray(homeSnapshot.randoms) && homeSnapshot.randoms.length > 0) {
       return homeSnapshot.randoms;
@@ -352,6 +424,7 @@ export default function Home({ onSelectArchive, onLogout }) {
     return typeof ps.randomsUpdatedAt === 'number' ? ps.randomsUpdatedAt : (ps.ts || 0);
   });
   const [historyCollapsed, setHistoryCollapsed] = useState(() => !!homeSnapshot?.historyCollapsed);
+  const [watchlistCollapsed, setWatchlistCollapsed] = useState(() => !!homeSnapshot?.watchlistCollapsed);
   const [randomCollapsed, setRandomCollapsed] = useState(() => !!homeSnapshot?.randomCollapsed);
   const [archives, setArchives] = useState(() => {
     if (homeSnapshot && Array.isArray(homeSnapshot.archives) && homeSnapshot.archives.length > 0) {
@@ -371,24 +444,44 @@ export default function Home({ onSelectArchive, onLogout }) {
     const ps = homeSnapshot;
     return Number.isFinite(Number(ps?.archiveTotal)) ? Number(ps.archiveTotal) : null;
   });
+  const [archivePage, setArchivePage] = useState(() => {
+    const ps = homeSnapshot;
+    return Number.isFinite(Number(ps?.archivePage)) ? Math.max(0, Number(ps.archivePage)) : 0;
+  });
+  const [archivePageInput, setArchivePageInput] = useState(() => {
+    const ps = homeSnapshot;
+    return String((Number.isFinite(Number(ps?.archivePage)) ? Math.max(0, Number(ps.archivePage)) : 0) + 1);
+  });
+  const [archivePageSize, setArchivePageSize] = useState(() => (
+    Number.isFinite(Number(homeSnapshot?.archivePageSize)) ? Math.max(1, Number(homeSnapshot.archivePageSize)) : ARCHIVE_PAGE_SIZE
+  ));
   const [loading, setLoading] = useState(false);
+  const [archiveLoadError, setArchiveLoadError] = useState('');
   const [archivesRefreshing, setArchivesRefreshing] = useState(false);
-  const [presets, setPresets] = useState(readPresets);
+  const [archiveRefreshPhase, dispatchArchiveRefresh] = useReducer(reduceArchiveRefreshPhase, 'idle');
+  const [presets, setPresets] = useState(readFilterPresets);
   const [showPresets, setShowPresets] = useState(false);
-  const [selectedCategory, setSelectedCategory] = useState(null);
+  const [presetNameDialog, setPresetNameDialog] = useState(null);
+  const [editingPreset, setEditingPreset] = useState('');
+  const [presetDeleteTarget, setPresetDeleteTarget] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState(() => homeSnapshot?.selectedCategory || null);
   const [categories, setCategories] = useState([]);
-  const [columnsPerRow, setColumnsPerRow] = useState(5);
   const [stackFilterControls, setStackFilterControls] = useState(window.innerWidth < FILTER_STACK_BREAKPOINT);
   const didFetchArchivesRef = useRef(false);
   const didApplyUrlFilterRef = useRef(false);
   const archivesSectionRef = useRef(null);
   const gridRef = useRef(null);
+  const archivePageRef = useRef(archivePage);
+  const archivePageSizeRef = useRef(archivePageSize);
   const sentinelRef = useRef(null);
   const pendingArchivesScrollRef = useRef(false);
   const archivesRef = useRef([]);
   const randomsRef = useRef([]);
   const randomsAutoFillBlockedRef = useRef(false);
+  const randomsAutoFillInFlightRef = useRef(false);
   useEffect(() => { archivesRef.current = archives; }, [archives]);
+  useEffect(() => { archivePageRef.current = archivePage; }, [archivePage]);
+  useEffect(() => { archivePageSizeRef.current = archivePageSize; }, [archivePageSize]);
   useEffect(() => { randomsRef.current = randoms; }, [randoms]);
   const archivesLenRef = useRef(0);
   const hasMoreRef = useRef(true);
@@ -396,6 +489,8 @@ export default function Home({ onSelectArchive, onLogout }) {
   const lastFetchedRef = useRef(0);
   const lastFetchedFilterRef = useRef('');
   const archiveFetchSeqRef = useRef(0);
+  const archiveAbortControllerRef = useRef(null);
+  const archiveRequestInFlightRef = useRef(false);
   const [isNarrow, setIsNarrow] = useState(window.innerWidth < 600);
   const [serverOnline, setServerOnline] = useState(null);
   const [serverProbeRunning, setServerProbeRunning] = useState(false);
@@ -405,12 +500,24 @@ export default function Home({ onSelectArchive, onLogout }) {
     return !(ps && Array.isArray(ps.randoms) && ps.randoms.length > 0);
   });
   const [randomsRefreshing, setRandomsRefreshing] = useState(false);
+  const [watchlistOverflow, setWatchlistOverflow] = useState(false);
   const coldRestoreRef = useRef(coldRestoreBoot);
   const navigationRestoreRef = useRef(!!navSnapshot && !!homeSnapshot);
+  const verticalScrollRestoredRef = useRef(false);
   const wasBackgroundedRef = useRef(false);
   const resumeRefreshSuppressedUntilRef = useRef(0);
   const serverProbePromiseRef = useRef(null);
   const serverProbeLastAtRef = useRef(0);
+  const archiveBrowseStateRef = useRef(null);
+  archiveBrowseStateRef.current = {
+    archiveBrowseMode,
+    archivePage,
+    archivePageSize,
+    archiveTotal,
+    filter,
+    selectedCategory,
+    startOffset,
+  };
 
   const skipResumeTriggeredRefresh = useCallback(() => {
     const now = Date.now();
@@ -430,8 +537,10 @@ export default function Home({ onSelectArchive, onLogout }) {
   const filterInputRef = useRef(null);
   const filterControlsRef = useRef(null);
   const historyScroller = useHorizontalScroller();
+  const watchlistScroller = useHorizontalScroller();
   const randomScroller = useHorizontalScroller();
   const getHistoryScrollerNode = historyScroller.getNode;
+  const getWatchlistScrollerNode = watchlistScroller.getNode;
   const getRandomScrollerNode = randomScroller.getNode;
 
   const buildHomeStateSnapshot = useCallback((overrides = {}) => ({
@@ -441,14 +550,20 @@ export default function Home({ onSelectArchive, onLogout }) {
     startOffset,
     hasMore,
     archiveTotal,
+    archiveBrowseMode,
+    archivePage,
+    archivePageSize,
     filter,
+    selectedCategory,
     historyCollapsed,
+    watchlistCollapsed,
     randomCollapsed,
     scrollY: window.scrollY || window.pageYOffset || 0,
     historyScrollLeft: getHistoryScrollerNode?.()?.scrollLeft || 0,
+    watchlistScrollLeft: getWatchlistScrollerNode?.()?.scrollLeft || 0,
     randomScrollLeft: getRandomScrollerNode?.()?.scrollLeft || 0,
     ...overrides,
-  }), [archiveTotal, filter, getHistoryScrollerNode, getRandomScrollerNode, hasMore, historyCollapsed, randomCollapsed, randomsUpdatedAt, startOffset]);
+  }), [archiveBrowseMode, archivePage, archivePageSize, archiveTotal, filter, getHistoryScrollerNode, getRandomScrollerNode, getWatchlistScrollerNode, hasMore, historyCollapsed, randomCollapsed, randomsUpdatedAt, selectedCategory, startOffset, watchlistCollapsed]);
 
   const saveCurrentHomeForNavigation = useCallback(() => {
     const snapshot = buildHomeStateSnapshot();
@@ -466,10 +581,68 @@ export default function Home({ onSelectArchive, onLogout }) {
     navigateHistory();
   }, [saveCurrentHomeForNavigation]);
 
+  const handleNavigateWatchlist = useCallback(() => {
+    saveCurrentHomeForNavigation();
+    navigateWatchlist();
+  }, [saveCurrentHomeForNavigation]);
+
+  const handleNavigateDeduplicate = useCallback(() => {
+    saveCurrentHomeForNavigation();
+    setShowConfig(false);
+    navigateDeduplicate();
+  }, [saveCurrentHomeForNavigation]);
+
+  const handleNavigateUpload = useCallback(() => {
+    saveCurrentHomeForNavigation();
+    setShowConfig(false);
+    navigateUpload();
+  }, [saveCurrentHomeForNavigation]);
+
+  const handleExportConfig = () => {
+    setConfigTransfer({ mode: 'export', value: exportConfig() });
+  };
+
+  const handleImportConfig = async () => {
+    let value = '';
+    try { value = await navigator.clipboard.readText(); } catch {}
+    setConfigTransfer({ mode: 'import', value });
+  };
+
+  const handleConfirmImportConfig = async (encoded) => {
+    const count = importConfig(encoded);
+    setCfgWorkerUrl(getWorkerUrl());
+    setCfgSyncToken(getSyncToken());
+    setReaderSettings(readReaderSettings());
+    setEhFavoriteDeleteSyncState(getEhFavoriteDeleteSync());
+    setConfigTransfer(null);
+    setConfigNotice({
+      title: '导入完成',
+      message: `已导入 ${count} 项配置。重新加载后生效。`,
+    });
+  };
+
+  const updateReaderSettings = useCallback((updater) => {
+    setReaderSettings((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      writeReaderSettings(next);
+      return next;
+    });
+  }, []);
+
+  const watchlistWithProgress = useMemo(() => mergeWatchlistProgress(watchlist, history), [history, watchlist]);
+  const watchlistAutoRemoveIds = useMemo(() => getWatchlistAutoRemoveIds(watchlistWithProgress), [watchlistWithProgress]);
+  const watchlistIds = useMemo(() => new Set(watchlistWithProgress.map((item) => item.id || item.arcid).filter(Boolean)), [watchlistWithProgress]);
+
+  useEffect(() => {
+    if (watchlistAutoRemoveIds.length > 0) removeWatchlistItems(watchlistAutoRemoveIds).catch(() => {});
+  }, [watchlistAutoRemoveIds]);
+
   const handleOpenArchiveMenu = useCallback((archive, point, event, options = {}) => {
     if (archiveSelectionMode) return;
-    setArchiveMenu({ archive, x: point.x, y: point.y, ...options });
-  }, [archiveSelectionMode]);
+    const archiveId = archive?.arcid || archive?.id;
+    const showRemoveWatchlist = options.showRemoveWatchlist ?? (archiveId ? watchlistIds.has(archiveId) : false);
+    setArchiveMenu({ archive, x: point.x, y: point.y, ...options, showRemoveWatchlist });
+  }, [archiveSelectionMode, watchlistIds]);
 
   const handleArchiveDownload = useCallback(async (archive) => {
     const archiveId = archive?.arcid || archive?.id;
@@ -506,6 +679,7 @@ export default function Home({ onSelectArchive, onLogout }) {
     setArchives((prev) => prev.filter((arc) => !idSet.has(arc.arcid || arc.id)));
     setRandoms((prev) => prev.filter((arc) => !idSet.has(arc.arcid || arc.id)));
     setHistory((prev) => prev.filter((item) => !idSet.has(item.id)));
+    setWatchlist((prev) => prev.filter((item) => !idSet.has(item.id || item.arcid)));
     setSelectedArchiveIds((prev) => {
       const next = new Set(prev);
       idSet.forEach((id) => next.delete(id));
@@ -513,38 +687,16 @@ export default function Home({ onSelectArchive, onLogout }) {
     });
   }, []);
 
-  const syncEhFavoriteBeforeDelete = useCallback(async (archive) => {
-    if (!ehFavoriteDeleteSync) return { skipped: true, reason: 'disabled' };
-    const archiveId = archive?.arcid || archive?.id;
-    let galleryUrl = extractEhGalleryUrl(archive);
-    if (!galleryUrl && archiveId) {
-      try {
-        const metadata = await lrrApi.getArchive(archiveId);
-        galleryUrl = extractEhGalleryUrl({ ...archive, ...metadata });
-      } catch {}
-    }
-    if (!galleryUrl) return { skipped: true, reason: 'missing-url' };
-    return removeEhFavorite({
-      galleryUrl,
-      cookie: getEhCookie(),
-      workerUrl: getWorkerUrl(),
-      token: getSyncToken(),
-    });
+  const deleteArchiveWithSync = useCallback(async (archive, confirmationEnabled) => {
+    return deleteArchiveWithFavoriteSync(archive, { syncEnabled: ehFavoriteDeleteSync, confirmationEnabled });
   }, [ehFavoriteDeleteSync]);
-
-  const deleteArchiveWithSync = useCallback(async (archive) => {
-    const archiveId = archive?.arcid || archive?.id;
-    if (!archiveId) throw new Error('归档 ID 缺失');
-    await syncEhFavoriteBeforeDelete(archive);
-    await lrrApi.deleteArchive(archiveId);
-    return archiveId;
-  }, [syncEhFavoriteBeforeDelete]);
 
   const handleArchiveDelete = useCallback(async () => {
     if (!archiveDeleteTarget) return;
     setArchiveDeleting(true);
     try {
-      const archiveId = await deleteArchiveWithSync(archiveDeleteTarget);
+      const archiveId = await deleteArchiveWithSync(archiveDeleteTarget, archiveDeleteSyncConfirmed);
+      removeWatchlistItem(archiveId).catch(() => {});
       removeDeletedArchiveIds([archiveId]);
       setArchiveDeleteTarget(null);
     } catch (err) {
@@ -552,7 +704,7 @@ export default function Home({ onSelectArchive, onLogout }) {
     } finally {
       setArchiveDeleting(false);
     }
-  }, [archiveDeleteTarget, deleteArchiveWithSync, removeDeletedArchiveIds]);
+  }, [archiveDeleteSyncConfirmed, archiveDeleteTarget, deleteArchiveWithSync, removeDeletedArchiveIds, removeWatchlistItem]);
 
   useEffect(() => {
     if (archives.length === 0 && randoms.length === 0) return;
@@ -560,7 +712,7 @@ export default function Home({ onSelectArchive, onLogout }) {
       archives,
       randoms,
     }));
-  }, [archives, buildHomeStateSnapshot, randoms, archiveTotal, filter, hasMore, historyCollapsed, randomCollapsed, randomsUpdatedAt, startOffset]);
+  }, [archives, buildHomeStateSnapshot, randoms, archiveBrowseMode, archivePage, archivePageSize, archiveTotal, filter, hasMore, historyCollapsed, randomCollapsed, randomsUpdatedAt, startOffset, watchlistCollapsed]);
 
   const scrollToArchives = useCallback(() => {
     const run = () => {
@@ -578,35 +730,35 @@ export default function Home({ onSelectArchive, onLogout }) {
     }
   }, [scrollToArchives]);
 
+  // Restore vertical scroll before first paint. Never write window scroll again after this point.
+  useLayoutEffect(() => {
+    if (!navigationRestoreRef.current || !homeSnapshot || verticalScrollRestoredRef.current) return;
+    verticalScrollRestoredRef.current = true;
+    if (typeof homeSnapshot.scrollY === 'number') {
+      window.scrollTo({ top: homeSnapshot.scrollY, left: 0, behavior: 'auto' });
+    }
+  }, [homeSnapshot]);
+
+  // Restore horizontal scrollers after mount. This effect must not modify window scroll.
   useEffect(() => {
     if (!navigationRestoreRef.current || !homeSnapshot) return undefined;
-    let cancelled = false;
-    const restoreScroll = () => {
-      if (cancelled) return;
+    const frame = requestAnimationFrame(() => {
       if (typeof homeSnapshot.historyScrollLeft === 'number') {
         const el = getHistoryScrollerNode?.();
         if (el) el.scrollLeft = homeSnapshot.historyScrollLeft;
+      }
+      if (typeof homeSnapshot.watchlistScrollLeft === 'number') {
+        const el = getWatchlistScrollerNode?.();
+        if (el) el.scrollLeft = homeSnapshot.watchlistScrollLeft;
       }
       if (typeof homeSnapshot.randomScrollLeft === 'number') {
         const el = getRandomScrollerNode?.();
         if (el) el.scrollLeft = homeSnapshot.randomScrollLeft;
       }
-      if (typeof homeSnapshot.scrollY === 'number') {
-        window.scrollTo({ top: homeSnapshot.scrollY, left: 0, behavior: 'auto' });
-      }
-    };
-    const frame = requestAnimationFrame(() => requestAnimationFrame(restoreScroll));
-    const timers = [60, 180, 420].map((delayMs) => setTimeout(restoreScroll, delayMs));
-    const releaseTimer = setTimeout(() => {
       navigationRestoreRef.current = false;
-    }, 520);
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(frame);
-      timers.forEach(clearTimeout);
-      clearTimeout(releaseTimer);
-    };
-  }, [getHistoryScrollerNode, getRandomScrollerNode, homeSnapshot]);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [getHistoryScrollerNode, getRandomScrollerNode, getWatchlistScrollerNode, homeSnapshot]);
 
   useEffect(() => {
     const el = filterControlsRef.current;
@@ -705,11 +857,11 @@ export default function Home({ onSelectArchive, onLogout }) {
     writeFilter(filter);
   }, [filter]);
 
-  // On mount: load history from Worker when configured, otherwise local storage.
+  // Load minimal history state, then hydrate display metadata from LANraragi by arcid.
   useEffect(() => {
     (async () => {
       setHistory(getHistory());
-      if (hasRemoteHistory() && !coldRestoreRef.current) {
+      if (!coldRestoreRef.current) {
         loadHistoryState().then((state) => {
           setHistory(state.histories);
           setHideReadState(state.hideRead);
@@ -728,6 +880,19 @@ export default function Home({ onSelectArchive, onLogout }) {
     };
     window.addEventListener('lrr:history-changed', refreshHistory);
     return () => window.removeEventListener('lrr:history-changed', refreshHistory);
+  }, []);
+
+  useEffect(() => {
+    setWatchlist(getWatchlist());
+    if (!coldRestoreRef.current) {
+      loadWatchlistState().then((state) => setWatchlist(state.items)).catch(() => setWatchlist(getWatchlist()));
+    }
+  }, []);
+
+  useEffect(() => {
+    const refreshWatchlist = () => setWatchlist(getWatchlist());
+    window.addEventListener('lrr:watchlist-changed', refreshWatchlist);
+    return () => window.removeEventListener('lrr:watchlist-changed', refreshWatchlist);
   }, []);
 
   // Fetch randoms — but only if not already hydrated from page-state cache
@@ -796,8 +961,8 @@ export default function Home({ onSelectArchive, onLogout }) {
       stopTagDBUpdateTimer();
       stopCategoriesUpdateTimer();
       persistBackgroundSnapshot();
-      // Release image blob memory before iOS evaluates process for suspension
-      try { clearImageCache(); } catch {}
+      // Keep mounted Blob URLs valid across bfcache/background restores.
+      // The browser releases them with the document when the page is discarded.
     };
     const handleFocus = () => {
       if (document.visibilityState === 'visible') {
@@ -809,6 +974,7 @@ export default function Home({ onSelectArchive, onLogout }) {
     window.addEventListener('focus', handleFocus);
     document.addEventListener('visibilitychange', handleVisibility);
     return () => {
+      clearTimeout(restartTimer);
       window.removeEventListener('pageshow', handlePageShow);
       window.removeEventListener('pagehide', handlePageHide);
       window.removeEventListener('focus', handleFocus);
@@ -819,71 +985,191 @@ export default function Home({ onSelectArchive, onLogout }) {
   // Lock body scroll when config modal is open
   useEffect(() => {
     if (showConfig) {
-      const prev = document.body.style.overflow;
-      document.body.style.overflow = 'hidden';
-      return () => { document.body.style.overflow = prev; };
+      return acquireBodyScrollLock();
     }
+    return undefined;
   }, [showConfig]);
 
   useEffect(() => {
     const update = () => {
-      const w = window.innerWidth - 32;
-      const cols = Math.max(1, Math.floor((w + 16) / (150 + 16)));
-      setColumnsPerRow(cols);
+      const gridWidth = gridRef.current?.clientWidth || window.innerWidth - 32;
+      const gap = window.innerWidth < 600 ? 10 : 16;
+      const cols = Math.max(1, Math.floor((gridWidth + gap) / (150 + gap)));
+      const nextPageSize = getSmartArchivePageSize({ columns: cols, rows: 4, minimum: 20 });
+      if (nextPageSize === archivePageSizeRef.current) return;
+      const nextPage = getArchivePageAfterResize(archivePageRef.current, archivePageSizeRef.current, nextPageSize);
+      archivePageRef.current = nextPage;
+      archivePageSizeRef.current = nextPageSize;
+      setArchivePage(nextPage);
+      setArchivePageInput(String(nextPage + 1));
+      setArchivePageSize(nextPageSize);
     };
     update();
     window.addEventListener('resize', update);
     return () => window.removeEventListener('resize', update);
-  }, []);
+  }, [cropCover]);
+
+  useLayoutEffect(() => {
+    return observeLastArchiveRowCentering(gridRef.current);
+  }, [archiveBrowseMode, archivePage, archivePageSize, archives.length, isNarrow]);
+
+  const archiveSideEffectsRef = useRef({ exitColdRestoreMode, scrollToArchives });
+  archiveSideEffectsRef.current = { exitColdRestoreMode, scrollToArchives };
 
   const doFetch = useCallback(async (isReset, options = {}) => {
-    const { background = false, force = false, clearSearchCache = false, filterOverride = null } = options;
-    const effectiveFilter = filterOverride || filter;
-    exitColdRestoreMode();
+    const current = archiveBrowseStateRef.current;
+    const mode = options.modeOverride || current.archiveBrowseMode;
+    const {
+      background = false,
+      force = false,
+      clearSearchCache = false,
+      filterOverride = null,
+      pageIndex = mode === ARCHIVE_BROWSE_MODES.paged ? current.archivePage : 0,
+    } = options;
+    const selectedCategoryOverride = Object.hasOwn(options, 'selectedCategoryOverride')
+      ? options.selectedCategoryOverride
+      : current.selectedCategory;
+    const effectiveFilter = filterOverride || current.filter;
+    const isUntaggedMode = selectedCategoryOverride?.id === UNTAGGED_CATEGORY_ID;
+    archiveSideEffectsRef.current.exitColdRestoreMode();
     const now = Date.now();
-    const filterKey = `${effectiveFilter.query}|${effectiveFilter.sortBy}|${effectiveFilter.order}|${effectiveFilter.active}`;
+    const isPagedMode = mode === ARCHIVE_BROWSE_MODES.paged;
+    const pageSize = isPagedMode ? current.archivePageSize : ARCHIVE_PAGE_SIZE;
+    const requestedPage = clampArchivePage(pageIndex, current.archiveTotal, current.archivePageSize);
+    const filterKey = `${isUntaggedMode ? UNTAGGED_CATEGORY_ID : ''}|${effectiveFilter.query}|${effectiveFilter.sortBy}|${effectiveFilter.order}|${effectiveFilter.active}|${mode}|${pageSize}|${isPagedMode ? requestedPage : 'scroll'}`;
     if (isReset && !force && lastFetchedFilterRef.current === filterKey && now - lastFetchedRef.current < 2500) return;
+    if (!isReset && archiveRequestInFlightRef.current) return false;
 
-    lastFetchedFilterRef.current = filterKey;
-    lastFetchedRef.current = now;
+    archiveRequestInFlightRef.current = true;
+    const markArchiveFetchCompleted = () => {
+      lastFetchedFilterRef.current = filterKey;
+      lastFetchedRef.current = Date.now();
+    };
+    archiveAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    archiveAbortControllerRef.current = controller;
     const fetchSeq = ++archiveFetchSeqRef.current;
-    if (background) setArchivesRefreshing(true);
-    else setLoading(true);
+    if (isReset && isUntaggedMode && !background) {
+      setArchives([]);
+      setStartOffset(0);
+      setArchiveTotal(null);
+      setHasMore(false);
+    }
+    if (background) {
+      setLoading(false);
+      setArchivesRefreshing(true);
+    } else {
+      setArchivesRefreshing(false);
+      setLoading(true);
+    }
+    setArchiveLoadError('');
     try {
       if (clearSearchCache) {
         try { await lrrApi.clearSearchCache(); } catch (e) { console.warn('清理搜索缓存失败，继续刷新归档列表', e); }
       }
+      if (isUntaggedMode) {
+        const ids = await lrrApi.getUntaggedArchives({ signal: controller.signal });
+        if (fetchSeq !== archiveFetchSeqRef.current) return false;
+        if (ids.length === 0) {
+          setArchiveTotal(0);
+          setArchivePage(0);
+          setArchivePageInput('1');
+          setArchives([]);
+          setStartOffset(0);
+          setHasMore(false);
+          markArchiveFetchCompleted();
+          return true;
+        }
+        const total = ids.length;
+        const nextPage = isPagedMode ? clampArchivePage(requestedPage, total, pageSize) : 0;
+        const batchStart = isPagedMode ? getArchivePageStart(nextPage, pageSize) : (isReset ? 0 : current.startOffset);
+        const batchIds = ids.slice(batchStart, batchStart + pageSize);
+        const data = await loadArchiveMetadataBatch(
+          batchIds,
+          (id) => lrrApi.getArchive(id, { signal: controller.signal }),
+          { signal: controller.signal, ignoreMissing: true },
+        );
+        if (fetchSeq !== archiveFetchSeqRef.current) return false;
+        setArchiveTotal(total);
+        setArchivePage(nextPage);
+        setArchivePageInput(String(nextPage + 1));
+        setArchives((prev) => (isPagedMode || isReset ? data : [...prev, ...data]));
+        setStartOffset(batchStart + batchIds.length);
+        setHasMore(batchStart + batchIds.length < total);
+        markArchiveFetchCompleted();
+        return true;
+      }
       const query = effectiveFilter.active ? (effectiveFilter.query || '').trim() : '';
-      const start = isReset ? 0 : startOffset;
-      const res = await lrrApi.search(query, start, effectiveFilter.sortBy, effectiveFilter.order);
-      const data = res.data || [];
-      if (fetchSeq !== archiveFetchSeqRef.current) return;
-      const total = getSearchTotal(res, data.length, isReset ? null : archiveTotal);
+      const start = isPagedMode ? getArchivePageStart(requestedPage, pageSize) : (isReset ? 0 : current.startOffset);
+      let res = await lrrApi.search(query, start, effectiveFilter.sortBy, effectiveFilter.order, { signal: controller.signal });
+      let data = res.data || [];
+      if (isPagedMode && data.length > 0 && data.length < pageSize) {
+        let nextStart = start + data.length;
+        while (data.length < pageSize) {
+          const nextRes = await lrrApi.search(query, nextStart, effectiveFilter.sortBy, effectiveFilter.order, { signal: controller.signal });
+          const nextData = nextRes.data || [];
+          if (nextData.length === 0) break;
+          data = [...data, ...nextData].slice(0, pageSize);
+          nextStart += nextData.length;
+          res = nextRes;
+          const nextTotal = getSearchTotal(nextRes, nextData.length, null);
+          if (Number.isFinite(nextTotal) && nextStart >= nextTotal) break;
+        }
+      }
+      if (isPagedMode && data.length > pageSize) data = data.slice(0, pageSize);
+      if (fetchSeq !== archiveFetchSeqRef.current) return false;
+      const total = getSearchTotal(res, data.length, isReset ? null : current.archiveTotal);
       setArchiveTotal(total);
-      if (isReset) {
+      if (isPagedMode) {
+        const nextPage = clampArchivePage(requestedPage, total, pageSize);
+        setArchivePage(nextPage);
+        setArchivePageInput(String(nextPage + 1));
+        setArchives(data);
+        setStartOffset(start + data.length);
+        setHasMore(Number.isFinite(Number(total)) ? nextPage < getArchivePageCount(total, pageSize) - 1 : data.length > 0);
+      } else if (isReset) {
+        setArchivePage(0);
+        setArchivePageInput('1');
         setArchives(data);
         setStartOffset(data.length);
-        setHasMore(data.length > 0 && data.length >= 50);
+        setHasMore(Number.isFinite(Number(total)) ? data.length < Number(total) : data.length > 0);
       } else {
         setArchives(prev => [...prev, ...data]);
         setStartOffset(start + data.length);
-        setHasMore(data.length > 0 && data.length >= 50);
+        setHasMore(Number.isFinite(Number(total)) ? start + data.length < Number(total) : data.length > 0);
       }
+      markArchiveFetchCompleted();
+      return true;
     } catch (e) {
+      if (e?.name === 'AbortError') return false;
+      if (fetchSeq !== archiveFetchSeqRef.current) return false;
+      controller.abort();
       console.error('获取归档列表失败', e);
+      setArchiveLoadError(e?.message || (isUntaggedMode ? '获取无标签归档失败，请重试' : '获取归档列表失败，请重试'));
+      return false;
     } finally {
-      if (background) setArchivesRefreshing(false);
-      else setLoading(false);
-      if (isReset && pendingArchivesScrollRef.current) {
-        pendingArchivesScrollRef.current = false;
-        setTimeout(scrollToArchives, 80);
+      if (fetchSeq === archiveFetchSeqRef.current) {
+        if (archiveAbortControllerRef.current === controller) archiveAbortControllerRef.current = null;
+        archiveRequestInFlightRef.current = false;
+        if (background) setArchivesRefreshing(false);
+        else setLoading(false);
+        if (isReset && pendingArchivesScrollRef.current) {
+          pendingArchivesScrollRef.current = false;
+          setTimeout(archiveSideEffectsRef.current.scrollToArchives, 80);
+        }
       }
     }
-  }, [archiveTotal, exitColdRestoreMode, filter, scrollToArchives, startOffset]);
+  }, []);
+
+  useEffect(() => () => {
+    archiveFetchSeqRef.current += 1;
+    archiveRequestInFlightRef.current = false;
+    archiveAbortControllerRef.current?.abort();
+  }, []);
 
   // Sync state to refs for IntersectionObserver (avoids stale closures)
   useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
-  useEffect(() => { loadingRef.current = loading; }, [loading]);
+  useEffect(() => { loadingRef.current = loading || archivesRefreshing; }, [archivesRefreshing, loading]);
 
   // Infinite scroll: IntersectionObserver on bottom sentinel
   // Re-create observer whenever archives length or filter changes (doFetch gets fresh closure)
@@ -891,10 +1177,11 @@ export default function Home({ onSelectArchive, onLogout }) {
 
   useEffect(() => {
     const sentinel = sentinelRef.current;
+    if (archiveBrowseMode !== ARCHIVE_BROWSE_MODES.scroll) return undefined;
     if (!sentinel) return;
     const observer = new IntersectionObserver(
       ([entry]) => {
-        if (entry.isIntersecting && archivesLenRef.current > 0 && hasMoreRef.current && !loadingRef.current) {
+        if (entry.isIntersecting && archivesLenRef.current > 0 && hasMoreRef.current && !archiveRequestInFlightRef.current) {
           doFetch(false);
         }
       },
@@ -902,7 +1189,7 @@ export default function Home({ onSelectArchive, onLogout }) {
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [archives.length, filter.query, filter.sortBy, filter.order, filter.active]);
+  }, [archiveBrowseMode, archives.length, doFetch, filter.query, filter.sortBy, filter.order, filter.active]);
 
   // Watch for new filter arrivals from tag clicks (poll localStorage briefly)
   useEffect(() => {
@@ -941,7 +1228,7 @@ export default function Home({ onSelectArchive, onLogout }) {
     const firstFetch = !didFetchArchivesRef.current;
     didFetchArchivesRef.current = true;
     doFetch(true, { force: firstFetch });
-  }, [filter.query, filter.sortBy, filter.order, filter.active]);
+  }, [archiveBrowseMode, archivePage, archivePageSize, doFetch, filter.query, filter.sortBy, filter.order, filter.active, selectedCategory?.id]);
 
   // Handle popstate (browser back/forward)
   useEffect(() => {
@@ -960,22 +1247,23 @@ export default function Home({ onSelectArchive, onLogout }) {
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
-  const fetchRandoms = useCallback(async ({ background = false, preferFresh = true, append = false } = {}) => {
+  const fetchRandoms = useCallback(async ({ background = false, preferFresh = true, append = false, silent = false } = {}) => {
     exitColdRestoreMode();
     if (!append) randomsAutoFillBlockedRef.current = false;
-    if (background) setRandomsRefreshing(true);
-    else setRandomsLoading(true);
+    if (background && !silent) setRandomsRefreshing(true);
+    else if (!background) setRandomsLoading(true);
     const currentIds = new Set(getRandomBatchIds(randomsRef.current));
     const recentIds = new Set(readRecentRandomIds());
     try {
       let bestBatch = [];
       let bestScore = Number.NEGATIVE_INFINITY;
+      const requestCount = append ? RANDOMS_BATCH_SIZE : RANDOMS_BATCH_SIZE * RANDOMS_DEFAULT_BATCHES;
 
       for (let attempt = 0; attempt < RANDOMS_FETCH_ATTEMPTS; attempt += 1) {
         let batch = [];
         try {
           const res = await withAbortTimeout(
-            (signal) => lrrApi.getRandom(RANDOMS_BATCH_SIZE, { signal }),
+            (signal) => lrrApi.getRandom(requestCount, { signal }),
             RANDOMS_REQUEST_TIMEOUT_MS,
           );
           batch = Array.isArray(res?.data) ? res.data : [];
@@ -991,7 +1279,18 @@ export default function Home({ onSelectArchive, onLogout }) {
           bestScore = score;
         }
 
-        if (!preferFresh || score >= RANDOMS_BATCH_SIZE * 5) break;
+        if (!preferFresh || score >= requestCount * 5) break;
+      }
+
+      const plannedAdditions = [];
+      if (append) {
+        const seen = new Set(currentIds);
+        bestBatch.forEach((item) => {
+          const id = item?.arcid || item?.id;
+          if (!id || seen.has(id)) return;
+          seen.add(id);
+          plannedAdditions.push(item);
+        });
       }
 
       setRandoms((prev) => {
@@ -1003,10 +1302,7 @@ export default function Home({ onSelectArchive, onLogout }) {
           seen.add(id);
           return true;
         });
-        if (additions.length === 0) {
-          randomsAutoFillBlockedRef.current = true;
-          return prev;
-        }
+        if (additions.length === 0) return prev;
         return [...prev, ...additions].slice(0, RANDOMS_FILL_MAX_ITEMS);
       });
       setRandomsUpdatedAt(Date.now());
@@ -1017,12 +1313,14 @@ export default function Home({ onSelectArchive, onLogout }) {
         ...readRecentRandomIds().filter((id) => !nextIds.includes(id)),
       ];
       writeRecentRandomIds(mergedRecentIds);
+      return append ? plannedAdditions.length : bestBatch.length;
     } catch (e) {
       console.error('随机推荐获取失败', e);
       if (randomsRef.current.length > 0) setRandoms(randomsRef.current);
+      return 0;
     } finally {
-      if (background) setRandomsRefreshing(false);
-      else setRandomsLoading(false);
+      if (background && !silent) setRandomsRefreshing(false);
+      else if (!background) setRandomsLoading(false);
     }
   }, [exitColdRestoreMode]);
 
@@ -1036,26 +1334,106 @@ export default function Home({ onSelectArchive, onLogout }) {
       randomsAutoFillBlockedRef.current
     ) return undefined;
 
-    const frame = requestAnimationFrame(() => {
+    let disposed = false;
+    const frames = [];
+    const timers = [];
+    const needsFill = () => {
       const el = getRandomScrollerNode?.();
-      if (!el) return;
-      if (el.scrollWidth <= el.clientWidth + 8) {
-        fetchRandoms({ background: true, preferFresh: true, append: true });
+      return !!el && el.scrollWidth <= el.clientWidth + 8;
+    };
+    const fillUntilOverflow = async () => {
+      if (disposed || randomsAutoFillInFlightRef.current || !needsFill()) return;
+      randomsAutoFillInFlightRef.current = true;
+      let emptyRuns = 0;
+      try {
+        while (!disposed && needsFill() && randomsRef.current.length < RANDOMS_FILL_MAX_ITEMS) {
+          const before = randomsRef.current.length;
+          const added = await fetchRandoms({ background: true, preferFresh: true, append: true, silent: true });
+          await waitForPaint();
+          const after = randomsRef.current.length;
+          const grew = Math.max(Number(added) || 0, after - before);
+          if (grew <= 0) {
+            emptyRuns += 1;
+            if (emptyRuns >= 2) {
+              randomsAutoFillBlockedRef.current = true;
+              break;
+            }
+            await delay(120);
+          } else {
+            emptyRuns = 0;
+          }
+        }
+      } finally {
+        randomsAutoFillInFlightRef.current = false;
       }
-    });
+    };
+    const scheduleCheck = (delayMs = 0) => {
+      const timer = setTimeout(() => {
+        const frame = requestAnimationFrame(fillUntilOverflow);
+        frames.push(frame);
+      }, delayMs);
+      timers.push(timer);
+    };
 
-    return () => cancelAnimationFrame(frame);
+    [0, 80, 220, 520, 920, 1400].forEach(scheduleCheck);
+
+    const el = getRandomScrollerNode?.();
+    let observer = null;
+    if (el && typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(() => scheduleCheck(40));
+      observer.observe(el);
+    }
+
+    return () => {
+      disposed = true;
+      observer?.disconnect();
+      timers.forEach(clearTimeout);
+      frames.forEach(cancelAnimationFrame);
+    };
   }, [fetchRandoms, getRandomScrollerNode, randomCollapsed, randoms.length, randomsLoading, randomsRefreshing]);
 
-  const displayArchives = useMemo(() => {
-    if (!cropCover) return archives;
-    const cpr = Math.max(1, columnsPerRow);
-    const len = archives.length;
-    if (len <= cpr) return archives;
-    const rem = len % cpr;
-    if (rem === 0) return archives;
-    return archives.slice(0, len - rem);
-  }, [archives, columnsPerRow, cropCover]);
+  useEffect(() => {
+    if (watchlistCollapsed || watchlist.length === 0) {
+      setWatchlistOverflow(false);
+      return undefined;
+    }
+
+    let disposed = false;
+    const frames = [];
+    const timers = [];
+    const updateOverflow = () => {
+      if (disposed) return;
+      const el = getWatchlistScrollerNode?.();
+      if (!el) return;
+      setWatchlistOverflow(el.scrollWidth > el.clientWidth + 8);
+    };
+    const scheduleCheck = (delayMs = 0) => {
+      const timer = setTimeout(() => {
+        const frame = requestAnimationFrame(updateOverflow);
+        frames.push(frame);
+      }, delayMs);
+      timers.push(timer);
+    };
+
+    [0, 80, 220, 520].forEach(scheduleCheck);
+    const el = getWatchlistScrollerNode?.();
+    let observer = null;
+    if (el && typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(() => scheduleCheck(40));
+      observer.observe(el);
+    }
+    window.addEventListener('resize', updateOverflow);
+
+    return () => {
+      disposed = true;
+      observer?.disconnect();
+      window.removeEventListener('resize', updateOverflow);
+      timers.forEach(clearTimeout);
+      frames.forEach(cancelAnimationFrame);
+    };
+  }, [getWatchlistScrollerNode, watchlist.length, watchlistCollapsed]);
+
+  const displayArchives = archives;
 
   const visibleArchiveIds = useMemo(() => (
     displayArchives.map((arc) => arc.arcid || arc.id).filter(Boolean)
@@ -1087,9 +1465,16 @@ export default function Home({ onSelectArchive, onLogout }) {
     setArchiveMenu(null);
     setArchiveSelectionMode((prev) => {
       if (prev) setSelectedArchiveIds(new Set());
+      else setArchiveSelectionActionsMounted(true);
       return !prev;
     });
   }, []);
+
+  useEffect(() => {
+    if (archiveSelectionMode || !archiveSelectionActionsMounted) return undefined;
+    const timer = setTimeout(() => setArchiveSelectionActionsMounted(false), 260);
+    return () => clearTimeout(timer);
+  }, [archiveSelectionActionsMounted, archiveSelectionMode]);
 
   const toggleArchiveSelection = useCallback((archive) => {
     const archiveId = archive?.arcid || archive?.id;
@@ -1100,6 +1485,16 @@ export default function Home({ onSelectArchive, onLogout }) {
       else next.add(archiveId);
       return next;
     });
+  }, []);
+
+  const requestArchiveDelete = useCallback((archive) => {
+    setArchiveDeleteSyncConfirmed(true);
+    setArchiveDeleteTarget(archive);
+  }, []);
+
+  const requestBulkArchiveDelete = useCallback(() => {
+    setBulkDeleteSyncConfirmed(true);
+    setBulkDeletePending(true);
   }, []);
 
   const toggleSelectAllVisibleArchives = useCallback(() => {
@@ -1123,13 +1518,16 @@ export default function Home({ onSelectArchive, onLogout }) {
     for (const archive of selectedArchiveList) {
       const archiveId = archive?.arcid || archive?.id;
       try {
-        const deletedId = await deleteArchiveWithSync(archive);
+        const deletedId = await deleteArchiveWithSync(archive, bulkDeleteSyncConfirmed);
         deletedIds.push(deletedId);
       } catch (err) {
         failures.push({ id: archiveId, title: archive?.title || archiveId, message: err.message || '删除失败' });
       }
     }
-    if (deletedIds.length > 0) removeDeletedArchiveIds(deletedIds);
+    if (deletedIds.length > 0) {
+      removeWatchlistItems(deletedIds).catch(() => {});
+      removeDeletedArchiveIds(deletedIds);
+    }
     setBulkDeletePending(false);
     setArchiveDeleting(false);
     if (failures.length === 0) {
@@ -1139,10 +1537,17 @@ export default function Home({ onSelectArchive, onLogout }) {
     }
     const preview = failures.slice(0, 5).map((item) => '- ' + item.title + ': ' + item.message).join('\n');
     alert('已删除 ' + deletedIds.length + ' 个，' + failures.length + ' 个失败：\n' + preview + (failures.length > 5 ? '\n...' : ''));
-  }, [deleteArchiveWithSync, removeDeletedArchiveIds, selectedArchiveList]);
+  }, [bulkDeleteSyncConfirmed, deleteArchiveWithSync, removeDeletedArchiveIds, removeWatchlistItems, selectedArchiveList]);
 
   const archiveCountLabel = useMemo(() => {
     if (loading && archives.length === 0) return '正在获取结果...';
+    if (selectedCategory?.id === UNTAGGED_CATEGORY_ID && Number.isFinite(Number(archiveTotal))) return `无标签 ${Number(archiveTotal).toLocaleString()} 个`;
+    if (archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged) {
+      if (Number.isFinite(Number(archiveTotal))) {
+        return `${archivePage + 1}/${getArchivePageCount(archiveTotal, archivePageSize)}页 · ${Number(archiveTotal).toLocaleString()}个`;
+      }
+      return archives.length > 0 ? `${archivePage + 1}页 · ${archives.length}个` : `${archivePage + 1}页`;
+    }
     if (Number.isFinite(Number(archiveTotal))) {
       return filter.active
         ? `筛选结果 ${Number(archiveTotal).toLocaleString()} 个`
@@ -1154,11 +1559,34 @@ export default function Home({ onSelectArchive, onLogout }) {
         : `共 ${archives.length.toLocaleString()} 个档案`;
     }
     return filter.active ? '筛选结果 0 个' : '共 0 个档案';
-  }, [archiveTotal, archives.length, filter.active, hasMore, loading]);
+  }, [archiveBrowseMode, archivePage, archivePageSize, archiveTotal, archives.length, filter.active, hasMore, loading, selectedCategory]);
 
-  const handleManualRefreshArchives = useCallback(() => {
+  const archivePageCount = useMemo(() => getArchivePageCount(archiveTotal, archivePageSize), [archivePageSize, archiveTotal]);
+  const archiveRequestBusy = loading || archivesRefreshing;
+  const canGoPrevArchivePage = archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged && archivePage > 0 && !archiveRequestBusy;
+  const canGoNextArchivePage = archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged && !archiveRequestBusy && (Number.isFinite(Number(archiveTotal)) ? archivePage < archivePageCount - 1 : hasMore);
+  const goArchivePage = useCallback((page) => {
+    if (archiveRequestBusy) return;
+    const nextPage = clampArchivePage(page, archiveTotal, archivePageSize);
+    setArchivePage(nextPage);
+    setArchivePageInput(String(nextPage + 1));
+    pendingArchivesScrollRef.current = true;
+  }, [archivePageSize, archiveRequestBusy, archiveTotal]);
+  const submitArchivePageInput = useCallback(() => {
+    const page = Math.max(1, Math.floor(Number(archivePageInput) || 1)) - 1;
+    goArchivePage(page);
+  }, [archivePageInput, goArchivePage]);
+
+  const handleManualRefreshArchives = useCallback(async () => {
     setShowPresets(false);
-    doFetch(true, { force: true, clearSearchCache: true });
+    dispatchArchiveRefresh('start');
+    const refreshed = await doFetch(true, { background: true, force: true, clearSearchCache: true });
+    if (!refreshed) {
+      dispatchArchiveRefresh('fail');
+      return;
+    }
+    dispatchArchiveRefresh('replace');
+    requestAnimationFrame(() => dispatchArchiveRefresh('finish'));
   }, [doFetch]);
 
   useEffect(() => {
@@ -1177,12 +1605,10 @@ export default function Home({ onSelectArchive, onLogout }) {
         ? prev
         : next
     ));
-    if (coldRestoreRef.current || !didFetchArchivesRef.current) {
-      doFetch(true, { force: true, filterOverride: next });
-    }
   }, []);
 
   useEffect(() => {
+    if (archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged) return undefined;
     if (coldRestoreRef.current) return undefined;
     const refresh = () => {
       if (document.visibilityState !== 'visible' || loadingRef.current) return;
@@ -1191,9 +1617,10 @@ export default function Home({ onSelectArchive, onLogout }) {
     };
     const timer = setInterval(refresh, ARCHIVES_AUTO_REFRESH_MS);
     return () => clearInterval(timer);
-  }, [doFetch, skipResumeTriggeredRefresh]);
+  }, [archiveBrowseMode, doFetch, skipResumeTriggeredRefresh]);
 
   useEffect(() => {
+    if (archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged) return undefined;
     const handleFocusRefresh = () => {
       if (coldRestoreRef.current || document.visibilityState !== 'visible') return;
       const now = Date.now();
@@ -1207,20 +1634,32 @@ export default function Home({ onSelectArchive, onLogout }) {
       window.removeEventListener('focus', handleFocusRefresh);
       document.removeEventListener('visibilitychange', handleFocusRefresh);
     };
-  }, [doFetch, skipResumeTriggeredRefresh]);
+  }, [archiveBrowseMode, doFetch, skipResumeTriggeredRefresh]);
 
   const handleCategoryClick = useCallback((cat) => {
     const tag = cat.search || `category:${cat.name}$`;
     if (selectedCategory?.id === cat.id) {
-      setSelectedCategory(null);
       const newQuery = removeFilterToken(filter.query, tag);
-      applyFilter(newQuery, filter.sortBy, filter.order);
+      applyFilter(newQuery, filter.sortBy, filter.order, null);
     } else {
       const newQuery = appendFilterToken(filter.query, tag);
-      setSelectedCategory(cat);
-      applyFilter(newQuery, filter.sortBy, filter.order);
+      applyFilter(newQuery, filter.sortBy, filter.order, cat);
     }
   }, [filter.query, filter.sortBy, filter.order, selectedCategory]);
+
+  const handleUntaggedCategoryClick = useCallback(() => {
+    const nextCategory = selectedCategory?.id === UNTAGGED_CATEGORY_ID ? null : UNTAGGED_CATEGORY;
+    const cleared = { ...DEFAULT_FILTER };
+    lastFetchedFilterRef.current = '';
+    lastFetchedRef.current = 0;
+    writeFilter(cleared);
+    setFilter(cleared);
+    setSelectedCategory(nextCategory);
+    setArchiveTotal(null);
+    setArchivePage(0);
+    setArchivePageInput('1');
+    navigateHome({ replace: true });
+  }, [selectedCategory]);
 
   const clearFilter = () => {
     const cleared = { ...DEFAULT_FILTER };
@@ -1228,19 +1667,22 @@ export default function Home({ onSelectArchive, onLogout }) {
     setFilter(cleared);
     setSelectedCategory(null);
     setArchiveTotal(null);
+    setArchivePage(0);
+    setArchivePageInput('1');
     navigateHome({ replace: true });
-    doFetch(true, { force: true, filterOverride: cleared });
   };
 
-  const applyFilter = (q, s, o) => {
+  const applyFilter = (q, s, o, categoryOverride = null) => {
     const query = q || '';
     const trimmedQuery = query.trim();
     const next = { query, sortBy: s, order: o, active: !!trimmedQuery };
     writeFilter(next);
     setFilter(next);
+    setSelectedCategory(categoryOverride);
     setArchiveTotal(null);
+    setArchivePage(0);
+    setArchivePageInput('1');
     navigateHome({ query: trimmedQuery, replace: true });
-    doFetch(true, { force: true, filterOverride: next });
   };
 
   const handleSearch = () => {
@@ -1254,19 +1696,7 @@ export default function Home({ onSelectArchive, onLogout }) {
     }
   };
 
-  const savePreset = () => {
-    const name = prompt('为当前筛选方案命名:');
-    if (!name || !name.trim()) return;
-    const newPresets = [...presets.filter(p => p.name !== name.trim()), { name: name.trim(), query: filter.query, sortBy: filter.sortBy, order: filter.order }];
-    setPresets(newPresets);
-    writePresets(newPresets);
-  };
-
-  const deletePreset = (name) => {
-    const newPresets = presets.filter(p => p.name !== name);
-    setPresets(newPresets);
-    writePresets(newPresets);
-  };
+  const savePreset = () => setPresetNameDialog({ mode: 'create', value: '' });
 
   const loadPreset = (p) => {
     applyFilter(p.query, p.sortBy, p.order);
@@ -1293,25 +1723,63 @@ export default function Home({ onSelectArchive, onLogout }) {
       return next;
     });
   }, []);
+
+  const handleArchiveBrowseModeChange = useCallback((mode) => {
+    const next = mode === ARCHIVE_BROWSE_MODES.paged ? ARCHIVE_BROWSE_MODES.paged : ARCHIVE_BROWSE_MODES.scroll;
+    setArchiveBrowseMode(next);
+    setArchiveBrowseModeState(next);
+    setArchivePage(0);
+    setArchivePageInput('1');
+    setStartOffset(0);
+    setHasMore(true);
+  }, []);
+
+  const ehFavoriteCookieValid = hasValidEhCookie(readerSettings.ehCookie || getEhCookie());
+  const ehFavoriteSyncReady = ehFavoriteCookieValid && !!getWorkerUrl() && !!getSyncToken();
+
+  useEffect(() => {
+    if (!ehFavoriteSyncReady && ehFavoriteDeleteSync) {
+      setEhFavoriteDeleteSync(false);
+      setEhFavoriteDeleteSyncState(false);
+    }
+  }, [ehFavoriteSyncReady, ehFavoriteDeleteSync]);
+
   const handleToggleEhFavoriteDeleteSync = useCallback(() => {
+    if (!ehFavoriteSyncReady) {
+      setEhFavoriteDeleteSync(false);
+      setEhFavoriteDeleteSyncState(false);
+      return;
+    }
     setEhFavoriteDeleteSyncState(v => {
       const next = !v;
       setEhFavoriteDeleteSync(next);
       return next;
     });
-  }, []);
+  }, [ehFavoriteSyncReady]);
 
   const handleSyncHistory = useCallback(async () => {
     if (!getWorkerUrl() || !getSyncToken() || historySyncing) return;
     setHistorySyncing(true);
     try {
-      const state = await loadHistoryState();
+      const state = await loadHistoryState({ force: true });
       setHistory(state.histories);
       setHideReadState(state.hideRead);
     } finally {
       setHistorySyncing(false);
     }
   }, [historySyncing]);
+
+  const handleCheckWatchlist = useCallback(async () => {
+    if (watchlistChecking) return;
+    setWatchlistChecking(true);
+    try {
+      await runHistoryExistenceCheck({ force: true });
+      setHistory(getHistory());
+      setWatchlist(getWatchlist());
+    } finally {
+      setWatchlistChecking(false);
+    }
+  }, [watchlistChecking]);
 
   const requestRemoveHistory = useCallback((archive) => {
     setHistoryDeleteTarget(archive);
@@ -1323,6 +1791,19 @@ export default function Home({ onSelectArchive, onLogout }) {
     removeHistoryItem(archiveId).catch(() => {});
     setHistory((prev) => prev.filter((item) => item.id !== archiveId));
     setHistoryDeleteTarget(null);
+  }, []);
+
+  const addWatchlistArchive = useCallback((archive) => {
+    if (!archive?.arcid && !archive?.id) return;
+    addWatchlistItem(archive).catch(() => {});
+    setWatchlist(getWatchlist());
+  }, []);
+
+  const removeWatchlistArchive = useCallback((archive) => {
+    const archiveId = archive?.id || archive?.arcid;
+    if (!archiveId) return;
+    removeWatchlistItem(archiveId).catch(() => {});
+    setWatchlist((prev) => prev.filter((item) => (item.id || item.arcid) !== archiveId));
   }, []);
 
   const handleRemoveHistory = useCallback(() => {
@@ -1369,10 +1850,12 @@ export default function Home({ onSelectArchive, onLogout }) {
       }
     `}</style>
     <div style={{ padding: isNarrow ? '16px 10px' : '24px 20px', maxWidth: '1680px', margin: '0 auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '32px' }}>
-        <div>
-          <h1 style={{ fontWeight: 600, margin: '0 0 8px 0', fontSize: '28px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-            LRR 阅读器
+      <div className="home-topbar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: '18px', marginBottom: '32px', flexWrap: 'wrap' }}>
+        <div className="home-brand">
+          <h1 className="home-brand-title" translate="no" aria-label="Readoshi" style={{ fontWeight: 600, margin: '0 0 8px 0', fontSize: '28px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <img className="home-brand-logo is-dark" src="/logo-white.png" alt="" aria-hidden="true" />
+            <img className="home-brand-logo is-light" src="/logo-black.png" alt="" aria-hidden="true" />
+            <span className="home-project-name" aria-hidden="true">Readoshi</span>
             {serverOnline !== null && (
               <button
                 type="button"
@@ -1426,12 +1909,25 @@ export default function Home({ onSelectArchive, onLogout }) {
               </button>
             )}
           </h1>
-          <div style={{ color: 'var(--text-sub)', fontSize: '14px' }}>欢迎回来，继续你的探索之旅</div>
+          <div className="home-welcome" style={{ color: 'var(--text-sub)', fontSize: '14px' }}>
+            <span>欢迎回来</span><span className="home-welcome-detail">，继续你的探索之旅</span>
+          </div>
         </div>
-        <div style={{ display: 'flex', gap: '8px' }}>
+        <div className="home-actions" style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <button
+            className="btn theme-mode-btn"
+            type="button"
+            onClick={onThemeModeChange}
+            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+            title={`切换主题，当前为${THEME_MODE_LABELS[themeMode] || THEME_MODE_LABELS.auto}`}
+            aria-label={`当前主题：${THEME_MODE_LABELS[themeMode] || THEME_MODE_LABELS.auto}`}
+          >
+            <ThemeModeGlyph mode={themeMode} size={18} />
+          </button>
           <button className="btn" onClick={() => {
             setCfgWorkerUrl(getWorkerUrl());
             setCfgSyncToken(getSyncToken());
+            setReaderSettings(readReaderSettings());
             setShowConfig(true);
           }} style={{ fontSize: '13px' }}>设置</button>
           <button className="btn" onClick={onLogout} style={{ fontSize: '13px' }}>退出</button>
@@ -1440,7 +1936,7 @@ export default function Home({ onSelectArchive, onLogout }) {
 
       {history.length > 0 && (
         <section className="glass-panel section-reveal section-reveal-delay-1" style={{ marginBottom: '32px', padding: 0, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px 12px', position: 'relative', zIndex: 0 }}>
+          <div className="home-carousel-header">
             <SectionHeading glyph="continue" onClick={handleNavigateHistory} title="查看全部历史记录">继续阅读</SectionHeading>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <button
@@ -1460,12 +1956,12 @@ export default function Home({ onSelectArchive, onLogout }) {
               />
             </div>
           </div>
-          <div style={{ overflow: 'hidden', transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)', maxHeight: historyCollapsed ? '0px' : '368px' }}>
-            <div ref={historyScroller.ref} onWheelCapture={historyScroller.onWheelCapture} onScroll={historyScroller.onScroll} onMouseDown={historyScroller.onMouseDown} onClickCapture={historyScroller.onClickCapture} onDragStart={historyScroller.onDragStart} style={{ display: 'flex', gap: isNarrow ? '10px' : '16px', overflowX: 'auto', overflowY: 'hidden', padding: isNarrow ? '8px 14px 16px' : '8px 20px 16px', position: 'relative', zIndex: 1, ...historyScroller.getTouchScrollStyle(), ...historyScroller.getMouseScrollStyle() }} className="no-scrollbar">
+          <div style={{ overflow: 'hidden', transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)', maxHeight: historyCollapsed ? '0px' : HOME_CAROUSEL_EXPANDED_HEIGHT }}>
+            <div ref={historyScroller.ref} onWheelCapture={historyScroller.onWheelCapture} onScroll={historyScroller.onScroll} onMouseDown={historyScroller.onMouseDown} onClickCapture={historyScroller.onClickCapture} onDragStart={historyScroller.onDragStart} style={{ display: 'flex', gap: isNarrow ? '10px' : '16px', overflowX: 'auto', overflowY: 'hidden', padding: getHomeCarouselPadding(isNarrow), position: 'relative', zIndex: 1, ...historyScroller.getTouchScrollStyle(), ...historyScroller.getMouseScrollStyle() }} className="no-scrollbar">
               {filteredHistory.length > 0 ? (
                 <>
                   {filteredHistory.slice(0, 10).map(h => (
-                    <ArchiveCard key={`hist-${h.id}`} archive={h} onClick={() => handleSelectArchive(h.id)} onArchiveContextMenu={(archive, point, event) => handleOpenArchiveMenu(archive, point, event, { showRemoveHistory: true })} longPressTitle="打开菜单" currentPage={h.page} showProgressBar noCrop={!cropCover} cacheOnly={coldRestoreRef.current} />
+                    <ArchiveCard key={`hist-${h.id}`} className={watchlistIds.has(h.id) ? 'watchlist-card' : undefined} archive={h} onClick={() => handleSelectArchive(h.id)} onArchiveContextMenu={(archive, point, event) => handleOpenArchiveMenu(archive, point, event, { showRemoveHistory: true })} longPressTitle="打开菜单" currentPage={h.page} showProgressBar={showHistoricalArchiveProgress} reserveProgressSpace={reserveGlobalProgressSpace} noCrop={!cropCover} cacheOnly={coldRestoreRef.current} />
                   ))}
                   {filteredHistory.length > 10 && (
                     <button
@@ -1509,32 +2005,95 @@ export default function Home({ onSelectArchive, onLogout }) {
 
       {!pageReady && history.length === 0 && (
         <section className="glass-panel section-reveal section-reveal-delay-1" style={{ marginBottom: '32px', padding: 0, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ padding: '16px 20px 12px', position: 'relative', zIndex: 0 }}>
+          <div className="home-carousel-header">
             <SectionHeading glyph="continue">继续阅读</SectionHeading>
           </div>
           <div style={{ display: 'flex', gap: '16px', overflowX: 'auto', overflowY: 'hidden', overscrollBehaviorX: 'contain', overscrollBehaviorY: 'contain', padding: isNarrow ? '8px 14px 16px' : '8px 20px 16px', position: 'relative', zIndex: 1 }} className="no-scrollbar">
             {Array.from({ length: 4 }).map((_, i) => (
-              <SkeletonCard key={`hsk-${i}`} showProgress />
+              <SkeletonCard key={`hsk-${i}`} showProgress={showHistoricalArchiveProgress} />
             ))}
+          </div>
+        </section>
+      )}
+
+      {watchlist.length > 0 && (
+        <section className="glass-panel section-reveal section-reveal-delay-1" style={{ marginBottom: '32px', padding: 0, display: 'flex', flexDirection: 'column' }}>
+          <div className="home-carousel-header">
+            <SectionHeading glyph="watchlist" onClick={handleNavigateWatchlist} title="查看全部待看归档">待看归档</SectionHeading>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <button
+                type="button"
+                className="btn"
+                onClick={handleCheckWatchlist}
+                disabled={watchlistChecking}
+                style={{ padding: '6px 12px', fontSize: '12px', opacity: watchlistChecking ? 0.72 : 1 }}
+                title="检查待看归档是否仍存在于 LANraragi"
+              >
+                {watchlistChecking ? '检查中' : '刷新'}
+              </button>
+              <CollapseButton
+                collapsed={watchlistCollapsed}
+                onClick={() => setWatchlistCollapsed(v => !v)}
+                title={watchlistCollapsed ? '展开待看归档' : '收起待看归档'}
+              />
+            </div>
+          </div>
+          <div style={{ overflow: 'hidden', transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)', maxHeight: watchlistCollapsed ? '0px' : HOME_CAROUSEL_EXPANDED_HEIGHT }}>
+            <div ref={watchlistScroller.ref} onWheelCapture={watchlistScroller.onWheelCapture} onScroll={watchlistScroller.onScroll} onMouseDown={watchlistScroller.onMouseDown} onClickCapture={watchlistScroller.onClickCapture} onDragStart={watchlistScroller.onDragStart} style={{ display: 'flex', gap: isNarrow ? '10px' : '16px', overflowX: 'auto', overflowY: 'hidden', padding: getHomeCarouselPadding(isNarrow), position: 'relative', zIndex: 1, ...watchlistScroller.getTouchScrollStyle(), ...watchlistScroller.getMouseScrollStyle() }} className="no-scrollbar">
+              {watchlistWithProgress.map(item => (
+                <ArchiveCard key={`watch-${item.id || item.arcid}`} archive={item} onClick={() => handleSelectArchive(item.id || item.arcid)} onArchiveContextMenu={(archive, point, event) => handleOpenArchiveMenu(archive, point, event, { showRemoveWatchlist: true })} longPressTitle="打开菜单" currentPage={item.page} showProgressBar={showHistoricalArchiveProgress} reserveProgressSpace={reserveGlobalProgressSpace} noCrop={!cropCover} cacheOnly={coldRestoreRef.current} />
+              ))}
+              {watchlistOverflow && (
+                <button
+                  type="button"
+                  onClick={handleNavigateWatchlist}
+                  className="history-view-all-btn"
+                  style={{
+                    flexShrink: 0,
+                    width: isNarrow ? '54px' : '68px',
+                    minWidth: isNarrow ? '54px' : '68px',
+                    height: '286px',
+                    alignSelf: 'stretch',
+                    padding: 0,
+                    border: 'none',
+                    background: 'transparent',
+                    boxShadow: 'none',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                  }}
+                  title="查看全部待看归档"
+                  aria-label="查看全部待看归档"
+                >
+                  <span className="history-view-all-arrow" aria-hidden="true" style={{ display: 'flex', alignItems: 'center' }}>
+                    <svg viewBox="0 0 36 48" width="36" height="48" fill="none" stroke="currentColor" strokeWidth="4.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M8 8l14 16L8 40" />
+                      <path d="M18 8l14 16-14 16" />
+                    </svg>
+                  </span>
+                </button>
+              )}
+            </div>
           </div>
         </section>
       )}
 
       {randomsLoading ? (
         <section className="glass-panel section-reveal section-reveal-delay-2" style={{ marginBottom: '40px', padding: 0, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: isNarrow ? '12px 14px' : '12px 20px', height: '50px', minHeight: '50px', boxSizing: 'border-box', position: 'relative', zIndex: 0 }}>
+          <div className="home-carousel-header">
             <SectionHeading glyph="random">随机漫游</SectionHeading>
             <button className="btn" onClick={() => fetchRandoms({ preferFresh: true })} disabled={randomsRefreshing} style={{ padding: '6px 14px', fontSize: '12px', opacity: randomsRefreshing ? 0.72 : 1 }}>刷新</button>
           </div>
           <div style={{ display: 'flex', gap: '16px', overflowX: 'auto', overflowY: 'hidden', overscrollBehaviorX: 'contain', overscrollBehaviorY: 'contain', padding: isNarrow ? '8px 14px 16px' : '8px 20px 16px', position: 'relative', zIndex: 1 }} className="no-scrollbar">
             {Array.from({ length: 5 }).map((_, i) => (
-              <SkeletonCard key={`rsk-${i}`} />
+              <SkeletonCard key={`rsk-${i}`} showProgress={showGlobalArchiveProgress} />
             ))}
           </div>
         </section>
       ) : randoms.length > 0 ? (
         <section className="glass-panel section-reveal section-reveal-delay-2" style={{ marginBottom: '40px', padding: 0, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: isNarrow ? '12px 14px' : '12px 20px', height: '50px', minHeight: '50px', boxSizing: 'border-box', position: 'relative', zIndex: 0 }}>
+          <div className="home-carousel-header">
             <SectionHeading glyph="random">随机漫游</SectionHeading>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <button className="btn" onClick={() => fetchRandoms({ preferFresh: true })} disabled={randomsRefreshing} style={{ padding: '6px 14px', fontSize: '12px', opacity: randomsRefreshing ? 0.72 : 1 }}>刷新</button>
@@ -1545,17 +2104,19 @@ export default function Home({ onSelectArchive, onLogout }) {
               />
             </div>
           </div>
-          <div style={{ overflow: 'hidden', transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)', maxHeight: randomCollapsed ? '0px' : '368px' }}>
-            <div ref={randomScroller.ref} onWheelCapture={randomScroller.onWheelCapture} onScroll={randomScroller.onScroll} onMouseDown={randomScroller.onMouseDown} onClickCapture={randomScroller.onClickCapture} onDragStart={randomScroller.onDragStart} style={{ display: 'flex', gap: isNarrow ? '10px' : '16px', overflowX: 'auto', overflowY: 'hidden', padding: isNarrow ? '8px 14px 16px' : '8px 20px 16px', position: 'relative', zIndex: 1, ...randomScroller.getTouchScrollStyle(), ...randomScroller.getMouseScrollStyle() }} className="no-scrollbar">
-              {randoms.map(arc => (
-                <ArchiveCard key={`rnd-${arc.arcid}`} archive={arc} onClick={() => handleSelectArchive(arc.arcid)} onArchiveContextMenu={handleOpenArchiveMenu} noCrop={!cropCover} cacheOnly={coldRestoreRef.current} />
+          <div style={{ overflow: 'hidden', transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)', maxHeight: randomCollapsed ? '0px' : HOME_CAROUSEL_EXPANDED_HEIGHT }}>
+            <div ref={randomScroller.ref} onWheelCapture={randomScroller.onWheelCapture} onScroll={randomScroller.onScroll} onMouseDown={randomScroller.onMouseDown} onClickCapture={randomScroller.onClickCapture} onDragStart={randomScroller.onDragStart} style={{ display: 'flex', gap: isNarrow ? '10px' : '16px', overflowX: 'auto', overflowY: 'hidden', padding: getHomeCarouselPadding(isNarrow), position: 'relative', zIndex: 1, ...randomScroller.getTouchScrollStyle(), ...randomScroller.getMouseScrollStyle() }} className="no-scrollbar">
+              {randomsRefreshing ? Array.from({ length: Math.max(5, Math.min(8, randoms.length || 5)) }).map((_, i) => (
+                <SkeletonCard key={`rrsk-${i}`} showProgress={showGlobalArchiveProgress} />
+              )) : randoms.map(arc => (
+                <ArchiveCard key={`rnd-${arc.arcid}`} className={watchlistIds.has(arc.arcid || arc.id) ? 'watchlist-card' : undefined} archive={arc} onClick={() => handleSelectArchive(arc.arcid)} onArchiveContextMenu={handleOpenArchiveMenu} showProgressBar={showGlobalArchiveProgress} reserveProgressSpace={reserveGlobalProgressSpace} noCrop={!cropCover} cacheOnly={coldRestoreRef.current} />
               ))}
             </div>
           </div>
         </section>
       ) : (
         <section className="glass-panel section-reveal section-reveal-delay-2" style={{ marginBottom: '40px', padding: 0, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: isNarrow ? '12px 14px' : '12px 20px', height: '50px', minHeight: '50px', boxSizing: 'border-box', position: 'relative', zIndex: 0 }}>
+          <div className="home-carousel-header">
             <SectionHeading glyph="random">随机漫游</SectionHeading>
             <button className="btn" onClick={() => fetchRandoms({ preferFresh: true })} disabled={randomsRefreshing} style={{ padding: '6px 14px', fontSize: '12px', opacity: randomsRefreshing ? 0.72 : 1 }}>{randomsRefreshing ? '刷新中' : '刷新'}</button>
           </div>
@@ -1567,8 +2128,8 @@ export default function Home({ onSelectArchive, onLogout }) {
 
       <section ref={archivesSectionRef} className="glass-panel section-reveal section-reveal-delay-3" style={{ padding: isNarrow ? '20px 14px' : '24px' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginBottom: '24px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
-            <div style={{ display: 'flex', alignItems: 'flex-end', gap: '10px', minWidth: 0, flexWrap: 'wrap' }}>
+          <div className="archive-toolbar-primary" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+            <div className="archive-toolbar-summary" style={{ display: 'flex', alignItems: 'flex-end', gap: '10px', minWidth: 0 }}>
               <SectionHeading glyph="archives" style={{ lineHeight: 1 }}>全部档案</SectionHeading>
               <span style={{ color: 'var(--text-sub)', fontSize: '12px', lineHeight: 1, paddingBottom: '1px' }}>
                 {archiveCountLabel}
@@ -1595,34 +2156,14 @@ export default function Home({ onSelectArchive, onLogout }) {
             </div>
           </div>
 
-          <div
-            style={{
-              maxHeight: archiveSelectionMode ? '48px' : '0px',
-              opacity: archiveSelectionMode ? 1 : 0,
-              overflow: 'hidden',
-              transform: archiveSelectionMode ? 'translateY(0)' : 'translateY(-6px)',
-              transition: 'max-height 0.26s cubic-bezier(0.4,0,0.2,1), opacity 0.2s ease, transform 0.26s cubic-bezier(0.4,0,0.2,1)',
-            }}
-          >
-            <div style={{ display: 'flex', gap: isNarrow ? '6px' : '8px', alignItems: 'center', flexWrap: 'wrap', paddingTop: '2px' }}>
-              <span style={{ color: 'var(--text-sub)', fontSize: '12px', whiteSpace: 'nowrap' }}>
-                已选 {selectedArchiveIds.size} 个
-              </span>
-              <button
-                className="btn"
-                style={{ padding: '6px 12px', fontSize: '12px' }}
-                onClick={toggleSelectAllVisibleArchives}
-                disabled={visibleArchiveIds.length === 0 || archiveDeleting}
-              >
+          <div className="archive-selection-actions" data-mounted={archiveSelectionActionsMounted ? 'true' : 'false'} data-open={archiveSelectionMode ? 'true' : 'false'} aria-hidden={!archiveSelectionMode}>
+            <div className="archive-selection-actions-inner">
+              <span aria-live="polite" style={{ color: 'var(--accent)', fontSize: '12px', whiteSpace: 'nowrap' }}>已选 {selectedArchiveIds.size} 个</span>
+              <button className="btn archive-selection-primary" tabIndex={archiveSelectionMode ? 0 : -1} style={{ padding: '6px 12px', fontSize: '12px' }} onClick={toggleSelectAllVisibleArchives} disabled={visibleArchiveIds.length === 0 || archiveDeleting}>
                 {allVisibleSelected ? '取消全选' : '全选当前'}
               </button>
-              <button
-                className="btn"
-                style={{ padding: '6px 12px', fontSize: '12px', background: 'rgba(244,67,54,0.16)', borderColor: 'rgba(244,67,54,0.32)', color: '#ffd2d0', opacity: selectedArchiveIds.size === 0 || archiveDeleting ? 0.55 : 1 }}
-                onClick={() => setBulkDeletePending(true)}
-                disabled={selectedArchiveIds.size === 0 || archiveDeleting}
-              >
-                {archiveDeleting ? '删除中' : '删除所选'}
+              <button className="btn archive-selection-delete" tabIndex={archiveSelectionMode ? 0 : -1} onClick={requestBulkArchiveDelete} disabled={selectedArchiveIds.size === 0 || archiveDeleting}>
+                {archiveDeleting ? '删除中…' : '删除所选'}
               </button>
             </div>
           </div>
@@ -1641,6 +2182,9 @@ export default function Home({ onSelectArchive, onLogout }) {
               <input
                 ref={filterInputRef}
                 type="text"
+                name="archive-search"
+                autoComplete="off"
+                aria-label="搜索标签或标题"
                 className="input-glass"
                 style={{ width: '100%', boxSizing: 'border-box', paddingRight: filter.query ? '66px' : '38px' }}
                 placeholder={filter.active ? `筛选: ${filter.query}` : '搜索标签或标题... 按回车筛选'}
@@ -1695,56 +2239,41 @@ export default function Home({ onSelectArchive, onLogout }) {
                 />
               )}
               {showPresets && (
-                <div className="dropdown-animate" style={{
-                  position: 'absolute',
-                  left: 0,
-                  right: 0,
-                  top: 'calc(100% + 8px)',
-                  zIndex: 50,
-                  background: 'rgba(16,18,24,0.96)',
-                  backdropFilter: 'blur(18px)',
-                  WebkitBackdropFilter: 'blur(18px)',
-                  borderRadius: '10px',
-                  padding: '14px',
-                  border: '1px solid rgba(255,255,255,0.08)',
-                  boxShadow: '0 14px 42px rgba(0,0,0,0.42)',
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                    <span style={{ fontSize: '13px', color: 'var(--text-sub)' }}>已保存的筛选方案</span>
-                    <button className="btn" style={{ padding: '5px 10px', fontSize: '11px' }} onClick={savePreset}>
+                <div className="archive-search-presets dropdown-animate">
+                  <div className="archive-search-preset-heading">
+                    <span>已保存的筛选方案</span>
+                    <button className="btn" onClick={savePreset}>
                       + 保存当前筛选
                     </button>
                   </div>
                   {presets.length === 0 ? (
-                    <div style={{ fontSize: '12px', color: 'var(--text-sub)', padding: '8px 0' }}>
+                    <div className="archive-search-empty">
                       暂无预设。设置筛选条件后点击「保存当前筛选」。
                     </div>
                   ) : (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                    <div className="archive-search-preset-list">
                       {presets.map(p => (
-                        <div key={p.name} style={{
-                          display: 'flex', alignItems: 'center', gap: '4px',
-                          background: 'rgba(255,255,255,0.06)', borderRadius: '8px',
-                          padding: '6px 10px', border: '1px solid rgba(255,255,255,0.1)'
-                        }}>
+                        <div key={p.name} className="archive-search-preset-row">
                           <button
-                            className="btn"
-                            style={{ padding: '4px 10px', fontSize: '12px', border: 'none', background: 'transparent' }}
+                            className="archive-search-preset-apply"
                             onClick={() => loadPreset(p)}
                             title={`${p.query} / ${p.sortBy} / ${p.order}`}
                           >
                             {p.name}
                           </button>
                           <button
-                            onClick={() => deletePreset(p.name)}
-                            style={{
-                              background: 'transparent', border: 'none', color: '#888',
-                              cursor: 'pointer', fontSize: '14px', padding: '0 4px', lineHeight: 1
-                            }}
-                            title="删除此预设"
+                            type="button"
+                            className="archive-search-preset-edit"
+                            onClick={() => setEditingPreset(current => current === p.name ? '' : p.name)}
+                            aria-label={`编辑 ${p.name}`}
+                            aria-expanded={editingPreset === p.name}
                           >
-                            ✕
+                            <ToolbarGlyph name="edit" size={16} />
                           </button>
+                          {editingPreset === p.name && <div className="archive-search-preset-actions dropdown-animate">
+                            <button type="button" onClick={() => { setPresetNameDialog({ mode: 'rename', value: p.name }); setEditingPreset(''); }}>重命名</button>
+                            <button type="button" className="is-danger" onClick={() => { setPresetDeleteTarget(p.name); setEditingPreset(''); }}>删除</button>
+                          </div>}
                         </div>
                       ))}
                     </div>
@@ -1774,58 +2303,103 @@ export default function Home({ onSelectArchive, onLogout }) {
           </div>
         </div>
 
-        {categories.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '16px', alignItems: 'center', justifyContent: 'center' }}>
-            {categories.map(cat => {
-              const isActive = selectedCategory?.id === cat.id;
-              const label = cat.name || cat.id;
-              return (
-                <button
-                  key={cat.id}
-                  className="btn"
-                  onClick={() => handleCategoryClick(cat)}
-                  style={{
-                    padding: '4px 12px',
-                    fontSize: '12px',
-                    fontWeight: isActive ? 600 : 400,
-                    borderRadius: '18px',
-                    ...(isActive ? {
-                      background: 'var(--accent)',
-                      borderColor: 'var(--accent)',
-                      color: '#fff',
-                      transform: 'translateY(-2px)',
-                    } : {}),
-                  }}
-                  title={label}
-                >
-                  {label.length > 12 ? label.slice(0, 12) + '...' : label}
-                </button>
-              );
-            })}
-          </div>
-        )}
+        <div className="archive-category-list" style={{ display: 'flex', flexWrap: 'wrap', marginBottom: '16px', alignItems: 'center', justifyContent: 'center' }}>
+          {categories.map(cat => {
+            const isActive = selectedCategory?.id === cat.id;
+            const label = cat.name || cat.id;
+            return (
+              <button
+                key={cat.id}
+                className="btn archive-category-button"
+                onClick={() => handleCategoryClick(cat)}
+                style={{
+                  fontWeight: isActive ? 600 : 400,
+                  borderRadius: '18px',
+                  ...(isActive ? {
+                    background: 'var(--accent)',
+                    borderColor: 'var(--accent)',
+                    color: 'white',
+                    transform: 'translateY(-2px)',
+                  } : {}),
+                }}
+                title={label}
+              >
+                {label.length > 12 ? label.slice(0, 12) + '...' : label}
+              </button>
+            );
+          })}
+          {(() => {
+            const isActive = selectedCategory?.id === UNTAGGED_CATEGORY_ID;
+            return (
+              <button
+                key={UNTAGGED_CATEGORY_ID}
+                className="btn archive-category-button"
+                onClick={handleUntaggedCategoryClick}
+                style={{
+                  fontWeight: isActive ? 600 : 400,
+                  borderRadius: '18px',
+                  ...(isActive ? {
+                    background: 'var(--accent)',
+                    borderColor: 'var(--accent)',
+                    color: 'white',
+                    transform: 'translateY(-2px)',
+                  } : {}),
+                }}
+                title="无标签"
+              >
+                无标签
+              </button>
+            );
+          })()}
+        </div>
 
-        <div ref={gridRef} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gridAutoFlow: 'dense', gap: isNarrow ? '10px' : '16px', justifyItems: 'center' }}>
+        <div ref={gridRef} className={`archive-grid${archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged ? ' is-paged' : ''}`} data-refresh-phase={archiveRefreshPhase} aria-busy={archivesRefreshing} style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: isNarrow ? '10px' : '16px', '--archive-grid-half-gap': isNarrow ? '5px' : '8px' }}>
           {archives.length === 0 && loading ? (
-            Array.from({ length: 12 }).map((_, i) => <SkeletonCard key={`gsk-${i}`} />)
+            Array.from({ length: 12 }).map((_, i) => <SkeletonCard key={`gsk-${i}`} showProgress={showGlobalArchiveProgress} />)
           ) : (
-            displayArchives.map((arc, index) => (
-              <ArchiveCard key={`${arc.arcid}-${index}`} archive={arc} onClick={() => handleSelectArchive(arc.arcid)} onArchiveContextMenu={handleOpenArchiveMenu} noCrop={!cropCover} cacheOnly={coldRestoreRef.current} selectionMode={archiveSelectionMode} selected={selectedArchiveIds.has(arc.arcid || arc.id)} onSelectToggle={toggleArchiveSelection} />
+            displayArchives.map((arc) => (
+              <ArchiveCard key={arc.arcid || arc.id} className={watchlistIds.has(arc.arcid || arc.id) ? 'watchlist-card' : undefined} archive={arc} onClick={() => handleSelectArchive(arc.arcid)} onArchiveContextMenu={handleOpenArchiveMenu} showProgressBar={showGlobalArchiveProgress} reserveProgressSpace={reserveGlobalProgressSpace} noCrop={!cropCover} cacheOnly={coldRestoreRef.current} selectionMode={archiveSelectionMode} selected={selectedArchiveIds.has(arc.arcid || arc.id)} onSelectToggle={toggleArchiveSelection} />
             ))
           )}
         </div>
 
         {archives.length === 0 && !loading && (
-          <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-sub)', fontSize: '14px' }}>
-            {filter.active ? '没有匹配的归档，请尝试其他筛选条件' : '仓库为空，请先在 LANraragi 中添加归档'}
+          <div role={archiveLoadError ? 'alert' : 'status'} aria-live="polite" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-sub)', fontSize: '14px' }}>
+            {archiveLoadError || (selectedCategory?.id === UNTAGGED_CATEGORY_ID ? '没有无标签归档' : (filter.active ? '没有匹配的归档，请尝试其他筛选条件' : '仓库为空，请先在 LANraragi 中添加归档'))}
+          </div>
+        )}
+
+        {archiveLoadError && archives.length > 0 && (
+          <div role="alert" aria-live="polite" style={{ textAlign: 'center', padding: '12px', color: 'var(--text-sub)', fontSize: '14px' }}>
+            {archiveLoadError}
           </div>
         )}
 
         <div ref={sentinelRef} style={{ height: '1px' }} />
 
         <div style={{ textAlign: 'center', marginTop: '36px', paddingBottom: '12px' }}>
-          {hasMore ? (
-            <button className="btn" style={{ padding: '10px 40px' }} onClick={() => doFetch(false)} disabled={loading}>
+          {archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged ? (
+            <div className="archive-pagination-controls">
+              <button className="btn" style={{ padding: '8px 16px', fontSize: '13px' }} onClick={() => goArchivePage(archivePage - 1)} disabled={!canGoPrevArchivePage}>上一页</button>
+              <span className="archive-pagination-jump">
+                第
+                <input
+                  className="input-glass no-spinner"
+                  type="text"
+                  inputMode="numeric"
+                  value={archivePageInput}
+                  onChange={(event) => setArchivePageInput(event.target.value.replace(/[^\d]/g, ''))}
+                  onKeyDown={(event) => { if (event.key === 'Enter' && !archiveRequestBusy) submitArchivePageInput(); }}
+                  disabled={archiveRequestBusy}
+                />
+                页
+                {Number.isFinite(Number(archiveTotal)) && <span className="archive-pagination-total">/ {archivePageCount}</span>}
+              </span>
+              <button className="btn" style={{ padding: '8px 16px', fontSize: '13px' }} onClick={submitArchivePageInput} disabled={archiveRequestBusy}>跳转</button>
+              <button className="btn" style={{ padding: '8px 16px', fontSize: '13px' }} onClick={() => goArchivePage(archivePage + 1)} disabled={!canGoNextArchivePage}>下一页</button>
+            </div>
+          ) : hasMore ? (
+            <button className="btn" style={{ padding: '10px 40px' }} onClick={() => doFetch(false)} disabled={loading || archivesRefreshing}>
               {loading ? '加载中...' : '加载更多'}
             </button>
           ) : (archives.length > 0 && (
@@ -1841,7 +2415,7 @@ export default function Home({ onSelectArchive, onLogout }) {
         backdropFilter: 'blur(12px)',
         WebkitBackdropFilter: 'blur(12px)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        padding: '20px',
+        padding: '16px',
       }}>
         <form className="glass-panel" onClick={e => e.stopPropagation()} onSubmit={(e) => {
           e.preventDefault();
@@ -1849,200 +2423,200 @@ export default function Home({ onSelectArchive, onLogout }) {
           setSyncToken(cfgSyncToken);
           setShowConfig(false);
         }} style={{
-          padding: '32px 28px', display: 'flex', flexDirection: 'column', gap: '18px',
-          width: '100%', maxWidth: '420px',
+          padding: 0, display: 'flex', flexDirection: 'column', gap: 0,
+          width: '100%', maxWidth: '640px',
+          maxHeight: 'calc(100dvh - 32px)', overflow: 'hidden',
         }}>
-          <div style={{ textAlign: 'center', marginBottom: '4px' }}>
-            <h2 style={{ margin: '0 0 6px 0', fontSize: '22px' }}>Worker 相关设置</h2>
-            <div style={{ fontSize: '12px', color: 'var(--text-sub)' }}>
-              配置 Worker 以启用 EH 评论代理与远端阅读历史
-            </div>
+          <div className="settings-panel-header" style={{ textAlign: 'center', padding: '28px 28px 12px' }}>
+            <h2 className="settings-title">设置</h2>
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
-            <div>
-              <div style={{ fontSize: '13px' }}>裁剪封面</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-sub)', marginTop: '2px' }}>
-                启用后将强制裁剪封面为竖向比例显示
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={handleToggleCropCover}
-              style={{
-                width: '36px', height: '20px', borderRadius: '10px',
-                background: cropCover ? 'var(--accent)' : 'rgba(255,255,255,0.2)',
-                border: 'none', cursor: 'pointer', position: 'relative',
-                transition: 'background 0.2s ease', flexShrink: 0,
-              }}
-            >
-              <span style={{
-                position: 'absolute', top: '2px',
-                left: cropCover ? '18px' : '2px',
-                width: '16px', height: '16px', borderRadius: '50%',
-                background: '#fff', transition: 'left 0.2s ease',
-              }} />
-            </button>
+          <div className="settings-panel-scroll">
+
+          <CacheSettings />
+
+          <div className="settings-row">
+            <SettingHint text={'作用：将横版或方形封面裁成统一的竖向比例。\n影响：只改变书库缩略图，不修改归档原图。'}>裁剪封面</SettingHint>
+            <ToggleSwitch checked={cropCover} onChange={handleToggleCropCover} label="裁剪封面" />
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
-            <div>
-              <div style={{ fontSize: '13px' }}>隐藏已读完</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-sub)', marginTop: '2px' }}>
-                启用后将在阅读历史中隐藏已完整阅读的归档
-              </div>
+          <label className="settings-row">
+            <SettingHint text={'禁止：所有归档卡片都不显示阅读进度。\n仅历史记录：保持历史与待看组件中的进度提示。\n全局：有阅读进度的归档卡片均会显示。'}>显示进度条</SettingHint>
+            <div style={{ width: 128 }}>
+              <CustomSelect
+                ariaLabel="显示进度条"
+                value={readerSettings.progressBarVisibility}
+                onChange={(value) => updateReaderSettings((settings) => ({ ...settings, progressBarVisibility: value }))}
+                options={[
+                  { label: '禁止', value: ARCHIVE_PROGRESS_VISIBILITY.DISABLED },
+                  { label: '仅历史记录', value: ARCHIVE_PROGRESS_VISIBILITY.HISTORY },
+                  { label: '全局', value: ARCHIVE_PROGRESS_VISIBILITY.GLOBAL },
+                ]}
+                compact
+              />
             </div>
-            <button
-              type="button"
-              onClick={handleToggleHideRead}
-              style={{
-                width: '36px', height: '20px', borderRadius: '10px',
-                background: hideRead ? 'var(--accent)' : 'rgba(255,255,255,0.2)',
-                border: 'none', cursor: 'pointer', position: 'relative',
-                transition: 'background 0.2s ease', flexShrink: 0,
-              }}
-            >
-              <span style={{
-                position: 'absolute', top: '2px',
-                left: hideRead ? '18px' : '2px',
-                width: '16px', height: '16px', borderRadius: '50%',
-                background: '#fff', transition: 'left 0.2s ease',
-              }} />
-            </button>
+          </label>
+
+          <label className="settings-row">
+            <SettingHint text={'滚动模式：到达列表底部时自动加载更多。\n分页模式：每次显示一页归档，使用页码切换。'}>档案浏览模式</SettingHint>
+            <div style={{ width: 128 }}>
+              <CustomSelect
+                value={archiveBrowseMode}
+                onChange={handleArchiveBrowseModeChange}
+                options={[{ label: '滚动', value: ARCHIVE_BROWSE_MODES.scroll }, { label: '分页', value: ARCHIVE_BROWSE_MODES.paged }]}
+                compact
+              />
+            </div>
+          </label>
+
+          <div className="settings-row">
+            <SettingHint text={'作用：隐藏已读至最后一页的归档。\n影响：只精简阅读历史列表，不会删除阅读记录。'}>历史记录中隐藏已读完</SettingHint>
+            <ToggleSwitch checked={hideRead} onChange={handleToggleHideRead} label="历史记录中隐藏已读完" />
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
-            <div style={{ paddingRight: '16px' }}>
-              <div style={{ fontSize: '13px' }}>同步删除 E 站收藏夹</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-sub)', marginTop: '2px', lineHeight: 1.5 }}>
-                启用后删除归档时，会用 EH Cookie 通过 Worker 将元数据 source 中的 EH/EX 画廊从收藏夹移除
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={handleToggleEhFavoriteDeleteSync}
-              style={{
-                width: '36px', height: '20px', borderRadius: '10px',
-                background: ehFavoriteDeleteSync ? 'var(--accent)' : 'rgba(255,255,255,0.2)',
-                border: 'none', cursor: 'pointer', position: 'relative',
-                transition: 'background 0.2s ease', flexShrink: 0,
-              }}
-              title="需要配置 Worker、访问 Token 与阅读器内的 EH Cookie"
-            >
-              <span style={{
-                position: 'absolute', top: '2px',
-                left: ehFavoriteDeleteSync ? '18px' : '2px',
-                width: '16px', height: '16px', borderRadius: '50%',
-                background: '#fff', transition: 'left 0.2s ease',
-              }} />
-            </button>
-          </div>
-          <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '14px' }}>
-            <button
-              type="button"
-              onClick={() => setWorkerConfigOpen(v => !v)}
-              title={workerConfigOpen ? '收起 Worker 设置' : '展开 Worker 设置'}
-              style={{
-                width: '100%',
-                padding: '0 4px',
-                fontSize: '13px',
-                color: 'var(--text-sub)',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                background: 'transparent',
-                border: 'none',
-                cursor: 'pointer',
-              }}
-            >
-              <span>Worker 设置</span>
-              <span style={{ color: '#ccc', opacity: 0.8, padding: '4px', display: 'flex' }}>
-                <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" style={{ transition: 'transform 0.3s', transform: workerConfigOpen ? 'rotate(0deg)' : 'rotate(180deg)' }}>
-                  <path d="M6 15l6-6 6 6z" />
-                </svg>
-              </span>
-            </button>
-            <div style={{
-              overflow: 'hidden',
-              maxHeight: workerConfigOpen ? '280px' : '0px',
-              opacity: workerConfigOpen ? 1 : 0,
-              transition: 'max-height 0.28s cubic-bezier(0.4,0,0.2,1), opacity 0.2s ease',
-            }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '14px' }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: '12px', marginBottom: '6px', color: 'var(--text-sub)' }}>
-                    Cloudflare Worker 端点
-                  </label>
-                  <input type="text" className="input-glass"
-                    value={cfgWorkerUrl}
-                    onChange={(e) => setCfgWorkerUrl(e.target.value)}
-                    placeholder="https://lrr-sync.xxx.workers.dev"
-                    style={{ padding: '8px 12px', fontSize: '13px' }}
+          <div className="settings-section">
+            <div className="settings-section-title">E-Hentai 评论区</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <label className="settings-row">
+                <SettingHint text={'作用：在阅读器中显示来源画廊的评论。\n条件：必须填写能访问该画廊的 E-Hentai Cookie。'}>启用 E-Hentai 评论区</SettingHint>
+                <ToggleSwitch checked={readerSettings.ehEnabled} onChange={() => updateReaderSettings((s) => ({ ...s, ehEnabled: !s.ehEnabled }))} label="启用 E-Hentai 评论区" />
+              </label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <SettingHint className="settings-field-label" text={'作用：访问 E-Hentai 画廊和评论。\n条件：同步删除收藏还需要 ipb_member_id 与 ipb_pass_hash。'}>E-Hentai Cookie</SettingHint>
+                <span className="secret-input-shell" data-secret={readerSettings.ehCookie || ''}>
+                  <input type="text" name="e-hentai-cookie" autoComplete="off" spellCheck={false} aria-label="E-Hentai Cookie" className="input-glass secret-input"
+                    value={readerSettings.ehCookie || ''}
+                    onChange={(e) => updateReaderSettings((s) => ({ ...s, ehCookie: e.target.value }))}
+                    placeholder="igneous=…; ipb_member_id=…; ipb_pass_hash=…"
+                    style={{ padding: '8px 10px', fontSize: '12px', width: '100%', boxSizing: 'border-box' }}
                   />
-                  <div style={{ fontSize: '11px', color: 'var(--text-sub)', marginTop: '4px', lineHeight: 1.5 }}>
-                    用于 EH 评论代理与远端阅读历史
-                  </div>
-                </div>
-
-                <div>
-                  <label style={{ display: 'block', fontSize: '12px', marginBottom: '6px', color: 'var(--text-sub)' }}>
-                    访问 Token
+                </span>
+              </div>
+              <div
+                style={{
+                  display: 'grid',
+                  gap: '12px',
+                  maxHeight: readerSettings.ehEnabled ? '220px' : '0px',
+                  opacity: readerSettings.ehEnabled ? 1 : 0,
+                  overflow: readerSettings.ehEnabled ? 'visible' : 'hidden',
+                  transform: readerSettings.ehEnabled ? 'translateY(0)' : 'translateY(-6px)',
+                  transition: 'max-height 0.28s cubic-bezier(0.4,0,0.2,1), opacity 0.2s ease, transform 0.28s cubic-bezier(0.4,0,0.2,1)',
+                  pointerEvents: readerSettings.ehEnabled ? 'auto' : 'none',
+                }}
+                aria-hidden={!readerSettings.ehEnabled}
+              >
+                  <label className="settings-row">
+                    <SettingHint text={'作用：隐藏低于此分数的评论。\n填 0：显示全部评论，不按分数过滤。'}>最低展示分数</SettingHint>
+                    <input type="text" inputMode="numeric" pattern="-?[0-9]*" className="input-glass no-spinner"
+                      value={String(readerSettings.ehMinScore)}
+                      onChange={(e) => { const v = e.target.value; const n = parseInt(v, 10); if (!isNaN(n) && n >= -999) updateReaderSettings((s) => ({ ...s, ehMinScore: n })); else if (v === '' || v === '-') updateReaderSettings((s) => ({ ...s, ehMinScore: 0 })); }}
+                      onBlur={() => { const n = parseInt(readerSettings.ehMinScore, 10); if (isNaN(n)) updateReaderSettings((s) => ({ ...s, ehMinScore: 0 })); }}
+                      style={{ width: '52px', padding: '5px 6px', fontSize: '12px', textAlign: 'center' }}
+                    />
                   </label>
-                  <input type="password" className="input-glass"
+                  <label className="settings-row">
+                    <SettingHint text={'作用：限制每个归档加载的评论数量。\n范围：1–200 条。'}>最多展示数量</SettingHint>
+                    <input type="text" inputMode="numeric" pattern="[0-9]*" className="input-glass no-spinner"
+                      value={String(readerSettings.ehMaxComments)}
+                      onChange={(e) => { const v = e.target.value; const n = parseInt(v, 10); if (!isNaN(n) && n >= 1 && n <= 200) updateReaderSettings((s) => ({ ...s, ehMaxComments: n })); }}
+                      onBlur={() => { const n = parseInt(readerSettings.ehMaxComments, 10); if (isNaN(n) || n < 1) updateReaderSettings((s) => ({ ...s, ehMaxComments: 45 })); else if (n > 200) updateReaderSettings((s) => ({ ...s, ehMaxComments: 200 })); }}
+                      style={{ width: '52px', padding: '5px 6px', fontSize: '12px', textAlign: 'center' }}
+                    />
+                  </label>
+                  <label className="settings-row">
+                    <SettingHint text={'按分数：根据评论评分排序。\n按时间：根据评论发布时间排序。'}>排序方式</SettingHint>
+                    <div style={{ width: '110px', flexShrink: 0 }}>
+                      <CustomSelect
+                        value={readerSettings.ehSortMethod}
+                        options={[{ label: '分数', value: 'score' }, { label: '时间', value: 'time' }]}
+                        onChange={(v) => updateReaderSettings((s) => ({ ...s, ehSortMethod: v }))}
+                        compact
+                      />
+                    </div>
+                  </label>
+                  <label className="settings-row">
+                    <SettingHint text={'倒序：最高分或最新评论优先。\n正序：最低分或最早评论优先。'}>排序方向</SettingHint>
+                    <div style={{ width: '110px', flexShrink: 0 }}>
+                      <CustomSelect
+                        value={readerSettings.ehSortOrder}
+                        options={[{ label: '倒序', value: 'desc' }, { label: '正序', value: 'asc' }]}
+                        onChange={(v) => updateReaderSettings((s) => ({ ...s, ehSortOrder: v }))}
+                        compact
+                      />
+                    </div>
+                  </label>
+              </div>
+            </div>
+          </div>
+
+          <div className="settings-row">
+            <SettingHint text={ehFavoriteSyncReady ? '作用：删除归档时，同时移除 source 指向的 E-Hentai 收藏。\n控制：仍可在每次删除确认时单独取消同步。' : '当前不可用。\n条件：配置 Worker、访问 Token，并提供含 ipb_member_id 与 ipb_pass_hash 的 E-Hentai Cookie。'}>同步删除 E-Hentai 收藏夹</SettingHint>
+            <ToggleSwitch checked={ehFavoriteDeleteSync && ehFavoriteSyncReady} onChange={handleToggleEhFavoriteDeleteSync} disabled={!ehFavoriteSyncReady} label="同步删除 E-Hentai 收藏夹" />
+          </div>
+
+          <div className="settings-section">
+            <div className="settings-section-title">Worker 设置</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div>
+                <SettingHint className="settings-field-label" text={'作用：启用多设备阅读历史、待看列表和收藏删除同步。\n条件：Worker 端点必须是可访问的 HTTPS 地址。'}>Cloudflare Worker 端点</SettingHint>
+                <input type="url" inputMode="url" name="worker-url" autoComplete="off" spellCheck={false} aria-label="Cloudflare Worker 端点" className="input-glass"
+                  value={cfgWorkerUrl}
+                  onChange={(e) => setCfgWorkerUrl(e.target.value)}
+                  placeholder="https://lrr-sync.example.workers.dev"
+                  style={{ padding: '8px 12px', fontSize: '13px' }}
+                />
+              </div>
+
+              <div>
+                <SettingHint className="settings-field-label" text={'作用：识别同一同步账户；使用相同 Token 的设备会共享数据。\n条件：先将 Token 写入 Worker KV 的 tokens 字段。'}>访问 Token</SettingHint>
+                <span className="secret-input-shell" data-secret={cfgSyncToken}>
+                  <input type="text" name="sync-token" autoComplete="off" spellCheck={false} aria-label="访问 Token" className="input-glass secret-input"
                     value={cfgSyncToken}
                     onChange={(e) => setCfgSyncToken(e.target.value)}
                     placeholder="需与 KV 空间 tokens 字段中的 Token 保持一致"
                     style={{ padding: '8px 12px', fontSize: '13px' }}
                   />
-                  <div style={{ fontSize: '11px', color: 'var(--text-sub)', marginTop: '4px', lineHeight: 1.5 }}>
-                    同一 Token 的所有设备将自动共享阅读历史与隐藏已读完状态，Token 必须手动配置在 KV 空间的 tokens 字段中。
-                  </div>
-                </div>
+                </span>
               </div>
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: '10px' }}>
-            <button type="button" className="btn"
-              onClick={() => {
-                const encoded = exportConfig();
-                navigator.clipboard.writeText(encoded).then(() => alert('配置已复制到剪贴板。在其他设备粘贴导入即可。')).catch(() => {
-                  prompt('复制以下文本到其他设备导入:', encoded);
-                });
-              }}
-              style={{ flex: 1, padding: '9px', fontSize: '12px' }}>
-              导出配置
-            </button>
-            <button type="button" className="btn"
-              onClick={async () => {
-                let encoded = '';
-                try { encoded = await navigator.clipboard.readText(); } catch {}
-                if (!encoded) encoded = prompt('粘贴从其他设备导出的配置文本:') || '';
-                if (!encoded) return;
-                try {
-                  const count = importConfig(encoded);
-                  setCfgWorkerUrl(getWorkerUrl());
-                  setCfgSyncToken(getSyncToken());
-                  setEhFavoriteDeleteSyncState(getEhFavoriteDeleteSync());
-                  alert(`已导入 ${count} 项配置`);
-                } catch (e) {
-                  alert(e.message || '导入失败');
-                }
-              }}
-              style={{ flex: 1, padding: '9px', fontSize: '12px' }}>
-              导入配置
-            </button>
+          <div className="settings-section">
+            <div className="settings-section-title">工具</div>
+            <div className="settings-tool-grid">
+              <button type="button" className="btn" onClick={handleNavigateUpload} style={{ width: '100%', padding: '10px', fontSize: '13px' }}>上传归档</button>
+              <button type="button" className="btn" onClick={handleNavigateDeduplicate} style={{ width: '100%', padding: '10px', fontSize: '13px' }}>重复归档检测</button>
+            </div>
+            <div style={{ borderTop: '1px solid var(--glass-border)', marginTop: '14px' }} />
           </div>
 
-          <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
-            <button type="button" className="btn" onClick={() => setShowConfig(false)}
-              style={{ flex: 1, padding: '10px' }}>
-              取消
-            </button>
-            <button type="submit" className="btn"
-              style={{ flex: 1, padding: '10px' }}>
-              保存
-            </button>
+          </div>
+
+          <div className="settings-panel-footer">
+            <div className="settings-panel-actions">
+              <button type="button" className="btn"
+                onClick={handleExportConfig}
+                style={{ padding: '9px', fontSize: '12px' }}>
+                导出配置
+              </button>
+              <button type="button" className="btn"
+                onClick={handleImportConfig}
+                style={{ padding: '9px', fontSize: '12px' }}>
+                导入配置
+              </button>
+            </div>
+
+            <div className="settings-panel-actions">
+              <button type="button" className="btn" onClick={() => setShowConfig(false)} style={{ padding: '10px' }}>
+                取消
+              </button>
+              <button type="submit" className="btn" style={{ padding: '10px' }}>
+                保存
+              </button>
+            </div>
+            <div className="settings-panel-version">
+              <AppVersion compact />
+            </div>
           </div>
         </form>
       </div>,
@@ -2052,30 +2626,62 @@ export default function Home({ onSelectArchive, onLogout }) {
       menu={archiveMenu}
       onClose={() => setArchiveMenu(null)}
       onRead={(archive) => handleSelectArchive(archive.arcid || archive.id)}
+      onEditMetadata={(archive) => { saveCurrentHomeForNavigation(); navigateToMetadata(archive.arcid || archive.id); }}
       onDownload={handleArchiveDownload}
       onCopyLink={handleArchiveCopyLink}
-      onDelete={(archive) => setArchiveDeleteTarget(archive)}
+      onDelete={requestArchiveDelete}
       onRemoveHistory={removeHistoryArchive}
+      onAddWatchlist={addWatchlistArchive}
+      onRemoveWatchlist={removeWatchlistArchive}
     />
     <ConfirmDialog
       open={!!archiveDeleteTarget}
       title="确认删除归档"
-      message={archiveDeleteTarget ? `将从 LANraragi 中删除“${archiveDeleteTarget.title || archiveDeleteTarget.arcid || archiveDeleteTarget.id}”。${ehFavoriteDeleteSync ? '若元数据包含有效 EH/EX 链接，会先同步从 E 站收藏夹移除。' : ''}此操作不可撤销。` : ''}
+      message={archiveDeleteTarget ? `将从 LANraragi 中删除“${archiveDeleteTarget.title || archiveDeleteTarget.arcid || archiveDeleteTarget.id}”。此操作不可撤销。` : ''}
       confirmLabel={archiveDeleting ? '删除中...' : '确认删除'}
       cancelLabel="取消"
       onConfirm={handleArchiveDelete}
       onCancel={() => { if (!archiveDeleting) setArchiveDeleteTarget(null); }}
       confirmDisabled={archiveDeleting}
-    />
+    >
+      {ehFavoriteDeleteSync && (
+        <EhFavoriteDeleteSwitch checked={archiveDeleteSyncConfirmed} onChange={setArchiveDeleteSyncConfirmed} disabled={archiveDeleting} />
+      )}
+    </ConfirmDialog>
     <ConfirmDialog
       open={bulkDeletePending}
       title="确认批量删除归档"
-      message={`将从 LANraragi 中删除选中的 ${selectedArchiveIds.size} 个归档。${ehFavoriteDeleteSync ? '若归档元数据包含有效 EH/EX 链接，会先同步从 E 站收藏夹移除。' : ''}此操作不可撤销。`}
+      message={`将从 LANraragi 中删除选中的 ${selectedArchiveIds.size} 个归档。此操作不可撤销。`}
       confirmLabel={archiveDeleting ? '删除中...' : '确认删除'}
       cancelLabel="取消"
       onConfirm={handleBulkArchiveDelete}
       onCancel={() => { if (!archiveDeleting) setBulkDeletePending(false); }}
       confirmDisabled={archiveDeleting}
+    >
+      {ehFavoriteDeleteSync && (
+        <EhFavoriteDeleteSwitch checked={bulkDeleteSyncConfirmed} onChange={setBulkDeleteSyncConfirmed} disabled={archiveDeleting} />
+      )}
+    </ConfirmDialog>
+    <TextInputDialog
+      open={!!presetNameDialog}
+      title={presetNameDialog?.mode === 'rename' ? '重命名筛选方案' : '为当前筛选方案命名'}
+      initialValue={presetNameDialog?.value || ''}
+      onCancel={() => setPresetNameDialog(null)}
+      onConfirm={(name) => {
+        setPresets(presetNameDialog?.mode === 'rename'
+          ? renameFilterPreset(presetNameDialog.value, name)
+          : saveFilterPreset({ name, query: filter.query, sortBy: filter.sortBy, order: filter.order }));
+        setPresetNameDialog(null);
+      }}
+    />
+    <ConfirmDialog
+      open={!!presetDeleteTarget}
+      title="删除筛选方案"
+      message={presetDeleteTarget ? `将删除“${presetDeleteTarget}”。` : ''}
+      confirmLabel="删除"
+      cancelLabel="取消"
+      onCancel={() => setPresetDeleteTarget('')}
+      onConfirm={() => { setPresets(deleteFilterPreset(presetDeleteTarget)); setPresetDeleteTarget(''); }}
     />
     <ConfirmDialog
       open={!!historyDeleteTarget}
@@ -2085,6 +2691,24 @@ export default function Home({ onSelectArchive, onLogout }) {
       cancelLabel="取消"
       onConfirm={handleRemoveHistory}
       onCancel={() => setHistoryDeleteTarget(null)}
+    />
+    <ConfigTransferDialog
+      open={!!configTransfer}
+      mode={configTransfer?.mode}
+      initialValue={configTransfer?.value}
+      onCancel={() => setConfigTransfer(null)}
+      onConfirm={handleConfirmImportConfig}
+    />
+    <ConfirmDialog
+      open={!!configNotice}
+      title={configNotice?.title || ''}
+      message={configNotice?.message || ''}
+      confirmLabel="重新加载"
+      showCancel={false}
+      destructive={false}
+      initialFocusSelector="[data-dialog-confirm]"
+      onCancel={() => {}}
+      onConfirm={() => window.location.reload()}
     />
     </>
   );

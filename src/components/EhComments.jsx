@@ -1,7 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { ToolbarGlyph } from './AppGlyphs';
+import { classifyEhGalleryPage, presentEhError } from '../lib/ehCommentsState';
 
 const commentsCache = new Map();
 const CACHE_TTL = 24 * 60 * 60 * 1000;
+const EMPTY_API_DATA = Object.freeze({ apiuid: null, apikey: null, gid: null, token: null, apiUrl: 'https://api.e-hentai.org/api.php' });
 
 const VoteIcon = ({ direction, active = false }) => (
   <svg
@@ -39,10 +42,10 @@ function getSafeCookie(raw) {
 
 function extractApiData(htmlText) {
   const apiuidMatch = htmlText.match(/var\s+apiuid\s*=\s*(\d+)/);
-  const apikeyMatch = htmlText.match(/var\s+apikey\s*=\s*"([^"]+)"/);
+  const apikeyMatch = htmlText.match(/var\s+apikey\s*=\s*["']([^"']+)["']/);
   const gidMatch = htmlText.match(/var\s+gid\s*=\s*(\d+)/);
-  const tokenMatch = htmlText.match(/var\s+token\s*=\s*"([^"]+)"/);
-  const apiUrlMatch = htmlText.match(/var\s+api_url\s*=\s*"([^"]+)"/);
+  const tokenMatch = htmlText.match(/var\s+token\s*=\s*["']([^"']+)["']/);
+  const apiUrlMatch = htmlText.match(/var\s+api_url\s*=\s*["']([^"']+)["']/);
 
   return {
     apiuid: apiuidMatch ? parseInt(apiuidMatch[1]) : null,
@@ -51,6 +54,10 @@ function extractApiData(htmlText) {
     token: tokenMatch ? tokenMatch[1] : null,
     apiUrl: apiUrlMatch ? apiUrlMatch[1] : 'https://api.e-hentai.org/api.php'
   };
+}
+
+function hasVotingApiData(value) {
+  return !!(value?.apiuid && value?.apikey && value?.gid && value?.token);
 }
 
 function parseEHCommentsFromDOM(htmlText) {
@@ -153,28 +160,6 @@ function isContentWarningOrLogin(htmlText) {
   return null;
 }
 
-function isGalleryUnavailable(htmlText, status) {
-  if (status === 404 || status === 410) return true;
-  if (status === 403) return 'blocked';
-  const lower = htmlText.toLowerCase();
-  if (lower.includes('gallery not available') ||
-      lower.includes('this gallery is not available') ||
-      lower.includes('expunged') ||
-      lower.includes('gallery removed') ||
-      lower.includes('no longer available')) {
-    return true;
-  }
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(htmlText, 'text/html');
-  const bodyText = doc.body?.textContent?.toLowerCase() || '';
-  if (bodyText.includes('gallery not available') ||
-      bodyText.includes('not available') ||
-      bodyText.includes('expunged')) {
-    return true;
-  }
-  return false;
-}
-
 function ehUrl(rawUrl, worker) {
   if (!rawUrl) return rawUrl;
   if (worker) return worker;
@@ -198,15 +183,22 @@ function normaliseEhUrl(rawUrl) {
 }
 
 async function workerApi(workerBase, path, body, token) {
+  if (!token) throw new Error('Worker Token 无效或缺失。请在设定面板填入 KV tokens 中配置的 Token。');
   const url = (workerBase || '').replace(/\/$/, '') + path;
-  const headers = { 'Content-Type': 'application/json' };
-  if (token) headers['x-sync-token'] = token;
+  const headers = { 'Content-Type': 'application/json', 'x-sync-token': token };
   const res = await fetch(url, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
   });
   return res.json();
+}
+
+function ehRequestError(code, detail = '') {
+  const error = new Error(detail || code);
+  error.ehCode = code;
+  error.ehDetail = detail;
+  return error;
 }
 
 export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, ehToken, ehMinScore, ehMaxComments, ehSortMethod, ehSortOrder }) {
@@ -216,11 +208,14 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
   const [error, setError] = useState(null);
   const [needsCookie, setNeedsCookie] = useState(false);
   const [retryTick, setRetryTick] = useState(0);
+  const [shouldAutoLoad, setShouldAutoLoad] = useState(false);
+  const sectionRef = useRef(null);
+  const autoLoadSourceRef = useRef('');
   const hasAutoLoaded = useRef(false);
   const autoRetryTimerRef = useRef(null);
   const autoRetryCountRef = useRef(0);
 
-  const [apiData, setApiData] = useState({ apiuid: null, apikey: null, gid: null, token: null, apiUrl: 'https://api.e-hentai.org/api.php' });
+  const [apiData, setApiData] = useState(EMPTY_API_DATA);
   const [postText, setPostText] = useState('');
   const [posting, setPosting] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -230,14 +225,51 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
 
   const cookie = getSafeCookie(ehCookie);
 
+  useEffect(() => {
+    setComments([]);
+    setLoaded(false);
+    setError(null);
+    setNeedsCookie(false);
+    setApiData(EMPTY_API_DATA);
+    setShouldAutoLoad(false);
+    autoLoadSourceRef.current = '';
+    hasAutoLoaded.current = false;
+    autoRetryCountRef.current = 0;
+
+    if (!sourceUrl || !ehEnabled) return undefined;
+    const node = sectionRef.current;
+    if (!node || typeof IntersectionObserver === 'undefined') {
+      autoLoadSourceRef.current = sourceUrl;
+      setShouldAutoLoad(true);
+      return undefined;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        autoLoadSourceRef.current = sourceUrl;
+        setShouldAutoLoad(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: '600px 0px' });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [ehEnabled, sourceUrl]);
+
   const fetchComments = useCallback(async (forceRefresh) => {
     if (!sourceUrl) return;
+
+    const showError = (code, detail = '') => {
+      const presentation = presentEhError(code, detail);
+      setError(presentation);
+      setNeedsCookie(presentation.needsCookie);
+    };
 
     const cacheKey = `${sourceUrl}::${cookie}`;
     if (!forceRefresh) {
       const cached = commentsCache.get(cacheKey);
-      if (cached && Date.now() - cached.ts < CACHE_TTL) {
+      const cacheCanRestoreVoting = !ehWorker || !cookie || hasVotingApiData(cached?.apiData);
+      if (cached && cacheCanRestoreVoting && Date.now() - cached.ts < CACHE_TTL) {
         setComments(cached.data);
+        setApiData(cached.apiData || EMPTY_API_DATA);
         setLoading(false);
         setLoaded(true);
         return;
@@ -247,6 +279,7 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
     setLoading(true);
     setError(null);
     setNeedsCookie(false);
+    setApiData(EMPTY_API_DATA);
 
     try {
       const realUrl = normaliseEhUrl(sourceUrl);
@@ -255,8 +288,8 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
       let htmlText;
 
       if (ehWorker) {
-        const workerHeaders = { 'Content-Type': 'application/json' };
-        if (ehToken) workerHeaders['x-sync-token'] = ehToken;
+        if (!ehToken) throw ehRequestError('TOKEN_MISSING');
+        const workerHeaders = { 'Content-Type': 'application/json', 'x-sync-token': ehToken };
         const galleryRes = await fetch(workerUrl, {
           method: 'POST',
           headers: workerHeaders,
@@ -270,20 +303,13 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
           try { errBody = await galleryRes.text(); jsonErr = JSON.parse(errBody); } catch {}
 
           if (jsonErr && jsonErr.error) {
-            const msgMap = {
-              Unauthorized: 'Worker Token 无效或缺失。请在设定面板填入 KV tokens 中配置的 Token。',
-              EH_REQUIRES_LOGIN: 'EH/EX 需要有效 Cookie。请在设定面板填入 Cookie 后重试。',
-              EH_CLOUDFLARE_BLOCK: 'Worker 被 EH/EX 的 Cloudflare 防护拦截。请等待一段时间后重试，或更换 Worker 部署区域。',
-              EH_EMPTY_RESPONSE: 'EH 返回了异常响应。请检查画廊 URL 是否正确。',
-              EH_UNEXPECTED_PAGE: jsonErr.detail || 'EH 返回了非预期页面。Cookie 可能已过期，请更新。',
-            };
-            throw new Error(msgMap[jsonErr.error] || (jsonErr.detail || `Worker 错误: ${jsonErr.error}`));
+            throw ehRequestError(jsonErr.error, jsonErr.detail);
           }
 
-          const unavailable = isGalleryUnavailable(errBody, galleryRes.status);
-          if (unavailable === 'blocked') throw new Error('画廊访问被拒绝。');
-          if (unavailable) throw new Error('画廊已不可用。');
-          throw new Error(`请求失败 (${galleryRes.status})`);
+          const galleryState = classifyEhGalleryPage(errBody, galleryRes.status);
+          if (galleryState === 'blocked') throw ehRequestError('ACCESS_BLOCKED');
+          if (galleryState === 'unavailable') throw ehRequestError('GALLERY_UNAVAILABLE');
+          throw ehRequestError('UNKNOWN_WORKER_ERROR', `请求失败 (${galleryRes.status})`);
         }
 
         // Check for JSON error even on 200
@@ -291,14 +317,7 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
         let jsonErr200 = null;
         try { jsonErr200 = JSON.parse(rawResponse); } catch {}
         if (jsonErr200 && jsonErr200.error) {
-          const msgMap = {
-            Unauthorized: 'Worker Token 无效或缺失。请在设定面板填入 KV tokens 中配置的 Token。',
-            EH_REQUIRES_LOGIN: 'EH/EX 需要有效 Cookie。请在设定面板填入 Cookie 后重试。',
-            EH_CLOUDFLARE_BLOCK: 'Worker 被 EH/EX 的 Cloudflare 防护拦截。',
-            EH_EMPTY_RESPONSE: 'EH 返回了异常响应。请检查画廊 URL。',
-            EH_UNEXPECTED_PAGE: jsonErr200.detail || 'EH 返回了非预期页面。Cookie 可能已过期。',
-          };
-          throw new Error(msgMap[jsonErr200.error] || (jsonErr200.detail || `Worker 错误`));
+          throw ehRequestError(jsonErr200.error, jsonErr200.detail);
         }
 
         htmlText = rawResponse;
@@ -308,10 +327,15 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
         const galleryRes = await fetch(workerUrl, { headers, redirect: 'manual' });
 
         if (galleryRes.type === 'opaqueredirect') {
-          throw new Error('EH 请求被重定向到外部域名，请使用 Cloudflare Worker 代理。');
+          throw ehRequestError('NETWORK_ERROR', '请求被重定向到外部域名。');
         }
 
-        if (!galleryRes.ok) throw new Error(`请求失败 (${galleryRes.status})`);
+        if (!galleryRes.ok) {
+          const galleryState = classifyEhGalleryPage('', galleryRes.status);
+          if (galleryState === 'blocked') throw ehRequestError('ACCESS_BLOCKED');
+          if (galleryState === 'unavailable') throw ehRequestError('GALLERY_UNAVAILABLE');
+          throw ehRequestError('NETWORK_ERROR', `请求失败 (${galleryRes.status})`);
+        }
 
         htmlText = await galleryRes.text();
       }
@@ -319,20 +343,17 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
       const blockType = isContentWarningOrLogin(htmlText);
 
       if (blockType) {
-        setNeedsCookie(true);
         setComments([]);
         setLoaded(true);
-        setError(blockType === 'warning'
-          ? '遇到内容警告页。请在设定面板中填入有效的 EH Cookie 后重新加载。'
-          : '需要登录 E-Hentai。请在设定面板中配置 EH Cookie。');
+        showError(blockType === 'warning' ? 'CONTENT_WARNING' : 'EH_REQUIRES_LOGIN');
         setLoading(false);
         return;
       }
 
-      if (isGalleryUnavailable(htmlText, 200)) {
+      if (classifyEhGalleryPage(htmlText, 200) === 'unavailable') {
         setComments([]);
         setLoaded(true);
-        setError('画廊已不可用。该画廊可能已从 E-Hentai 删除 (expunged)。');
+        showError('GALLERY_UNAVAILABLE');
         setLoading(false);
         return;
       }
@@ -342,18 +363,16 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
 
       const domResult = parseEHCommentsFromDOM(htmlText);
       if (domResult.contentWarning) {
-        setNeedsCookie(true);
         setComments([]);
         setLoaded(true);
-        setError('遇到内容警告页。请在设定面板填入有效 EH Cookie（含 nw=1）后重试。');
+        showError('CONTENT_WARNING');
         setLoading(false);
         return;
       }
 
       let finalComments = domResult.comments;
 
-      // DOM parsing returned 0 comments but the page has #cdiv container —
-      // the gallery likely requires login; try API fallback if we have apiData
+      // If the DOM exposes no comments, try the authenticated API when possible.
       if (finalComments.length === 0 && parsedApi.apiuid && parsedApi.gid && parsedApi.token && ehWorker) {
         try {
           const apiRes = await workerApi(ehWorker, '/api', {
@@ -374,23 +393,13 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
       }
 
       setComments(finalComments);
-      if (finalComments.length === 0) {
-        if (htmlText.includes('#cdiv') || htmlText.includes('commentthread')) {
-          setError('评论内容需要登录后可见。请在设定面板中填入 EH Cookie 后点击"重新加载"。');
-          setNeedsCookie(true);
-        }
-      }
-      commentsCache.set(cacheKey, { data: finalComments, ts: Date.now() });
+      commentsCache.set(cacheKey, { data: finalComments, apiData: parsedApi, ts: Date.now() });
       setLoaded(true);
     } catch (e) {
       if (e instanceof TypeError && e.message === 'Failed to fetch') {
-        setError(
-          '无法直接访问 E-Hentai（浏览器 CORS 策略限制）。' +
-          (import.meta.env.DEV ? '请确认 Vite 代理配置正确。' : '生产环境需要部署反向代理来中转 EH 请求。')
-        );
-        setNeedsCookie(true);
+        showError('NETWORK_ERROR');
       } else {
-        setError(e.message || '获取评论失败');
+        showError(e.ehCode || 'UNKNOWN_WORKER_ERROR', e.ehDetail || e.message);
       }
     } finally {
       setLoading(false);
@@ -459,17 +468,34 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
     } catch {}
   }, [editText, ehWorker, cookie, sourceUrl, fetchComments]);
 
+  const handleReload = useCallback(() => {
+    autoLoadSourceRef.current = sourceUrl;
+    hasAutoLoaded.current = true;
+    setShouldAutoLoad(true);
+    setRetryTick((value) => value + 1);
+  }, [sourceUrl]);
+
   useEffect(() => {
-    if (!sourceUrl || !ehEnabled) return;
+    if (!sourceUrl || !ehEnabled || !shouldAutoLoad || autoLoadSourceRef.current !== sourceUrl) return;
     fetchComments(!hasAutoLoaded.current ? false : true);
     hasAutoLoaded.current = true;
-  }, [sourceUrl, ehEnabled, fetchComments, retryTick]);
+  }, [sourceUrl, ehEnabled, fetchComments, retryTick, shouldAutoLoad]);
 
   useEffect(() => {
     if (!sourceUrl || !ehEnabled) return undefined;
     if (loading) return undefined;
     if (!loaded) return undefined;
     if (comments.length > 0) {
+      if (ehWorker && cookie && !hasVotingApiData(apiData) && autoRetryCountRef.current < 1) {
+        autoRetryTimerRef.current = setTimeout(() => {
+          commentsCache.delete(`${sourceUrl}::${cookie}`);
+          autoRetryCountRef.current += 1;
+          setRetryTick((value) => value + 1);
+        }, 900);
+        return () => {
+          if (autoRetryTimerRef.current) clearTimeout(autoRetryTimerRef.current);
+        };
+      }
       autoRetryCountRef.current = 0;
       return undefined;
     }
@@ -485,7 +511,7 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
     return () => {
       if (autoRetryTimerRef.current) clearTimeout(autoRetryTimerRef.current);
     };
-  }, [comments.length, cookie, ehEnabled, loaded, loading, needsCookie, sourceUrl]);
+  }, [apiData, comments.length, cookie, ehEnabled, ehWorker, loaded, loading, needsCookie, sourceUrl]);
 
   if (!ehEnabled) return null;
   if (!sourceUrl) return null;
@@ -512,22 +538,25 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
   const jumpUrl = normaliseEhUrl(sourceUrl);
 
   return (
-    <div data-lrr-eh-comments className="glass-panel section-reveal section-reveal-delay-3" style={{ padding: '20px', marginTop: '20px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '12px' }}>
-        <h3 style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ color: 'var(--accent)' }}>💬</span> EH 评论区
-          {loaded && <span style={{ fontSize: '11px', color: 'var(--text-sub)', fontWeight: 400 }}>{comments.length} 条</span>}
+    <div ref={sectionRef} data-lrr-eh-comments className="eh-comments glass-panel section-reveal section-reveal-delay-3" style={{ padding: '20px', marginTop: '20px' }}>
+      <div className="eh-comments-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', paddingBottom: '12px' }}>
+        <h3 className="eh-comments-title" style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ color: 'var(--accent)' }}>💬</span> E-Hentai 评论区
         </h3>
-        <div style={{ display: 'flex', gap: '8px' }}>
+        <div className="eh-comments-actions" style={{ display: 'flex', gap: '8px' }}>
           <a
             href={jumpUrl} target="_blank" rel="noopener noreferrer"
-            className="btn"
-            style={{ padding: '5px 12px', fontSize: '12px', textDecoration: 'none', background: 'rgba(255,255,255,0.06)' }}
+            className="btn eh-comment-action"
+            aria-label="跳转到 E-Hentai 画廊"
+            title="跳转画廊"
+            style={{ fontSize: '12px', textDecoration: 'none' }}
           >
-            跳转画廊
+            <span className="eh-comment-action-icon"><ToolbarGlyph name="external" size={16} /></span>
+            <span className="eh-comment-action-label">跳转画廊</span>
           </a>
-          <button className="btn" onClick={() => fetchComments(true)} disabled={loading} style={{ padding: '5px 12px', fontSize: '12px' }}>
-            {loading ? '加载中...' : '重新加载'}
+          <button className={`btn eh-comment-action${loading ? ' is-loading' : ''}`} onClick={handleReload} disabled={loading} aria-label={loading ? '正在重新加载评论' : '重新加载评论'} title="重新加载" style={{ fontSize: '12px' }}>
+            <span className="eh-comment-action-icon"><ToolbarGlyph name="reload" size={16} /></span>
+            <span className="eh-comment-action-label">{loading ? '加载中…' : '重新加载'}</span>
           </button>
         </div>
       </div>
@@ -540,18 +569,14 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
 
       {loading && !loaded && (
         <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-sub)', fontSize: '13px' }}>
-          正在获取评论...
+          正在获取评论…
         </div>
       )}
 
       {error && (
-        <div style={{ padding: '14px 18px', background: 'rgba(242,116,116,0.1)', border: '1px solid rgba(242,116,116,0.3)', borderRadius: '8px', color: '#f27474', fontSize: '13px', lineHeight: 1.6, marginBottom: '16px', whiteSpace: 'pre-wrap' }}>
-          <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>⚠️ {error}</div>
-          {needsCookie && (
-            <div style={{ marginTop: '8px', color: 'var(--text-sub)', fontSize: '12px' }}>
-              请在设定面板中填入 E-Hentai Cookie（igneous、ipb_member_id、ipb_pass_hash）。
-            </div>
-          )}
+        <div className="eh-comment-error" role="alert">
+          <div className="eh-comment-error-title">{error.title}</div>
+          <div className="eh-comment-error-detail">{error.detail}</div>
         </div>
       )}
 
@@ -560,7 +585,7 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
           该画廊暂无评论，或需要登录 E-Hentai 后可见。
           {!cookie && (
             <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--text-sub)' }}>
-              在设定面板填入 EH Cookie 后刷新即可加载需要登录才能看到的评论。
+              在设定面板填入 E-Hentai Cookie 后刷新即可加载需要登录才能看到的评论。
             </div>
           )}
         </div>
@@ -573,22 +598,21 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
               排序: {ehSortMethod === 'time' ? '时间' : '分数'} / {ehSortOrder === 'asc' ? '正序' : '倒序'}
               {(ehMinScore || 0) > 0 && <span style={{ marginLeft: '8px' }}>最低: {ehMinScore}分</span>}
             </span>
+            <span className="eh-comment-count" style={{ color: 'var(--text-sub)', fontVariantNumeric: 'tabular-nums' }}>{comments.length} 条</span>
           </div>
 
           <div style={{ marginBottom: '16px' }}>
             {(() => {
               const hasUserCommented = comments.some(c => c.isEditable);
               return filteredAndSorted.map(c => {
-                const scoreClass = c.score > 0 ? '#a5dc86' : c.score < 0 ? '#f27474' : 'var(--text-sub)';
+                const scoreClass = c.score > 0 ? 'var(--comment-positive)' : c.score < 0 ? 'var(--comment-negative)' : 'var(--text-sub)';
                 const scoreSign = c.score > 0 ? '+' : '';
                 const canVote = !c.isUploader && ehWorker && cookie && apiData.apikey && apiData.apiuid && apiData.gid && apiData.token;
 
                 return (
-                <div key={c.id} style={{
-                  background: c.isUploader ? 'rgba(255,152,0,0.08)' : 'rgba(0,0,0,0.2)',
+                <div key={c.id} className={`eh-comment-card${c.isUploader ? ' is-uploader' : ''}`} style={{
                   padding: '14px 16px', borderRadius: '10px', marginBottom: '10px',
-                  border: c.isUploader ? '1px solid rgba(255,152,0,0.3)' : '1px solid rgba(255,255,255,0.06)',
-                  borderLeft: c.isUploader ? '4px solid #ff9800' : '4px solid rgba(255,255,255,0.1)'
+                  borderLeftColor: c.isUploader ? '#d77f12' : 'var(--comment-card-border)'
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2px', fontSize: '12px', gap: '10px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flex: '1 1 auto' }}>
@@ -611,32 +635,32 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
                           {votingId === c.id ? (
                             <span style={{
                               display: 'inline-block', width: '12px', height: '12px',
-                              border: '2px solid rgba(255,255,255,0.15)', borderTopColor: 'var(--accent)',
+                              border: '2px solid var(--comment-card-border)', borderTopColor: 'var(--accent)',
                               borderRadius: '50%', animation: 'spin 0.6s linear infinite',
                             }} />
                           ) : (
                             <>
-                              <button onClick={() => doVote(c.id, 1)} style={{
-                                background: 'none', border: 'none', color: c.myVote === 1 ? '#a5dc86' : '#666',
+                              <button className="eh-vote-button" onClick={() => doVote(c.id, 1)} style={{
+                                background: 'none', border: 'none', color: c.myVote === 1 ? 'var(--comment-positive)' : 'var(--text-muted)',
                                 cursor: 'pointer', width: '20px', height: '20px', padding: 0,
                                 display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                                transition: 'all 0.2s ease', borderRadius: '3px', flexShrink: 0,
+                                borderRadius: '3px', flexShrink: 0,
                                 lineHeight: 0, verticalAlign: 'middle',
                               }}
-                              onMouseEnter={e => { if (c.myVote !== 1) e.currentTarget.style.color = '#a5dc86'; }}
-                              onMouseLeave={e => { if (c.myVote !== 1) e.currentTarget.style.color = '#666'; }}
+                              onMouseEnter={e => { if (c.myVote !== 1) e.currentTarget.style.color = 'var(--comment-positive)'; }}
+                              onMouseLeave={e => { if (c.myVote !== 1) e.currentTarget.style.color = 'var(--text-muted)'; }}
                               title="赞同"
                               aria-label="赞同"
                               ><VoteIcon direction="up" active={c.myVote === 1} /></button>
-                              <button onClick={() => doVote(c.id, -1)} style={{
-                                background: 'none', border: 'none', color: c.myVote === -1 ? '#f27474' : '#666',
+                              <button className="eh-vote-button" onClick={() => doVote(c.id, -1)} style={{
+                                background: 'none', border: 'none', color: c.myVote === -1 ? 'var(--comment-negative)' : 'var(--text-muted)',
                                 cursor: 'pointer', width: '20px', height: '20px', padding: 0,
                                 display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                                transition: 'all 0.2s ease', borderRadius: '3px', flexShrink: 0,
+                                borderRadius: '3px', flexShrink: 0,
                                 lineHeight: 0, verticalAlign: 'middle',
                               }}
-                              onMouseEnter={e => { if (c.myVote !== -1) e.currentTarget.style.color = '#f27474'; }}
-                              onMouseLeave={e => { if (c.myVote !== -1) e.currentTarget.style.color = '#666'; }}
+                              onMouseEnter={e => { if (c.myVote !== -1) e.currentTarget.style.color = 'var(--comment-negative)'; }}
+                              onMouseLeave={e => { if (c.myVote !== -1) e.currentTarget.style.color = 'var(--text-muted)'; }}
                               title="反对"
                               aria-label="反对"
                               ><VoteIcon direction="down" active={c.myVote === -1} /></button>
@@ -646,7 +670,7 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
                       )}
                       {c.isEditable && ehWorker && cookie && (
                         <button onClick={() => { setEditingId(c.id); setEditText(''); }} style={{
-                          background: 'none', border: 'none', color: '#999', cursor: 'pointer',
+                          background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer',
                           fontSize: '11px', textDecoration: 'underline',
                         }}>编辑</button>
                       )}
@@ -654,11 +678,10 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
                   </div>
                   {editingId === c.id ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                      <textarea value={editText} onChange={(e) => setEditText(e.target.value)}
+                      <textarea className="eh-comment-input" value={editText} onChange={(e) => setEditText(e.target.value)}
                         placeholder={c.content.replace(/<[^>]*>/g, '').substring(0, 100)}
                         style={{
-                          width: '100%', minHeight: '70px', background: 'rgba(255,255,255,0.06)',
-                          border: '1px solid rgba(255,255,255,0.15)', borderRadius: '8px', color: '#ccc',
+                          width: '100%', minHeight: '70px', borderRadius: '8px',
                           padding: '10px', fontSize: '13px', resize: 'vertical', boxSizing: 'border-box',
                           fontFamily: 'inherit',
                         }}
@@ -683,12 +706,11 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
               );})})()}
 
             {!comments.some(c => c.isEditable) && ehWorker && cookie && (
-              <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
-                <textarea value={postText} onChange={(e) => setPostText(e.target.value)}
+              <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--comment-card-border)' }}>
+                <textarea className="eh-comment-input" value={postText} onChange={(e) => setPostText(e.target.value)}
                   placeholder="发表新评论..."
                   style={{
-                    width: '100%', minHeight: '80px', background: 'rgba(0,0,0,0.3)',
-                    border: '1px solid rgba(255,255,255,0.15)', borderRadius: '10px', color: '#ccc',
+                    width: '100%', minHeight: '80px', borderRadius: '10px',
                     padding: '12px', fontSize: '13px', resize: 'vertical', boxSizing: 'border-box',
                     fontFamily: 'inherit',
                   }}

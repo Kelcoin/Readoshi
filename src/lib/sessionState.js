@@ -1,3 +1,5 @@
+import { getConfigScopeId } from './configScope';
+
 const SNAPSHOT_VERSION = 3;
 const SNAPSHOT_TTL = 12 * 60 * 60 * 1000;
 
@@ -66,13 +68,7 @@ function isFresh(ts, ttl = SNAPSHOT_TTL) {
 }
 
 export function getConfigFingerprint() {
-  try {
-    const base = (localStorage.getItem('lrr_server_url') || '').replace(/\/$/, '');
-    const key = localStorage.getItem('lrr_api_key') || '';
-    return base && key ? `${base}|${key}` : '';
-  } catch {
-    return '';
-  }
+  return getConfigScopeId();
 }
 
 function matchesConfig(snapshot) {
@@ -165,6 +161,12 @@ let coldRestoreClaimed = false;
 
 export function getBootState() {
   return bootState;
+}
+
+export function resolveInitialRoute(currentRoute) {
+  if (currentRoute?.kind !== 'home' || currentRoute?.query || !coldRestoreRoute) return currentRoute;
+  if (!['reader', 'metadata'].includes(coldRestoreRoute.kind) || !coldRestoreRoute.archiveId) return currentRoute;
+  return { kind: coldRestoreRoute.kind, archiveId: coldRestoreRoute.archiveId };
 }
 
 export function isColdRestoreBoot() {
