@@ -13,7 +13,7 @@ const DEDUPE_KEY_PREFIX = 'dedupe:';
 const SYNC_SCHEMA_VERSION = 3;
 const PROJECT_NAME = 'Readoshi';
 const PROJECT_URL = 'https://github.com/Kelcoin/Readoshi';
-const APP_RELEASE = '1.3.0';
+const APP_RELEASE = '1.3.1';
 const FALLBACK_APP_VERSION = `v${APP_RELEASE}`;
 
 function json(data, status = 200) {
