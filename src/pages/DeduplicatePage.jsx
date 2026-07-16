@@ -2,7 +2,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import ArchiveCard from '../components/ArchiveCard';
 import ConfirmDialog from '../components/ConfirmDialog';
 import EhFavoriteDeleteSwitch from '../components/EhFavoriteDeleteSwitch';
-import { lrrApi } from '../lib/api';
+import { lrrApi, waitForMinionJob } from '../lib/api';
 import {
   buildDuplicateGroups,
   createCoverSignature,
@@ -19,10 +19,9 @@ import { extractEhGalleryUrl, getEhCookie, getEhFavoriteDeleteSync, removeEhFavo
 import { getNonDuplicatePairKeys, markNonDuplicatePairs } from '../lib/worker-kv';
 import { getSyncToken, getWorkerUrl } from '../lib/worker-config';
 import { ARCHIVE_PROGRESS_VISIBILITY, readArchiveProgressVisibility, shouldShowArchiveProgress } from '../lib/archiveProgress';
+import { scopedStorageKey } from '../lib/configScope';
 
-const BATCH_SIZE = 50;
 const THUMBNAIL_CONCURRENCY = 4;
-const MINION_POLL_MS = 1000;
 const DEDUPE_SAVED_RESULT_KEY = 'lrr_dedupe_saved_result_v1';
 
 function getSearchTotal(res, dataLength, previousTotal = null) {
@@ -89,7 +88,7 @@ function filterGroupsByProcessedState(groups, deletedIds, nonDuplicatePairKeys) 
 
 function hasSavedDedupeResult() {
   try {
-    return !!localStorage.getItem(DEDUPE_SAVED_RESULT_KEY);
+    return !!localStorage.getItem(scopedStorageKey(DEDUPE_SAVED_RESULT_KEY));
   } catch {
     return false;
   }
@@ -99,26 +98,13 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForMinionJob(job, onProgress) {
-  const jobId = job?.job;
-  if (!jobId) return;
-  while (true) {
-    await delay(MINION_POLL_MS);
-    const status = await lrrApi.getMinionStatus(jobId);
-    const state = String(status?.state || '').toLowerCase();
-    onProgress?.(status);
-    if (!state || state === 'finished') return;
-    if (state === 'failed' || state === 'error') throw new Error('缩略图生成任务失败');
-  }
-}
-
 async function loadDeduplicatorThumbnailBlob(id, { delayMs = 25 } = {}) {
   for (let attempt = 1; attempt <= 5; attempt += 1) {
     if (attempt > 1) await delay(delayMs * attempt);
     const thumb = await lrrApi.getArchiveThumbnail(id);
     if (thumb?.blob) return thumb.blob;
     if (thumb?.status === 202 && thumb.job) {
-      await waitForMinionJob(thumb.job);
+      await waitForMinionJob(thumb.job, { timeoutMs: 2 * 60 * 1000 });
       continue;
     }
   }
@@ -350,10 +336,12 @@ export default function DeduplicatePage({ onBack }) {
       });
       const res = await lrrApi.search('', start, 'date_added', 'desc');
       const data = Array.isArray(res?.data) ? res.data : [];
+      if (data.length === 0) break;
       all.push(...data);
       total = getSearchTotal(res, data.length, total);
-      start += data.length;
-      if (data.length < BATCH_SIZE) break;
+      const nextStart = start + data.length;
+      if (nextStart <= start) throw new Error('归档分页未前进，已停止扫描');
+      start = nextStart;
       if (Number.isFinite(total) && all.length >= total) break;
     }
     return all;
@@ -385,24 +373,6 @@ export default function DeduplicatePage({ onBack }) {
       }
       const ignoredSet = new Set(ignored);
       setIgnoredPairs(ignoredSet);
-
-      setStatus('正在生成缩略图');
-      setProgress({
-        label: '生成缩略图',
-        current: 0,
-        total: null,
-        detail: '调用 LANraragi /api/regen_thumbs，等待后台任务完成',
-      });
-      const thumbJob = await lrrApi.regenerateThumbnails(false);
-      if (!thumbJob?.job) throw new Error('无法启动 LANraragi 缩略图生成任务');
-      await waitForMinionJob(thumbJob, (jobStatus) => {
-        setProgress({
-          label: '生成缩略图',
-          current: 0,
-          total: null,
-          detail: `后台任务 #${thumbJob?.job || ''}：${jobStatus?.state || 'running'}`,
-        });
-      });
 
       const allArchives = await loadAllArchives();
       const scanRange = normalizeDedupeDateRange(dateRange.start, dateRange.end, getTodayDateString());
@@ -646,7 +616,7 @@ export default function DeduplicatePage({ onBack }) {
       ignoredPairs: Array.from(ignoredPairs),
     };
     try {
-      localStorage.setItem(DEDUPE_SAVED_RESULT_KEY, JSON.stringify(payload));
+      localStorage.setItem(scopedStorageKey(DEDUPE_SAVED_RESULT_KEY), JSON.stringify(payload));
       setSavedResultAvailable(true);
       setStatus('已保存筛选结果');
     } catch (err) {
@@ -668,7 +638,7 @@ export default function DeduplicatePage({ onBack }) {
 
   const loadSavedResult = useCallback(() => {
     try {
-      const raw = localStorage.getItem(DEDUPE_SAVED_RESULT_KEY);
+      const raw = localStorage.getItem(scopedStorageKey(DEDUPE_SAVED_RESULT_KEY));
       if (!raw) {
         setSavedResultAvailable(false);
         return;
@@ -707,7 +677,7 @@ export default function DeduplicatePage({ onBack }) {
 
   const deleteSavedResult = useCallback(() => {
     try {
-      localStorage.removeItem(DEDUPE_SAVED_RESULT_KEY);
+      localStorage.removeItem(scopedStorageKey(DEDUPE_SAVED_RESULT_KEY));
       setSavedResultAvailable(false);
       setStatus('已删除保存结果');
     } catch (err) {

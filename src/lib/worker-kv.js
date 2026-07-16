@@ -1,4 +1,5 @@
 import { getSyncToken, getWorkerUrl } from './worker-config';
+import { getServerScopeId } from './configScope';
 
 function workerEndpoint(path) {
   const workerUrl = getWorkerUrl();
@@ -9,9 +10,12 @@ function workerEndpoint(path) {
 function workerHeaders() {
   const token = getSyncToken();
   if (!token) throw new Error('未配置 Worker 访问 Token');
+  const serverScope = getServerScopeId();
+  if (!serverScope) throw new Error('未配置 LANraragi 服务器地址');
   return {
     'Content-Type': 'application/json',
     'x-sync-token': token,
+    'x-lrr-server-scope': serverScope,
   };
 }
 
@@ -42,4 +46,3 @@ export async function markNonDuplicatePairs(pairs) {
   });
   return readJson(res);
 }
-

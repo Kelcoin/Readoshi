@@ -1,6 +1,6 @@
 import React from 'react';
 
-const PROJECT_URL = 'https://github.com/Kelcoin/LANraragi-React-Reader';
+const PROJECT_URL = 'https://github.com/Kelcoin/Readoshi';
 
 export default function AppVersion({ compact = false }) {
   return (

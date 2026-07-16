@@ -1,3 +1,5 @@
+import { encodeApiKey } from './api';
+
 function promisePool(tasks, concurrency = 6) {
   const results = new Array(tasks.length);
   let idx = 0;
@@ -23,7 +25,7 @@ export const loadViaPool = async (urls, fetchOptions, concurrency = 6) => {
   const tasks = urls.map((url) => async () => {
     const key = localStorage.getItem('lrr_api_key') || '';
     const headers = { ...(fetchOptions?.headers || {}) };
-    if (key) headers['Authorization'] = `Bearer ${btoa(key)}`;
+    if (key) headers['Authorization'] = `Bearer ${encodeApiKey(key)}`;
 
     const res = await fetch(url, { ...fetchOptions, headers });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

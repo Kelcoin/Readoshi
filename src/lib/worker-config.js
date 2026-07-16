@@ -61,7 +61,10 @@ export function exportConfig(overrides = {}) {
     if (val) cfg[key] = val;
   }
   for (const key of CONFIG_KEYS) {
-    if (overrides[key]) cfg[key] = overrides[key];
+    if (!Object.hasOwn(overrides, key)) continue;
+    const value = overrides[key];
+    if (typeof value === 'string' && value) cfg[key] = value;
+    else delete cfg[key];
   }
   return encodeUtf8Base64(JSON.stringify(cfg));
 }
@@ -73,10 +76,11 @@ export function importConfig(encoded) {
   } catch {
     throw new Error('无效的配置数据：无法解码');
   }
-  if (!cfg || typeof cfg !== 'object') throw new Error('无效的配置数据：格式错误');
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) throw new Error('无效的配置数据：格式错误');
   let count = 0;
   for (const key of CONFIG_KEYS) {
     if (cfg[key] !== undefined) {
+      if (typeof cfg[key] !== 'string') continue;
       localStorage.setItem(key, cfg[key]);
       count++;
     }

@@ -6,6 +6,8 @@ import { navigateHome, parseRouteFromLocation } from '../lib/navigation';
 import { NamespaceGlyph, stripDecoratedLabel } from './AppGlyphs';
 import { useViewportWidth } from '../lib/viewport';
 import { getArchiveProgressPercent } from '../lib/archiveProgress';
+import { encodeApiKey } from '../lib/api';
+import { scopedCacheKey } from '../lib/configScope';
 
 const NAMESPACE_COLORS = NAMESPACE_COLORS_MAP;
 const archiveAspectRatioCache = new Map();
@@ -93,7 +95,8 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   const [panelPos, setPanelPos] = useState({ top: 0, left: 0 });
   const isMobile = useViewportWidth() < 768;
   const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
-  const [aspectRatio, setAspectRatio] = useState(() => archiveAspectRatioCache.get(String(id)) ?? null);
+  const aspectCacheKey = scopedCacheKey(`aspect:${id}`);
+  const [aspectRatio, setAspectRatio] = useState(() => archiveAspectRatioCache.get(aspectCacheKey) ?? null);
   const cardRef = useRef(null);
   const panelRef = useRef(null);
   const imgRef = useRef(null);
@@ -170,11 +173,11 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
 
   const rememberAspectRatio = useCallback((next) => {
     if (!Number.isFinite(next) || next <= 0) return;
-    archiveAspectRatioCache.set(String(id), next);
+    archiveAspectRatioCache.set(aspectCacheKey, next);
     setAspectRatio((prev) => (
       prev != null && Math.abs(prev - next) < 0.001 ? prev : next
     ));
-  }, [id]);
+  }, [aspectCacheKey]);
 
   const updateAspectRatio = useCallback((img) => {
     const nw = img?.naturalWidth;
@@ -189,8 +192,8 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   }, [updateAspectRatio]);
 
   useEffect(() => {
-    setAspectRatio(archiveAspectRatioCache.get(String(id)) ?? null);
-  }, [id]);
+    setAspectRatio(archiveAspectRatioCache.get(aspectCacheKey) ?? null);
+  }, [aspectCacheKey]);
 
   useEffect(() => {
     if (thumbState !== 'ready' || !thumbSrc) return;
@@ -214,7 +217,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
               const base = (localStorage.getItem('lrr_server_url') || '').replace(/\/$/, '');
               const key = localStorage.getItem('lrr_api_key') || '';
               const headers = {};
-              if (key) headers['Authorization'] = `Bearer ${btoa(key)}`;
+              if (key) headers['Authorization'] = `Bearer ${encodeApiKey(key)}`;
               const res = await fetch(`${base}/api/archives/${id}/thumbnail`, { headers });
               if (!res.ok) throw new Error(`HTTP ${res.status}`);
               return res.blob();

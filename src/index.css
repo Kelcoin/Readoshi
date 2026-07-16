@@ -872,6 +872,11 @@ textarea:focus-visible,
   line-height: 1.5;
 }
 
+.login-stack-notice {
+  width: 100%;
+  padding-inline: 32px;
+}
+
 .login-notice.is-error {
   background: rgba(244, 67, 54, 0.12);
   border: 1px solid rgba(244, 67, 54, 0.3);
@@ -1411,6 +1416,21 @@ textarea:focus-visible,
   color: var(--text-main);
   font-size: 13px;
   font-weight: 650;
+}
+
+.confirm-dialog:has(.config-transfer-field) .confirm-dialog-title {
+  text-align: center;
+}
+
+.config-transfer-warning {
+  padding: 10px 12px;
+  border: 1px solid var(--danger-border);
+  border-radius: 8px;
+  background: var(--danger-surface);
+  color: var(--danger-text);
+  font-weight: 750;
+  line-height: 1.5;
+  text-align: center;
 }
 
 .config-transfer-field textarea {
@@ -1984,7 +2004,7 @@ textarea:focus-visible,
 
 .archive-grid {
   display: grid;
-  grid-auto-flow: row dense;
+  grid-auto-flow: row;
   justify-items: center;
   opacity: 1;
   transform: scale(1);
@@ -2032,11 +2052,12 @@ textarea:focus-visible,
 
 .archive-grid > .archive-card-wrap.is-wide {
   width: 100%;
+  grid-column: span 2 !important;
 }
 
 .archive-grid > .archive-card-wrap.is-wide > .archive-card-shell {
-  width: calc(50% + 150px + var(--archive-grid-half-gap, 8px)) !important;
-  min-width: calc(50% + 150px + var(--archive-grid-half-gap, 8px)) !important;
+  width: 100% !important;
+  min-width: 0 !important;
   margin-inline: auto;
   transform-origin: center center;
   animation: archive-wide-reveal 240ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -2105,7 +2126,41 @@ textarea:focus-visible,
 }
 
 .settings-panel-scroll {
+  display: flex;
+  min-height: 0;
+  padding: 0 28px 20px;
+  flex-direction: column;
+  gap: 18px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   scrollbar-gutter: stable;
+}
+
+.settings-panel-footer {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  padding: 16px 28px 18px;
+  border-top: 1px solid var(--glass-border-hover);
+  background: var(--dropdown-bg);
+  box-shadow: 0 -14px 30px rgba(0, 0, 0, 0.18);
+}
+
+.settings-panel-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.settings-panel-actions + .settings-panel-actions {
+  margin-top: 10px;
+}
+
+.settings-panel-actions > .btn {
+  flex: 1;
+}
+
+.settings-panel-version {
+  margin-top: 16px;
 }
 
 .settings-tool-grid {
@@ -2273,6 +2328,10 @@ textarea:focus-visible,
     padding-right: 20px !important;
   }
 
+  .settings-panel-footer {
+    padding-inline: 20px;
+  }
+
   .settings-tool-grid,
   .upload-method-grid { grid-template-columns: 1fr; }
   .metadata-plugin-row { grid-template-columns: 1fr; }
@@ -2284,4 +2343,10 @@ textarea:focus-visible,
   .upload-results { padding: 17px; }
   .upload-dropzone,
   .upload-url-input { min-height: 155px; }
+}
+
+@media (max-width: 380px) {
+  .archive-grid > .archive-card-wrap.is-wide {
+    grid-column: 1 / -1 !important;
+  }
 }

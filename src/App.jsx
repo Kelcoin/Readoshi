@@ -8,7 +8,7 @@ import MetadataPage from './pages/MetadataPage';
 import UploadPage from './pages/UploadPage';
 import { loadTagDB } from './lib/tags';
 import { checkServerStatus } from './lib/api';
-import { navigateHome, navigateToArchive, parseRouteFromLocation } from './lib/navigation';
+import { canNavigate, navigateHome, navigateToArchive, parseRouteFromLocation } from './lib/navigation';
 import { startHistoryExistenceCheckTimer, stopHistoryExistenceCheckTimer } from './lib/historyMaintenance';
 import { getWorkerUrl, setWorkerUrl, getSyncToken, setSyncToken, exportConfig, importConfig } from './lib/worker-config';
 import { applyThemeMode, getNextThemeMode, readStoredThemeMode, watchSystemTheme, writeStoredThemeMode } from './lib/theme';
@@ -16,10 +16,11 @@ import PwaStatus from './components/PwaStatus';
 import AppVersion from './components/AppVersion';
 import ConfigTransferDialog from './components/ConfigTransferDialog';
 import { cacheServerInfo } from './lib/serverInfoCache';
+import { resolveInitialRoute } from './lib/sessionState';
 import './index.css';
 
 export default function App() {
-  const [route, setRoute] = useState(() => parseRouteFromLocation());
+  const [route, setRoute] = useState(() => resolveInitialRoute(parseRouteFromLocation()));
   const [themeMode, setThemeMode] = useState(() => {
     const mode = readStoredThemeMode();
     applyThemeMode(mode);
@@ -42,6 +43,12 @@ export default function App() {
   const [loginLoading, setLoginLoading] = useState(false);
   const [workerCollapsed, setWorkerCollapsed] = useState(true);
   const [configTransfer, setConfigTransfer] = useState(null);
+
+  useEffect(() => {
+    if (loginNotice?.type !== 'success') return undefined;
+    const timer = setTimeout(() => setLoginNotice(null), 3000);
+    return () => clearTimeout(timer);
+  }, [loginNotice]);
   
   useEffect(() => {
     const run = () => loadTagDB();
@@ -74,7 +81,12 @@ export default function App() {
       applyRoute(event.detail || parseRouteFromLocation());
     };
     const handlePopState = () => {
-      applyRoute(parseRouteFromLocation());
+      const next = parseRouteFromLocation();
+      if (!canNavigate(next)) {
+        window.history.go(1);
+        return;
+      }
+      applyRoute(next);
     };
 
     window.addEventListener('lrr:navigate', handleNavigate);
@@ -205,12 +217,14 @@ export default function App() {
               {loginLoading ? '正在验证连接…' : '开始阅读'}
             </button>
 
-            {loginNotice && (
+          </form>
+          {loginNotice && (
+            <div className="login-stack-notice">
               <div className={`login-notice is-${loginNotice.type}`} role={loginNotice.type === 'error' ? 'alert' : 'status'}>
                 {loginNotice.text}
               </div>
-            )}
-          </form>
+            </div>
+          )}
           <AppVersion />
           </div>
         </div>

@@ -7,6 +7,7 @@ import { loadTagDB, startTagDBUpdateTimer, stopTagDBUpdateTimer } from '../lib/t
 import { getWorkerUrl, setWorkerUrl, getSyncToken, setSyncToken, exportConfig, importConfig } from '../lib/worker-config';
 import { runHistoryExistenceCheck } from '../lib/historyMaintenance';
 import { getEhCookie, getEhFavoriteDeleteSync, hasValidEhCookie, setEhFavoriteDeleteSync } from '../lib/ehFavoriteSync';
+import { acquireBodyScrollLock } from '../lib/bodyScrollLock';
 import { deleteArchiveWithFavoriteSync } from '../lib/archiveDeletion';
 import ArchiveCard from '../components/ArchiveCard';
 import ArchiveContextMenu from '../components/ArchiveContextMenu';
@@ -973,6 +974,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     window.addEventListener('focus', handleFocus);
     document.addEventListener('visibilitychange', handleVisibility);
     return () => {
+      clearTimeout(restartTimer);
       window.removeEventListener('pageshow', handlePageShow);
       window.removeEventListener('pagehide', handlePageHide);
       window.removeEventListener('focus', handleFocus);
@@ -983,10 +985,9 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
   // Lock body scroll when config modal is open
   useEffect(() => {
     if (showConfig) {
-      const prev = document.body.style.overflow;
-      document.body.style.overflow = 'hidden';
-      return () => { document.body.style.overflow = prev; };
+      return acquireBodyScrollLock();
     }
+    return undefined;
   }, [showConfig]);
 
   useEffect(() => {
@@ -1111,7 +1112,8 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           data = [...data, ...nextData].slice(0, pageSize);
           nextStart += nextData.length;
           res = nextRes;
-          if (nextData.length < ARCHIVE_PAGE_SIZE) break;
+          const nextTotal = getSearchTotal(nextRes, nextData.length, null);
+          if (Number.isFinite(nextTotal) && nextStart >= nextTotal) break;
         }
       }
       if (isPagedMode && data.length > pageSize) data = data.slice(0, pageSize);
@@ -1124,17 +1126,17 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
         setArchivePageInput(String(nextPage + 1));
         setArchives(data);
         setStartOffset(start + data.length);
-        setHasMore(Number.isFinite(Number(total)) ? nextPage < getArchivePageCount(total, pageSize) - 1 : data.length >= pageSize);
+        setHasMore(Number.isFinite(Number(total)) ? nextPage < getArchivePageCount(total, pageSize) - 1 : data.length > 0);
       } else if (isReset) {
         setArchivePage(0);
         setArchivePageInput('1');
         setArchives(data);
         setStartOffset(data.length);
-        setHasMore(data.length > 0 && data.length >= ARCHIVE_PAGE_SIZE);
+        setHasMore(Number.isFinite(Number(total)) ? data.length < Number(total) : data.length > 0);
       } else {
         setArchives(prev => [...prev, ...data]);
         setStartOffset(start + data.length);
-        setHasMore(data.length > 0 && data.length >= ARCHIVE_PAGE_SIZE);
+        setHasMore(Number.isFinite(Number(total)) ? start + data.length < Number(total) : data.length > 0);
       }
       markArchiveFetchCompleted();
       return true;
@@ -1851,7 +1853,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
       <div className="home-topbar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: '18px', marginBottom: '32px', flexWrap: 'wrap' }}>
         <div className="home-brand">
           <h1 className="home-brand-title" translate="no" style={{ fontWeight: 600, margin: '0 0 8px 0', fontSize: '28px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <span className="home-project-name">LANraragi-React-Reader</span>
+            <span className="home-project-name">Readoshi</span>
             {serverOnline !== null && (
               <button
                 type="button"
@@ -2423,11 +2425,11 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           width: '100%', maxWidth: '640px',
           maxHeight: 'calc(100dvh - 32px)', overflow: 'hidden',
         }}>
-          <div style={{ textAlign: 'center', padding: '28px 28px 12px' }}>
+          <div className="settings-panel-header" style={{ textAlign: 'center', padding: '28px 28px 12px' }}>
             <h2 className="settings-title">设置</h2>
           </div>
 
-          <div className="settings-panel-scroll" style={{ display: 'flex', flexDirection: 'column', gap: '18px', padding: '0 28px 18px', overflowY: 'auto', minHeight: 0 }}>
+          <div className="settings-panel-scroll">
 
           <CacheSettings />
 
@@ -2588,31 +2590,31 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
 
           </div>
 
-          <div style={{ display: 'flex', gap: '10px', padding: '16px 28px 0', borderTop: '1px solid var(--glass-border)' }}>
-            <button type="button" className="btn"
-              onClick={handleExportConfig}
-              style={{ flex: 1, padding: '9px', fontSize: '12px' }}>
-              导出配置
-            </button>
-            <button type="button" className="btn"
-              onClick={handleImportConfig}
-              style={{ flex: 1, padding: '9px', fontSize: '12px' }}>
-              导入配置
-            </button>
-          </div>
+          <div className="settings-panel-footer">
+            <div className="settings-panel-actions">
+              <button type="button" className="btn"
+                onClick={handleExportConfig}
+                style={{ padding: '9px', fontSize: '12px' }}>
+                导出配置
+              </button>
+              <button type="button" className="btn"
+                onClick={handleImportConfig}
+                style={{ padding: '9px', fontSize: '12px' }}>
+                导入配置
+              </button>
+            </div>
 
-          <div style={{ display: 'flex', gap: '10px', padding: '10px 28px 24px' }}>
-            <button type="button" className="btn" onClick={() => setShowConfig(false)}
-              style={{ flex: 1, padding: '10px' }}>
-              取消
-            </button>
-            <button type="submit" className="btn"
-              style={{ flex: 1, padding: '10px' }}>
-              保存
-            </button>
-          </div>
-          <div style={{ padding: '0 28px 20px' }}>
-            <AppVersion compact />
+            <div className="settings-panel-actions">
+              <button type="button" className="btn" onClick={() => setShowConfig(false)} style={{ padding: '10px' }}>
+                取消
+              </button>
+              <button type="submit" className="btn" style={{ padding: '10px' }}>
+                保存
+              </button>
+            </div>
+            <div className="settings-panel-version">
+              <AppVersion compact />
+            </div>
           </div>
         </form>
       </div>,

@@ -1,4 +1,5 @@
 import { lrrApi } from './api';
+import { getConfigScopeId, migrateLegacyStorageKey } from './configScope';
 
 const metadataCache = new Map();
 const metadataRequests = new Map();
@@ -8,8 +9,11 @@ const METADATA_STORAGE_LIMIT = 300;
 let persistTimer = null;
 
 function metadataStorageKey() {
-  if (typeof localStorage === 'undefined') return METADATA_STORAGE_KEY;
-  return `${METADATA_STORAGE_KEY}:${localStorage.getItem('lrr_server_url') || 'default'}`;
+  return migrateLegacyStorageKey(METADATA_STORAGE_KEY);
+}
+
+function scopedArchiveKey(id, scope = getConfigScopeId()) {
+  return `${scope}:${id}`;
 }
 
 function readPersistedMetadata() {
@@ -25,7 +29,11 @@ function readPersistedMetadata() {
 function persistMetadataCache() {
   if (typeof localStorage === 'undefined') return;
   try {
-    const entries = Array.from(metadataCache.values()).slice(-METADATA_STORAGE_LIMIT);
+    const scopePrefix = `${getConfigScopeId()}:`;
+    const entries = Array.from(metadataCache.entries())
+      .filter(([key]) => key.startsWith(scopePrefix))
+      .map(([, value]) => value)
+      .slice(-METADATA_STORAGE_LIMIT);
     localStorage.setItem(metadataStorageKey(), JSON.stringify(entries));
   } catch {}
 }
@@ -47,10 +55,14 @@ function isMissingArchiveError(error) {
 }
 
 export function rememberArchiveMetadata(archive) {
+  return rememberArchiveMetadataForScope(archive, getConfigScopeId());
+}
+
+function rememberArchiveMetadataForScope(archive, scope) {
   const id = archiveId(archive);
   if (!id) return null;
   const metadata = { ...archive, id, arcid: id };
-  metadataCache.set(id, metadata);
+  metadataCache.set(scopedArchiveKey(id, scope), metadata);
   if (metadataCache.size > METADATA_STORAGE_LIMIT) metadataCache.delete(metadataCache.keys().next().value);
   scheduleMetadataPersist();
   return metadata;
@@ -59,7 +71,7 @@ export function rememberArchiveMetadata(archive) {
 export function decorateArchiveRecord(record) {
   const id = archiveId(record);
   if (!id) return null;
-  const metadata = metadataCache.get(id);
+  const metadata = metadataCache.get(scopedArchiveKey(id));
   if (!metadata) return { ...record, id, arcid: id, title: id, tags: '' };
   return {
     ...metadata,
@@ -74,16 +86,18 @@ export function decorateArchiveRecord(record) {
 
 readPersistedMetadata().forEach((archive) => {
   const id = archiveId(archive);
-  if (id) metadataCache.set(id, { ...archive, id, arcid: id });
+  if (id) metadataCache.set(scopedArchiveKey(id), { ...archive, id, arcid: id });
 });
 
 async function fetchArchiveMetadata(id, { force = false } = {}) {
-  if (!force && metadataCache.has(id)) return metadataCache.get(id);
-  if (metadataRequests.has(id)) return metadataRequests.get(id);
+  const requestScope = getConfigScopeId();
+  const cacheKey = scopedArchiveKey(id, requestScope);
+  if (!force && metadataCache.has(cacheKey)) return metadataCache.get(cacheKey);
+  if (metadataRequests.has(cacheKey)) return metadataRequests.get(cacheKey);
   const request = lrrApi.getArchive(id)
-    .then((metadata) => rememberArchiveMetadata({ ...metadata, id, arcid: id }))
-    .finally(() => metadataRequests.delete(id));
-  metadataRequests.set(id, request);
+    .then((metadata) => rememberArchiveMetadataForScope({ ...metadata, id, arcid: id }, requestScope))
+    .finally(() => metadataRequests.delete(cacheKey));
+  metadataRequests.set(cacheKey, request);
   return request;
 }
 
@@ -96,7 +110,7 @@ export async function hydrateArchiveRecords(records, { force = false } = {}) {
     const batch = source.slice(index, index + HYDRATE_CONCURRENCY);
     await Promise.all(batch.map(async (record) => {
       const id = archiveId(record);
-      if (!force && metadataCache.has(id)) {
+      if (!force && metadataCache.has(scopedArchiveKey(id))) {
         hydrated.set(id, decorateArchiveRecord(record));
         return;
       }

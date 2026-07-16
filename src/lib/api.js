@@ -2,9 +2,16 @@ const getBaseUrl = () => {
   return (localStorage.getItem('lrr_server_url') || '').replace(/\/$/, '');
 };
 
+export function encodeApiKey(key = '') {
+  const bytes = new TextEncoder().encode(String(key));
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
 const encodeKey = () => {
   const key = localStorage.getItem('lrr_api_key') || '';
-  return btoa(key);
+  return encodeApiKey(key);
 };
 
 const getAuthHeaders = () => ({ Authorization: `Bearer ${encodeKey()}` });
@@ -50,10 +57,58 @@ const request = async (endpoint, method = 'GET', body = null, options = {}) => {
     headers,
     body: body ? JSON.stringify(body) : null,
     signal: options.signal,
+    keepalive: !!options.keepalive,
   });
 
   return readResponse(res);
 };
+
+function abortReason(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  const error = new Error('操作已取消');
+  error.name = 'AbortError';
+  return error;
+}
+
+function wait(ms, signal) {
+  if (signal?.aborted) return Promise.reject(abortReason(signal));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    const abort = () => {
+      clearTimeout(timer);
+      reject(abortReason(signal));
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal) {
+      setTimeout(() => signal.removeEventListener('abort', abort), ms);
+    }
+  });
+}
+
+export async function waitForMinionJob(job, {
+  signal,
+  timeoutMs = 5 * 60 * 1000,
+  pollMs = 1000,
+  onProgress,
+  getStatus = (jobId) => lrrApi.getMinionStatus(jobId, { signal }),
+} = {}) {
+  const jobId = Number(job?.job ?? job);
+  if (!Number.isFinite(jobId) || jobId <= 0) return null;
+  const deadline = Date.now() + Math.max(1, Number(timeoutMs) || 1);
+  while (Date.now() <= deadline) {
+    if (signal?.aborted) throw abortReason(signal);
+    const status = await getStatus(jobId);
+    onProgress?.(status);
+    const state = String(status?.state || '').toLowerCase();
+    if (state === 'finished') return status;
+    if (state === 'failed' || state === 'error') {
+      throw new Error(status?.error || 'LANraragi 后台任务失败');
+    }
+    if (Date.now() >= deadline) break;
+    await wait(Math.max(0, Number(pollMs) || 0), signal);
+  }
+  throw new Error('LANraragi 后台任务等待超时');
+}
 
 export function normalizeUntaggedArchiveIds(response) {
   const items = Array.isArray(response)
@@ -103,15 +158,15 @@ export const lrrApi = {
   getRandom: (count = 10, options = {}) => request(`/search/random?count=${count}`, 'GET', null, options),
   getUntaggedArchives: async (options = {}) => normalizeUntaggedArchiveIds(await request('/archives/untagged', 'GET', null, options)),
   getArchive: (id, options = {}) => request(`/archives/${id}/metadata`, 'GET', null, options),
-  updateArchiveMetadata: (id, { title = '', tags = '', summary = '' }) => {
+  updateArchiveMetadata: (id, { title = '', tags = '', summary = '' }, options = {}) => {
     const params = new URLSearchParams({ title, tags, summary });
-    return request(`/archives/${encodeURIComponent(id)}/metadata?${params}`, 'PUT');
+    return request(`/archives/${encodeURIComponent(id)}/metadata?${params}`, 'PUT', null, options);
   },
-  getMetadataPlugins: () => request('/plugins/metadata'),
+  getMetadataPlugins: (options = {}) => request('/plugins/metadata', 'GET', null, options),
   getDownloadPlugins: () => request('/plugins/download'),
-  useMetadataPlugin: (id, plugin, arg = '') => {
+  useMetadataPlugin: (id, plugin, arg = '', options = {}) => {
     const params = new URLSearchParams({ id, plugin, arg });
-    return request(`/plugins/use?${params}`, 'POST');
+    return request(`/plugins/use?${params}`, 'POST', null, options);
   },
   useDownloadPlugin: (plugin, arg) => {
     const params = new URLSearchParams({ plugin, arg });
@@ -171,12 +226,12 @@ export const lrrApi = {
     return { status: res.status, blob: await res.blob() };
   },
   regenerateThumbnails: (force = false) => request(`/regen_thumbs?force=${force ? 1 : 0}`, 'POST'),
-  getMinionStatus: (job) => request(`/minion/${encodeURIComponent(job)}`),
+  getMinionStatus: (job, options = {}) => request(`/minion/${encodeURIComponent(job)}`, 'GET', null, options),
   queueArchivePageThumbnails: (id, force = false) =>
     request(`/archives/${id}/files/thumbnails${force ? '?force=true' : ''}`, 'POST'),
   extractArchive: (id, options = {}) => request(`/archives/${id}/extract`, 'POST', null, options),
   clearCache: (id) => request(`/archives/${id}/extract`, 'DELETE'),
-  updateProgress: (id, page) => request(`/archives/${id}/progress/${page}`, 'PUT'),
+  updateProgress: (id, page, options = {}) => request(`/archives/${id}/progress/${page}`, 'PUT', null, options),
   getCategories: () => request('/categories'),
   getServerInfo: () => request('/info'),
 };
@@ -186,7 +241,7 @@ export const checkServerStatus = async (url, key) => {
   if (!base) throw new Error('未配置服务器地址');
 
   const headers = {};
-  if (key) headers['Authorization'] = `Bearer ${btoa(key)}`;
+  if (key) headers['Authorization'] = `Bearer ${encodeApiKey(key)}`;
 
   const res = await fetch(`${base}/api/info`, { headers });
   if (!res.ok) {

@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { acquireBodyScrollLock } from '../lib/bodyScrollLock';
 
 export default function ConfirmDialog({
   open,
@@ -15,6 +16,7 @@ export default function ConfirmDialog({
   initialFocusSelector = '[data-dialog-cancel]',
   actionsBefore,
   children,
+  dismissOnBackdrop = true,
 }) {
   const titleId = useId();
   const dialogRef = useRef(null);
@@ -22,19 +24,18 @@ export default function ConfirmDialog({
   useEffect(() => {
     if (!open) return undefined;
 
-    const prevOverflow = document.body.style.overflow;
     const previouslyFocused = document.activeElement;
     const handleKeyDown = (event) => {
       if (event.key === 'Escape') onCancel?.();
     };
 
-    document.body.style.overflow = 'hidden';
+    const releaseScrollLock = acquireBodyScrollLock();
     window.addEventListener('keydown', handleKeyDown);
     const focusFrame = requestAnimationFrame(() => dialogRef.current?.querySelector(initialFocusSelector)?.focus());
 
     return () => {
       cancelAnimationFrame(focusFrame);
-      document.body.style.overflow = prevOverflow;
+      releaseScrollLock();
       window.removeEventListener('keydown', handleKeyDown);
       if (previouslyFocused instanceof HTMLElement && document.contains(previouslyFocused)) previouslyFocused.focus();
     };
@@ -46,7 +47,7 @@ export default function ConfirmDialog({
     <div
       className="confirm-dialog-overlay"
       data-dialog-overlay
-      onClick={onCancel}
+      onClick={dismissOnBackdrop ? onCancel : undefined}
     >
       <div
         ref={dialogRef}

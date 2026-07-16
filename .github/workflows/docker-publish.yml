@@ -64,7 +64,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: kelcoin/lanraragi-react-reader:${{ steps.docker-tag.outputs.tag }}
+          tags: kelcoin/readoshi:${{ steps.docker-tag.outputs.tag }}
           build-args: |
             VITE_GIT_SHA=${{ github.sha }}
           cache-from: type=gha

@@ -43,7 +43,6 @@ export default function ConfigTransferDialog({ open, mode = 'export', initialVal
     <ConfirmDialog
       open={open}
       title={isExport ? '导出配置' : '导入配置'}
-      message={isExport ? '复制下面的配置文本，在其他设备中粘贴导入。' : '粘贴从其他设备导出的配置文本。'}
       confirmLabel={isExport ? '关闭' : '导入配置'}
       cancelLabel={isExport ? '关闭' : '取消'}
       showCancel={!isExport}
@@ -51,6 +50,7 @@ export default function ConfigTransferDialog({ open, mode = 'export', initialVal
       confirmDisabled={!isExport && !value.trim()}
       initialFocusSelector="[data-config-transfer-input]"
       onCancel={onCancel}
+      dismissOnBackdrop={false}
       onConfirm={isExport ? onCancel : submit}
       actionsBefore={isExport ? (
         <button type="button" className="btn" onClick={copyValue}>
@@ -58,6 +58,9 @@ export default function ConfigTransferDialog({ open, mode = 'export', initialVal
         </button>
       ) : null}
     >
+      <div className="config-transfer-warning" role="alert">
+        警告：请勿分享或导入他人配置！
+      </div>
       <label className="config-transfer-field" htmlFor={inputId}>
         配置文本
         <textarea

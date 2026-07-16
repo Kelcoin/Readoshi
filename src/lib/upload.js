@@ -2,6 +2,17 @@ function pluginSource(payload) {
   return Array.isArray(payload) ? payload : (payload?.data || payload?.plugins || []);
 }
 
+const ACCEPTED_UPLOAD_EXTENSION = /\.(zip|cbz|rar|cbr|7z|pdf)$/i;
+
+export function partitionUploadFiles(files = []) {
+  const accepted = [];
+  const rejected = [];
+  for (const file of Array.from(files || [])) {
+    (ACCEPTED_UPLOAD_EXTENSION.test(String(file?.name || '')) ? accepted : rejected).push(file);
+  }
+  return { accepted: dedupeUploadFiles(accepted), rejected };
+}
+
 export function parseUploadUrls(text = '') {
   const seen = new Set();
   const valid = [];

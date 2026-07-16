@@ -3,6 +3,7 @@ import { lrrApi } from '../lib/api';
 import { navigateHome } from '../lib/navigation';
 import {
   dedupeUploadFiles,
+  partitionUploadFiles,
   matchDownloadPlugin,
   normalizeDownloadPlugins,
   parseUploadUrls,
@@ -39,6 +40,7 @@ export default function UploadPage() {
   const [results, setResults] = useState([]);
   const [running, setRunning] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [notice, setNotice] = useState('');
 
   const parsedUrls = useMemo(() => parseUploadUrls(urlText), [urlText]);
   const unmatchedUrlCount = useMemo(() => (
@@ -70,8 +72,18 @@ export default function UploadPage() {
   }, [running]);
 
   const addFiles = useCallback((incoming) => {
-    setFiles(current => dedupeUploadFiles([...current, ...Array.from(incoming || [])]));
+    const { accepted, rejected } = partitionUploadFiles(incoming);
+    setFiles(current => dedupeUploadFiles([...current, ...accepted]));
+    setNotice(rejected.length ? `已忽略不支持的文件：${rejected.map((file) => file.name).join('、')}` : '');
   }, []);
+
+  const clearSearchCache = async () => {
+    try {
+      await lrrApi.clearSearchCache();
+    } catch (error) {
+      setNotice(`归档已提交，但搜索缓存清理失败：${error.message || '请稍后在首页刷新'}`);
+    }
+  };
 
   const updateTask = useCallback((update) => {
     setResults(current => current.map((item, index) => {
@@ -90,9 +102,12 @@ export default function UploadPage() {
     const tasks = files.map((file, index) => ({ id: taskKey('file', file.name, index), label: file.name, file }));
     setResults(tasks.map(task => ({ ...task, type: 'file', status: 'queued', progress: 0, message: '' })));
     setRunning(true);
-    await runUploadTasks(tasks, task => lrrApi.uploadArchive(task.file), updateTask);
-    await lrrApi.clearSearchCache().catch(() => {});
-    setRunning(false);
+    try {
+      await runUploadTasks(tasks, task => lrrApi.uploadArchive(task.file), updateTask);
+      await clearSearchCache();
+    } finally {
+      setRunning(false);
+    }
   };
 
   const runUrls = async () => {
@@ -103,15 +118,18 @@ export default function UploadPage() {
     const tasks = parsedUrls.valid.map((url, index) => ({ id: taskKey('url', url, index), label: url, url }));
     setResults([...tasks.map(task => ({ ...task, type: 'url', status: 'queued', progress: 0, message: '' })), ...invalidResults.map(item => ({ ...item, progress: 100 }))]);
     setRunning(true);
-    await runUploadTasks(tasks, async (task) => {
-      const plugin = pluginValue === 'auto'
-        ? matchDownloadPlugin(task.url, pluginState.plugins)
-        : pluginState.plugins.find(item => item.value === pluginValue);
-      if (!plugin) throw new Error('没有下载插件匹配该 URL，请手动选择插件');
-      return lrrApi.useDownloadPlugin(plugin.value, task.url);
-    }, updateTask);
-    await lrrApi.clearSearchCache().catch(() => {});
-    setRunning(false);
+    try {
+      await runUploadTasks(tasks, async (task) => {
+        const plugin = pluginValue === 'auto'
+          ? matchDownloadPlugin(task.url, pluginState.plugins)
+          : pluginState.plugins.find(item => item.value === pluginValue);
+        if (!plugin) throw new Error('没有下载插件匹配该 URL，请手动选择插件');
+        return lrrApi.useDownloadPlugin(plugin.value, task.url);
+      }, updateTask);
+      await clearSearchCache();
+    } finally {
+      setRunning(false);
+    }
   };
 
   const goBack = () => {
@@ -190,6 +208,8 @@ export default function UploadPage() {
           </button>
         </section>
       </div>
+
+      {notice && <div className="upload-notice" role="status">{notice}</div>}
 
       {results.length > 0 && <section className="glass-panel upload-results" aria-live="polite">
         <div className="upload-results-heading">

@@ -1,10 +1,15 @@
 <p align="center">
-  <img src="logo.png" alt="LANraragi-React-Reader Logo" width="180">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="public/logo-white.png">
+    <source media="(prefers-color-scheme: light)" srcset="public/logo-black.png">
+    <img src="public/logo-black.png" alt="Readoshi Logo" width="180">
+  </picture>
 </p>
 
-<h1 align="center">LANraragi-React-Reader</h1>
+<h1 align="center">Readoshi</h1>
+<p align="center"><strong>A LANraragi Reader</strong></p>
 
-LANraragi-React-Reader 是一个面向 [LANraragi](https://github.com/Difegue/LANraragi) 的现代阅读器前端，支持 PWA、标签翻译、分类浏览、阅读历史、智能推荐、归档上传、元数据编辑、E-Hentai 评论、重复归档检测和沉浸式阅读。
+Readoshi 是一个面向 [LANraragi](https://github.com/Difegue/LANraragi) 的现代阅读器前端，支持 PWA、标签翻译、分类浏览、阅读历史、智能推荐、归档上传、元数据编辑、E-Hentai 评论、重复归档检测和沉浸式阅读。
 
 应用通过 LANraragi HTTP API 工作：首次打开页面时填写 LANraragi 地址和 API Key，之后配置保存在浏览器 `localStorage`。API 请求会发送到 `<LANraragi 地址>/api/*`，认证方式为 `Authorization: Bearer <base64(API Key)>`。
 
@@ -48,15 +53,15 @@ LANraragi-React-Reader 是一个面向 [LANraragi](https://github.com/Difegue/LA
 | `main` | `latest` | 稳定分支镜像 |
 | `dev` | `beta` | 开发分支镜像，包含最新测试功能 |
 
-如果要部署 `dev` 分支，请把下面示例中的 `kelcoin/lanraragi-react-reader:latest` 改为 `kelcoin/lanraragi-react-reader:beta`。
+如果要部署 `dev` 分支，请把下面示例中的 `kelcoin/readoshi:latest` 改为 `kelcoin/readoshi:beta`。
 
 ```bash
 docker run -d \
-  --name lanraragi-react-reader \
+  --name readoshi \
   -p 8080:80 \
   -e LRR_SERVER_HOST=host.docker.internal \
   -e LRR_SERVER_PORT=3000 \
-  kelcoin/lanraragi-react-reader:latest
+  kelcoin/readoshi:latest
 ```
 
 打开 `http://localhost:8080`，在页面中填写 LANraragi 地址和 API Key 即可开始使用。
@@ -66,8 +71,8 @@ docker run -d \
 ```yaml
 services:
   reader:
-    image: kelcoin/lanraragi-react-reader:latest
-    container_name: lanraragi-react-reader
+    image: kelcoin/readoshi:latest
+    container_name: readoshi
     ports:
       - "8080:80"
     environment:
@@ -89,8 +94,8 @@ services:
     restart: unless-stopped
 
   reader:
-    image: kelcoin/lanraragi-react-reader:latest
-    container_name: lanraragi-react-reader
+    image: kelcoin/readoshi:latest
+    container_name: readoshi
     ports:
       - "8080:80"
     environment:
@@ -182,7 +187,12 @@ KV 导入/导出功能不需要额外的管理 API Key。打开 Worker 网页后
 - 服务状态、请求计数、同步用户数、阅读记录数。
 - KV 绑定、KV 读取和 Token 认证状态。
 - 非重复记录数量。
+- Worker 更新状态。
 - KV 导入/导出工具。
+
+更新检查默认比较 GitHub `main` 分支。测试版 Worker 可增加文本变量绑定 `WORKER_UPDATE_BRANCH=dev`；只接受 `main` 或 `dev`，非法值回退 `main`。检查结果缓存六小时，GitHub 不可用时不会影响同步接口。
+
+修改 `worker.js` 行为时必须递增文件顶部的 `WORKER_RELEASE`，否则旧部署无法识别更新。
 
 KV 导入/导出可以选择：
 

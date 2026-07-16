@@ -1,14 +1,18 @@
 import { getSyncToken, getWorkerUrl } from './worker-config';
 import { decorateArchiveRecord, hydrateArchiveRecords, rememberArchiveMetadata } from './archiveMetadataCache';
+import { getConfigScopeId, getServerScopeId, migrateLegacyStorageKey } from './configScope';
 
 const LOCAL_WATCHLIST_KEY = 'lrr_watchlist';
 const REMOTE_WATCHLIST_CACHE_KEY = 'lrr_watchlist_remote_cache';
+const WATCHLIST_PENDING_DELETES_KEY = 'lrr_watchlist_pending_deletes';
 const REMOTE_LOAD_TTL_MS = 30 * 1000;
+const WATCHLIST_RETRY_MS = 2 * 60 * 1000;
 
 let remoteLoadPromise = null;
 let remoteLoadPromiseScope = '';
 let remoteLoadedAt = 0;
 let remoteLoadedScope = '';
+let deleteRetryTimer = null;
 
 function remoteConfig() {
   const workerUrl = getWorkerUrl();
@@ -35,7 +39,42 @@ function emitWatchlistChanged() {
 }
 
 function activeWatchlistKey() {
-  return hasRemoteWatchlist() ? REMOTE_WATCHLIST_CACHE_KEY : LOCAL_WATCHLIST_KEY;
+  return migrateLegacyStorageKey(hasRemoteWatchlist() ? REMOTE_WATCHLIST_CACHE_KEY : LOCAL_WATCHLIST_KEY);
+}
+
+function pendingDeleteKey() {
+  return migrateLegacyStorageKey(WATCHLIST_PENDING_DELETES_KEY);
+}
+
+function getPendingDeletes() {
+  return safeReadJson(pendingDeleteKey(), []).map(String).filter(Boolean);
+}
+
+function setPendingDeletes(ids) {
+  localStorage.setItem(pendingDeleteKey(), JSON.stringify(Array.from(new Set(ids))));
+}
+
+function scheduleDeleteRetry() {
+  if (deleteRetryTimer || !hasRemoteWatchlist()) return;
+  deleteRetryTimer = setTimeout(() => {
+    deleteRetryTimer = null;
+    flushWatchlistDeleteQueue().catch(() => {});
+  }, WATCHLIST_RETRY_MS);
+}
+
+export async function flushWatchlistDeleteQueue() {
+  const ids = getPendingDeletes();
+  if (ids.length === 0) return true;
+  if (!hasRemoteWatchlist()) return false;
+  try {
+    await workerJson('/watchlist', { method: 'DELETE', body: { ids } });
+    const sent = new Set(ids);
+    setPendingDeletes(getPendingDeletes().filter((id) => !sent.has(id)));
+    return true;
+  } catch {
+    scheduleDeleteRetry();
+    return false;
+  }
 }
 
 function normalizeWatchlistItem(item) {
@@ -84,7 +123,7 @@ async function workerJson(endpoint, { method = 'GET', body = null } = {}) {
   if (!cfg) throw new Error('未配置 Worker');
   const init = {
     method,
-    headers: { 'x-sync-token': cfg.token },
+    headers: { 'x-sync-token': cfg.token, 'x-lrr-server-scope': getServerScopeId() },
   };
   if (body) {
     init.headers['Content-Type'] = 'application/json';
@@ -105,14 +144,20 @@ export const getWatchlist = () => getStoredWatchlist().map(decorateArchiveRecord
 async function loadWatchlistStateNow({ force = false } = {}) {
   const remote = hasRemoteWatchlist();
   const cfg = remote ? remoteConfig() : null;
-  const scope = cfg ? `${cfg.base}|${cfg.token}` : '';
+  const scope = cfg ? `${getConfigScopeId()}|${cfg.base}|${cfg.token}` : '';
+  const watchlistStorageKey = activeWatchlistKey();
   let items;
   let lastSync = 0;
   if (remote && (force || remoteLoadedScope !== scope || !remoteLoadedAt || Date.now() - remoteLoadedAt >= REMOTE_LOAD_TTL_MS)) {
+    await flushWatchlistDeleteQueue();
     const data = await workerJson('/watchlist');
-    items = sortWatchlist(data?.items || []);
+    const currentCfg = remoteConfig();
+    const currentScope = currentCfg ? `${getConfigScopeId()}|${currentCfg.base}|${currentCfg.token}` : '';
+    if (currentScope !== scope) return loadWatchlistStateNow({ force: true });
+    const pendingDeletes = new Set(getPendingDeletes());
+    items = sortWatchlist(data?.items || []).filter((item) => !pendingDeletes.has(item.id));
     lastSync = data?.lastSync || 0;
-    localStorage.setItem(REMOTE_WATCHLIST_CACHE_KEY, JSON.stringify(items));
+    localStorage.setItem(watchlistStorageKey, JSON.stringify(items));
     remoteLoadedAt = Date.now();
     remoteLoadedScope = scope;
   } else {
@@ -128,7 +173,7 @@ async function loadWatchlistStateNow({ force = false } = {}) {
 export function loadWatchlistState(options = {}) {
   const remote = hasRemoteWatchlist();
   const cfg = remote ? remoteConfig() : null;
-  const scope = cfg ? `${cfg.base}|${cfg.token}` : '';
+  const scope = cfg ? `${getConfigScopeId()}|${cfg.base}|${cfg.token}` : '';
   if (remote && !options.force && remoteLoadPromise && remoteLoadPromiseScope === scope) return remoteLoadPromise;
   const task = loadWatchlistStateNow(options);
   if (!remote) return task;
@@ -169,7 +214,10 @@ export const removeWatchlistItems = async (archiveIds) => {
   if (hasRemoteWatchlist()) {
     try {
       await workerJson('/watchlist', { method: 'DELETE', body: { ids: Array.from(removeSet) } });
-    } catch {}
+    } catch {
+      setPendingDeletes([...getPendingDeletes(), ...removeSet]);
+      scheduleDeleteRetry();
+    }
   }
   return removed;
 };

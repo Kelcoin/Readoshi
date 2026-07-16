@@ -51,10 +51,10 @@ function historyPeriodFor(time, todayStart = startOfLocalDay(Date.now())) {
     return { key: 'yesterday', title: '昨天' };
   }
   if (ageDays < 7) {
-    return { key: 'week', title: '一周前' };
+    return { key: 'week', title: '最近 7 天' };
   }
   if (ageDays < 30) {
-    return { key: 'month', title: '一个月前' };
+    return { key: 'month', title: '最近 30 天' };
   }
   return { key: 'older', title: '更久以前' };
 }

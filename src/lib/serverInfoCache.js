@@ -1,5 +1,6 @@
 import { lrrApi } from './api';
 import { getConfigFingerprint } from './sessionState';
+import { migrateLegacyStorageKey } from './configScope';
 
 const KEY = 'lrr_server_info_cache_v1';
 const TTL = 30 * 60 * 1000;
@@ -25,7 +26,7 @@ export function normalizeServerInfo(info) {
 
 function readCache() {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = localStorage.getItem(migrateLegacyStorageKey(KEY));
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed || parsed.configId !== getConfigFingerprint()) return null;
@@ -38,7 +39,7 @@ function readCache() {
 export function cacheServerInfo(data) {
   const normalized = normalizeServerInfo(data);
   try {
-    localStorage.setItem(KEY, JSON.stringify({
+    localStorage.setItem(migrateLegacyStorageKey(KEY), JSON.stringify({
       configId: getConfigFingerprint(),
       ts: Date.now(),
       data: normalized,

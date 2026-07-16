@@ -1,4 +1,4 @@
-import { ARCHIVE_PROGRESS_VISIBILITY, normalizeArchiveProgressVisibility } from './archiveProgress';
+import { ARCHIVE_PROGRESS_VISIBILITY, normalizeArchiveProgressVisibility } from './archiveProgress.js';
 
 export const READER_SETTINGS_KEY = 'lrr_reader_settings';
 
@@ -30,6 +30,10 @@ export function normalizeReaderSettings(value = {}) {
     next[key] = Boolean(next[key]);
   }
   next.preloadCount = Math.max(0, Math.min(10, Number(next.preloadCount) || 0));
+  const autoTurnInterval = Number(next.autoTurnInterval);
+  next.autoTurnInterval = Number.isFinite(autoTurnInterval) && autoTurnInterval > 0
+    ? Math.min(3600, autoTurnInterval)
+    : DEFAULT_READER_SETTINGS.autoTurnInterval;
   next.webtoonGap = Math.max(0, Math.min(64, Number(next.webtoonGap) || 0));
   next.doublePageGap = Math.max(0, Math.min(64, Number(next.doublePageGap) || 0));
   next.doublePageEnabled = next.readingLayout === 'double';

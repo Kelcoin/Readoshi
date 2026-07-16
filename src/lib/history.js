@@ -2,12 +2,14 @@ import { getSyncToken, getWorkerUrl } from './worker-config';
 import { decorateArchiveRecord, hydrateArchiveRecords, rememberArchiveMetadata } from './archiveMetadataCache';
 import { loadServerInfo } from './serverInfoCache';
 import { clampProgressPage, mergeCachedHistoryProgress, mergeHistoryProgressCache, mergeMonotonicHistoryItems } from './historyProgressCache';
+import { getConfigScopeId, getServerScopeId, migrateLegacyStorageKey } from './configScope';
 
 const LOCAL_HISTORY_KEY = 'lrr_history';
 const LOCAL_HIDE_READ_KEY = 'lrr_hide_read';
 const REMOTE_HISTORY_CACHE_KEY = 'lrr_history_remote_cache';
 const REMOTE_HIDE_READ_CACHE_KEY = 'lrr_hide_read_remote_cache';
 const HISTORY_PROGRESS_CACHE_KEY = 'lrr_history_progress_cache';
+const HISTORY_PENDING_DELETES_KEY = 'lrr_history_pending_deletes';
 const CROP_COVER_KEY = 'lrr_crop_cover';
 const ARCHIVE_BROWSE_MODE_KEY = 'lrr_archive_browse_mode';
 const REMOTE_LOAD_TTL_MS = 30 * 1000;
@@ -20,6 +22,7 @@ let remoteLoadedAt = 0;
 let remoteLoadedScope = '';
 let historyFlushTimer = null;
 let historyFlushPromise = null;
+let historyDeleteRetryTimer = null;
 let pendingHistoryScope = '';
 let pendingHistoryUrgent = false;
 const pendingHistorySync = new Map();
@@ -67,11 +70,50 @@ function emitHistoryChanged() {
 }
 
 function activeHistoryKey() {
-  return hasRemoteHistory() ? REMOTE_HISTORY_CACHE_KEY : LOCAL_HISTORY_KEY;
+  return migrateLegacyStorageKey(hasRemoteHistory() ? REMOTE_HISTORY_CACHE_KEY : LOCAL_HISTORY_KEY);
 }
 
 function activeHideReadKey() {
-  return hasRemoteHistory() ? REMOTE_HIDE_READ_CACHE_KEY : LOCAL_HIDE_READ_KEY;
+  return migrateLegacyStorageKey(hasRemoteHistory() ? REMOTE_HIDE_READ_CACHE_KEY : LOCAL_HIDE_READ_KEY);
+}
+
+function historyProgressCacheKey() {
+  return migrateLegacyStorageKey(HISTORY_PROGRESS_CACHE_KEY);
+}
+
+function pendingHistoryDeleteKey() {
+  return migrateLegacyStorageKey(HISTORY_PENDING_DELETES_KEY);
+}
+
+function getPendingHistoryDeletes() {
+  return safeReadJson(pendingHistoryDeleteKey(), []).map(String).filter(Boolean);
+}
+
+function setPendingHistoryDeletes(ids) {
+  localStorage.setItem(pendingHistoryDeleteKey(), JSON.stringify(Array.from(new Set(ids))));
+}
+
+function scheduleHistoryDeleteRetry() {
+  if (historyDeleteRetryTimer || !hasRemoteHistory()) return;
+  historyDeleteRetryTimer = setTimeout(() => {
+    historyDeleteRetryTimer = null;
+    flushHistoryDeleteQueue().catch(() => {});
+  }, HISTORY_SYNC_RETRY_MS);
+}
+
+export async function flushHistoryDeleteQueue() {
+  const ids = getPendingHistoryDeletes();
+  if (ids.length === 0) return true;
+  if (!hasRemoteHistory()) return false;
+  try {
+    await workerJson('/history', { method: 'DELETE', body: { ids } });
+    const sent = new Set(ids);
+    setPendingHistoryDeletes(getPendingHistoryDeletes().filter((id) => !sent.has(id)));
+    return true;
+  } catch {
+    scheduleHistoryDeleteRetry();
+    return false;
+  }
 }
 
 function writeHistoryCache(list, { notify = true } = {}) {
@@ -82,7 +124,7 @@ function writeHistoryCache(list, { notify = true } = {}) {
 }
 
 function readHistoryProgressCache() {
-  return safeReadJson(HISTORY_PROGRESS_CACHE_KEY, {});
+  return safeReadJson(historyProgressCacheKey(), {});
 }
 
 function writeHistoryProgressCache(items) {
@@ -90,7 +132,7 @@ function writeHistoryProgressCache(items) {
   const entries = Object.entries(merged)
     .sort(([, a], [, b]) => (b.time || 0) - (a.time || 0))
     .slice(0, 500);
-  localStorage.setItem(HISTORY_PROGRESS_CACHE_KEY, JSON.stringify(Object.fromEntries(entries)));
+  localStorage.setItem(historyProgressCacheKey(), JSON.stringify(Object.fromEntries(entries)));
 }
 
 function clampHistoryProgressForArchive(id, total) {
@@ -101,7 +143,7 @@ function clampHistoryProgressForArchive(id, total) {
   if (!current) return;
   const page = clampProgressPage(current.page, pageCap);
   if (page === current.page && current.total === pageCap) return;
-  localStorage.setItem(HISTORY_PROGRESS_CACHE_KEY, JSON.stringify({
+  localStorage.setItem(historyProgressCacheKey(), JSON.stringify({
     ...cache,
     [id]: { ...current, page, total: pageCap },
   }));
@@ -117,7 +159,7 @@ async function workerJson(endpoint, { method = 'GET', body = null, keepalive = f
   if (!cfg) throw new Error('未配置 Worker');
   const init = {
     method,
-    headers: { 'x-sync-token': cfg.token },
+    headers: { 'x-sync-token': cfg.token, 'x-lrr-server-scope': getServerScopeId() },
     keepalive,
   };
   if (body) {
@@ -141,7 +183,7 @@ function scheduleHistoryFlush(delay = HISTORY_SYNC_INTERVAL_MS) {
 function queueHistorySync(item, pageCap = 0, immediateRemote = false) {
   const cfg = remoteConfig();
   if (!cfg) return;
-  const scope = `${cfg.base}|${cfg.token}`;
+  const scope = `${getConfigScopeId()}|${cfg.base}|${cfg.token}`;
   if (pendingHistoryScope && pendingHistoryScope !== scope) {
     pendingHistorySync.clear();
     pendingHistoryPageCaps.clear();
@@ -164,7 +206,7 @@ function queueHistorySync(item, pageCap = 0, immediateRemote = false) {
 
 export async function flushHistorySync({ keepalive = false } = {}) {
   const cfg = remoteConfig();
-  const scope = cfg ? `${cfg.base}|${cfg.token}` : '';
+  const scope = cfg ? `${getConfigScopeId()}|${cfg.base}|${cfg.token}` : '';
   if (!cfg || (pendingHistoryScope && pendingHistoryScope !== scope)) {
     pendingHistorySync.clear();
     pendingHistoryPageCaps.clear();
@@ -232,23 +274,30 @@ export const getHistory = () => getStoredHistory().map(decorateArchiveRecord).fi
 async function loadHistoryStateNow({ force = false } = {}) {
   const remote = hasRemoteHistory();
   const cfg = remote ? remoteConfig() : null;
-  const scope = cfg ? `${cfg.base}|${cfg.token}` : '';
+  const scope = cfg ? `${getConfigScopeId()}|${cfg.base}|${cfg.token}` : '';
+  const historyStorageKey = activeHistoryKey();
+  const hideReadStorageKey = activeHideReadKey();
   let histories;
   let hideRead;
   let retentionDays = 0;
 
   if (remote && (force || remoteLoadedScope !== scope || !remoteLoadedAt || Date.now() - remoteLoadedAt >= REMOTE_LOAD_TTL_MS)) {
     await flushHistorySync();
+    await flushHistoryDeleteQueue();
     const data = await workerJson('/history');
-    const remoteHistories = sortHistoryByTime(data?.histories || []);
+    const currentCfg = remoteConfig();
+    const currentScope = currentCfg ? `${getConfigScopeId()}|${currentCfg.base}|${currentCfg.token}` : '';
+    if (currentScope !== scope) return loadHistoryStateNow({ force: true });
+    const pendingDeletes = new Set(getPendingHistoryDeletes());
+    const remoteHistories = sortHistoryByTime(data?.histories || []).filter((item) => !pendingDeletes.has(item.id));
     histories = mergeCachedHistoryProgress(
       mergeMonotonicHistoryItems(remoteHistories, getStoredHistory()),
       readHistoryProgressCache(),
     );
     hideRead = !!data?.hideRead;
     retentionDays = data?.retentionDays || 0;
-    localStorage.setItem(REMOTE_HISTORY_CACHE_KEY, JSON.stringify(histories));
-    localStorage.setItem(REMOTE_HIDE_READ_CACHE_KEY, hideRead ? '1' : '0');
+    localStorage.setItem(historyStorageKey, JSON.stringify(histories));
+    localStorage.setItem(hideReadStorageKey, hideRead ? '1' : '0');
     remoteLoadedAt = Date.now();
     remoteLoadedScope = scope;
   } else {
@@ -294,7 +343,7 @@ async function loadHistoryStateNow({ force = false } = {}) {
 export function loadHistoryState(options = {}) {
   const remote = hasRemoteHistory();
   const cfg = remote ? remoteConfig() : null;
-  const scope = cfg ? `${cfg.base}|${cfg.token}` : '';
+  const scope = cfg ? `${getConfigScopeId()}|${cfg.base}|${cfg.token}` : '';
   if (remote && !options.force && remoteLoadPromise && remoteLoadPromiseScope === scope) return remoteLoadPromise;
   const task = loadHistoryStateNow(options);
   if (!remote) return task;
@@ -362,7 +411,10 @@ export const removeHistoryItems = async (archiveIds) => {
   if (!hasRemoteHistory()) return removed;
   try {
     await workerJson('/history', { method: 'DELETE', body: { ids: Array.from(removeSet) } });
-  } catch {}
+  } catch {
+    setPendingHistoryDeletes([...getPendingHistoryDeletes(), ...removeSet]);
+    scheduleHistoryDeleteRetry();
+  }
   return removed;
 };
 
@@ -380,7 +432,10 @@ export const pruneHistoryItems = async (archiveIds) => {
   if (hasRemoteHistory()) {
     try {
       await workerJson('/history', { method: 'DELETE', body: { ids: Array.from(removeSet) } });
-    } catch {}
+    } catch {
+      setPendingHistoryDeletes([...getPendingHistoryDeletes(), ...removeSet]);
+      scheduleHistoryDeleteRetry();
+    }
   }
   return removed;
 };

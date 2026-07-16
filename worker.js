@@ -5,15 +5,18 @@ addEventListener('fetch', (event) => {
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Content-Encoding, x-sync-token',
+  'Access-Control-Allow-Headers': 'Content-Type, Content-Encoding, x-sync-token, x-lrr-server-scope',
   'Access-Control-Max-Age': '86400',
 };
 
-const DEDUPE_NON_DUP_KEY = 'dedupe:non-duplicates';
-const SYNC_SCHEMA_VERSION = 2;
-const PROJECT_NAME = 'LANraragi-React-Reader';
-const PROJECT_URL = 'https://github.com/Kelcoin/LANraragi-React-Reader';
+const DEDUPE_KEY_PREFIX = 'dedupe:';
+const SYNC_SCHEMA_VERSION = 3;
+const PROJECT_NAME = 'Readoshi';
+const PROJECT_URL = 'https://github.com/Kelcoin/Readoshi';
 const FALLBACK_APP_VERSION = 'v1.1.0+944d658';
+// Increment when Worker behavior changes so deployed copies can detect updates.
+const WORKER_RELEASE = 1;
+const WORKER_UPDATE_BRANCHES = ['main', 'dev'];
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -40,6 +43,67 @@ function text(data, status = 200, extraHeaders = {}) {
   });
 }
 
+function getWorkerUpdateBranch() {
+  const configured = typeof WORKER_UPDATE_BRANCH !== 'undefined'
+    ? String(WORKER_UPDATE_BRANCH).trim().toLowerCase()
+    : '';
+  return WORKER_UPDATE_BRANCHES.includes(configured) ? configured : 'main';
+}
+
+function getWorkerSourceUrl(branch) {
+  return `https://raw.githubusercontent.com/Kelcoin/Readoshi/${branch}/worker.js`;
+}
+
+function parseWorkerRelease(source) {
+  const match = String(source || '').match(/const WORKER_RELEASE\s*=\s*(\d+)\s*;/);
+  return match ? Number(match[1]) : null;
+}
+
+async function fetchWorkerSource(url) {
+  let timeoutId;
+  try {
+    return await Promise.race([
+      fetch(url, { headers: { Accept: 'text/plain' } }),
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('Worker update check timed out')), 4000);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+async function checkWorkerUpdate() {
+  const branch = getWorkerUpdateBranch();
+  const sourceUrl = getWorkerSourceUrl(branch);
+  try {
+    const cache = typeof caches !== 'undefined' ? caches.default : null;
+    let response = cache ? await cache.match(sourceUrl) : null;
+    if (!response) {
+      response = await fetchWorkerSource(sourceUrl);
+      if (!response.ok) throw new Error(`GitHub returned HTTP ${response.status}`);
+      const source = await response.text();
+      if (cache) {
+        const cached = new Response(source, {
+          headers: {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Cache-Control': 'public, max-age=21600',
+          },
+        });
+        await cache.put(sourceUrl, cached).catch(() => {});
+      }
+      const remoteRelease = parseWorkerRelease(source);
+      if (!Number.isInteger(remoteRelease)) throw new Error('Remote Worker release marker missing');
+      return { status: remoteRelease > WORKER_RELEASE ? 'update' : 'current', branch, sourceUrl, remoteRelease };
+    }
+    const remoteRelease = parseWorkerRelease(await response.text());
+    if (!Number.isInteger(remoteRelease)) throw new Error('Cached Worker release marker missing');
+    return { status: remoteRelease > WORKER_RELEASE ? 'update' : 'current', branch, sourceUrl, remoteRelease };
+  } catch {
+    return { status: 'unavailable', branch, sourceUrl, remoteRelease: null };
+  }
+}
+
 // ── Memory-Cached State (loaded once at first request) ──────────
 let tokenLoadPromise = null;      // Promise that resolves once KV tokens are loaded
 let cachedTokens = new Set();     // Set<string>; empty set means no token can pass
@@ -49,6 +113,34 @@ let statusSummaryCache = null;
 let statusSummaryLoadedAt = 0;
 let statusSummaryPromise = null;
 const STATUS_SUMMARY_TTL_MS = 5 * 60 * 1000;
+const mutationLocks = new Map();
+
+async function withMutationLock(key, operation) {
+  const previous = mutationLocks.get(key) || Promise.resolve();
+  const current = previous.catch(() => {}).then(operation);
+  mutationLocks.set(key, current);
+  try {
+    return await current;
+  } finally {
+    if (mutationLocks.get(key) === current) mutationLocks.delete(key);
+  }
+}
+
+async function readKvJson(key, fallback) {
+  const raw = await HISTORY_KV.get(key);
+  return raw ? JSON.parse(raw) : fallback;
+}
+
+async function readScopedKvJson(key, legacyKey, fallback) {
+  const raw = await HISTORY_KV.get(key);
+  if (raw) return JSON.parse(raw);
+  if (!legacyKey) return fallback;
+  const legacyRaw = await HISTORY_KV.get(legacyKey);
+  if (!legacyRaw) return fallback;
+  await HISTORY_KV.put(key, legacyRaw);
+  await HISTORY_KV.delete(legacyKey);
+  return JSON.parse(legacyRaw);
+}
 
 // ── IP Rate Limiter ────────────────────────────────────────────
 // In-memory only (resets on cold start).  Tracks failed auths per IP.
@@ -180,8 +272,7 @@ async function requireAuth(request) {
     }, 429);
   }
 
-  const url = new URL(request.url);
-  const token = request.headers.get('x-sync-token') || url.searchParams.get('token') || '';
+  const token = request.headers.get('x-sync-token') || '';
 
   if (!isValidToken(token)) {
     recordAuthFailure(ip);
@@ -203,6 +294,41 @@ function buildEHHeaders(hostname, cookie) {
   };
   if (cookie) h['Cookie'] = cookie;
   return h;
+}
+
+const EH_HOSTS = new Set(['e-hentai.org', 'exhentai.org', 'api.e-hentai.org']);
+
+function parseAllowedEhUrl(value, { galleryOnly = false } = {}) {
+  let url;
+  try { url = new URL(value); } catch { return null; }
+  const hostname = url.hostname.toLowerCase();
+  if (url.protocol !== 'https:') return null;
+  if (url.port && url.port !== '443') return null;
+  if (galleryOnly ? !['e-hentai.org', 'exhentai.org'].includes(hostname) : !EH_HOSTS.has(hostname)) return null;
+  if (url.username || url.password) return null;
+  return url;
+}
+
+async function safeEhFetch(input, init = {}, { galleryOnly = false, maxRedirects = 5 } = {}) {
+  let url = parseAllowedEhUrl(input, { galleryOnly });
+  if (!url) throw new Error('Invalid EH target');
+  let options = { ...init, redirect: 'manual' };
+  for (let redirects = 0; redirects <= maxRedirects; redirects += 1) {
+    const response = await fetch(url.toString(), options);
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    if (redirects === maxRedirects) throw new Error('Too many EH redirects');
+    const location = response.headers.get('location');
+    const nextUrl = location ? parseAllowedEhUrl(new URL(location, url).toString(), { galleryOnly }) : null;
+    if (!nextUrl) throw new Error('Blocked EH redirect');
+    if (nextUrl.origin !== url.origin) throw new Error('Blocked cross-origin EH redirect');
+    if (response.status === 303 || ((response.status === 301 || response.status === 302) && options.method === 'POST')) {
+      const headers = new Headers(options.headers || {});
+      headers.delete('Content-Type');
+      options = { ...options, method: 'GET', body: undefined, headers };
+    }
+    url = nextUrl;
+  }
+  throw new Error('Too many EH redirects');
 }
 
 // ── EH Gallery Proxy (POST /) ──────────────────────────────────
@@ -242,18 +368,16 @@ async function ehProxy(request) {
 
   let targetUrl = url;
   if (!/^https?:\/\//i.test(targetUrl)) targetUrl = 'https://' + targetUrl;
-
-  const u = new URL(targetUrl);
-  if (!/(exhentai\.org|e-hentai\.org)$/i.test(u.hostname)) {
+  const u = parseAllowedEhUrl(targetUrl, { galleryOnly: true });
+  if (!u) {
     return json({ error: 'Invalid host' }, 403);
   }
 
   try {
-    const res = await fetch(targetUrl, {
+    const res = await safeEhFetch(targetUrl, {
       headers: buildEHHeaders(u.hostname, cookie),
-      redirect: 'follow',
       cf: { cacheEverything: false },
-    });
+    }, { galleryOnly: true });
 
     const htmlText = await res.text();
 
@@ -295,7 +419,7 @@ async function ehProxy(request) {
 
     return text(htmlText, 200, { 'Cache-Control': 'no-store' });
   } catch (err) {
-    return text('Fetch failed: ' + err.message, 502);
+    return json({ error: 'EH_FETCH_FAILED' }, 502);
   }
 }
 
@@ -313,8 +437,8 @@ async function ehApiProxy(request) {
   const { apiUrl, cookie, payload } = body || {};
   if (!apiUrl || !payload) return json({ error: 'Missing apiUrl or payload' }, 400);
 
-  const u = new URL(apiUrl);
-  if (!/(e-hentai\.org|exhentai\.org)$/i.test(u.hostname)) {
+  const u = parseAllowedEhUrl(apiUrl);
+  if (!u) {
     return json({ error: 'Invalid API host' }, 403);
   }
 
@@ -326,7 +450,7 @@ async function ehApiProxy(request) {
   if (cookie) headers['Cookie'] = cookie;
 
   try {
-    const res = await fetch(apiUrl, {
+    const res = await safeEhFetch(apiUrl, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload),
@@ -334,7 +458,7 @@ async function ehApiProxy(request) {
     const data = await res.json();
     return json(data, res.status);
   } catch (err) {
-    return json({ error: 'API request failed: ' + err.message }, 502);
+    return json({ error: 'EH_API_REQUEST_FAILED' }, 502);
   }
 }
 
@@ -352,8 +476,8 @@ async function ehCommentProxy(request) {
   const { galleryUrl, cookie, formBody, referer } = body || {};
   if (!galleryUrl || !formBody) return json({ error: 'Missing galleryUrl or formBody' }, 400);
 
-  const u = new URL(galleryUrl);
-  if (!/(exhentai\.org|e-hentai\.org)$/i.test(u.hostname)) {
+  const u = parseAllowedEhUrl(galleryUrl, { galleryOnly: true });
+  if (!u) {
     return json({ error: 'Invalid host' }, 403);
   }
 
@@ -366,15 +490,14 @@ async function ehCommentProxy(request) {
   if (cookie) headers['Cookie'] = cookie;
 
   try {
-    const res = await fetch(galleryUrl, {
+    const res = await safeEhFetch(galleryUrl, {
       method: 'POST',
       headers,
       body: formBody,
-      redirect: 'follow',
-    });
+    }, { galleryOnly: true });
     return text(await res.text(), res.status, { 'Cache-Control': 'no-store' });
   } catch (err) {
-    return json({ error: 'Comment post failed: ' + err.message }, 502);
+    return json({ error: 'EH_COMMENT_FAILED' }, 502);
   }
 }
 
@@ -383,8 +506,8 @@ function parseEhGalleryUrl(rawUrl) {
   let targetUrl = (rawUrl || '').replace(/^source:\s*/i, '').trim();
   if (!targetUrl) return null;
   if (!/^https?:\/\//i.test(targetUrl)) targetUrl = 'https://' + targetUrl;
-  const u = new URL(targetUrl);
-  if (!/(exhentai\.org|e-hentai\.org)$/i.test(u.hostname)) return null;
+  const u = parseAllowedEhUrl(targetUrl, { galleryOnly: true });
+  if (!u) return null;
   const match = u.pathname.match(/^\/g\/(\d+)\/([0-9a-f]+)\/?/i);
   if (!match) return null;
   return {
@@ -455,11 +578,10 @@ async function ehFavoriteProxy(request) {
   headers.Referer = parsed.galleryUrl;
 
   try {
-    const popupRes = await fetch(popupUrl, {
+    const popupRes = await safeEhFetch(popupUrl, {
       headers,
-      redirect: 'follow',
       cf: { cacheEverything: false },
-    });
+    }, { galleryOnly: true });
     const popupHtml = await popupRes.text();
     if (!popupRes.ok) return json({ error: 'EH_POPUP_FAILED', detail: `获取收藏表单失败 (HTTP ${popupRes.status})` }, popupRes.status);
 
@@ -478,17 +600,19 @@ async function ehFavoriteProxy(request) {
 
     const formBody = new URLSearchParams(payload).toString();
     const actionUrl = findGalpopAction(popupHtml, popupUrl);
+    if (!parseAllowedEhUrl(actionUrl, { galleryOnly: true })) {
+      return json({ error: 'EH_FAVORITE_ACTION_BLOCKED' }, 502);
+    }
     const postHeaders = buildEHHeaders(parsed.hostname, cookie);
     postHeaders['Content-Type'] = 'application/x-www-form-urlencoded';
     postHeaders.Referer = popupUrl;
 
-    const postRes = await fetch(actionUrl, {
+    const postRes = await safeEhFetch(actionUrl, {
       method: 'POST',
       headers: postHeaders,
       body: formBody,
-      redirect: 'follow',
       cf: { cacheEverything: false },
-    });
+    }, { galleryOnly: true });
     const postText = await postRes.text();
     if (!postRes.ok) return json({ error: 'EH_FAVORITE_REMOVE_FAILED', detail: `提交收藏夹移除失败 (HTTP ${postRes.status})` }, postRes.status);
 
@@ -498,14 +622,13 @@ async function ehFavoriteProxy(request) {
 
     return json({ ok: true, gid: parsed.gid, action: 'removed' });
   } catch (err) {
-    return json({ error: 'EH_FAVORITE_REQUEST_FAILED', detail: err.message }, 502);
+    return json({ error: 'EH_FAVORITE_REQUEST_FAILED' }, 502);
   }
 }
 
 // ── History Sync (GET/PUT /history) ────────────────────────────
 function getToken(request) {
-  const url = new URL(request.url);
-  return request.headers.get('x-sync-token') || url.searchParams.get('token') || '';
+  return request.headers.get('x-sync-token') || '';
 }
 
 function normalizePairKey(value) {
@@ -519,6 +642,22 @@ function normalizePairKeys(values) {
     .map(normalizePairKey)
     .filter(Boolean)))
     .sort();
+}
+
+function getDedupeKey(request) {
+  const scope = getServerScope(request);
+  if (!scope) return '';
+  return `${DEDUPE_KEY_PREFIX}${getToken(request)}:${scope}:non-duplicates`;
+}
+
+function getServerScope(request) {
+  const scope = (request.headers.get('x-lrr-server-scope') || '').trim().toLowerCase();
+  return /^[a-f0-9]{32}$/.test(scope) ? scope : '';
+}
+
+function getSyncKey(kind, request) {
+  const scope = getServerScope(request);
+  return scope ? `${kind}:${getToken(request)}:${scope}` : '';
 }
 
 const DEFAULT_HISTORY_RETENTION_DAYS = 90;
@@ -561,18 +700,18 @@ function normalizeHistoryItems(values) {
   return Array.from(merged.values());
 }
 
-function normalizeDeletedItems(values) {
+function normalizeDeletedItems(values, retentionDays = DEFAULT_HISTORY_RETENTION_DAYS, now = Date.now()) {
+  const cutoff = now - retentionDays * 24 * 60 * 60 * 1000;
   const merged = new Map();
   for (const item of Array.isArray(values) ? values : []) {
     const id = String(item?.id || item?.arcid || '').trim();
     if (!id) continue;
     const deletedAt = Number(item.deletedAt) || 0;
-    if (deletedAt >= (merged.get(id) || 0)) merged.set(id, deletedAt);
+    if (deletedAt >= cutoff && deletedAt >= (merged.get(id) || 0)) merged.set(id, deletedAt);
   }
   return Array.from(merged.entries())
     .map(([id, deletedAt]) => ({ id, deletedAt }))
-    .sort((a, b) => b.deletedAt - a.deletedAt)
-    .slice(0, 200);
+    .sort((a, b) => b.deletedAt - a.deletedAt);
 }
 
 function pruneHistoriesByRetention(histories, retentionDays, now = Date.now()) {
@@ -587,7 +726,7 @@ function compactHistoryState(state, retentionDays) {
     schemaVersion: SYNC_SCHEMA_VERSION,
     histories: pruneHistoriesByRetention(state?.histories, retentionDays),
     hideRead: !!state?.hideRead,
-    deleted: normalizeDeletedItems(state?.deleted),
+    deleted: normalizeDeletedItems(state?.deleted, retentionDays),
     lastSync: Number(state?.lastSync) || 0,
   };
 }
@@ -597,17 +736,13 @@ async function getHistory(request) {
   if (authErr) return authErr;
   incrementCounter();
 
-  const token = getToken(request);
+  const historyKey = getSyncKey('history', request);
+  if (!historyKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
   try {
-    const raw = await HISTORY_KV.get('history:' + token);
-    if (!raw) return json({ schemaVersion: SYNC_SCHEMA_VERSION, histories: [], hideRead: false, deleted: [], lastSync: 0 });
-    const state = JSON.parse(raw);
+    const state = await readScopedKvJson(historyKey, 'history:' + getToken(request), null);
+    if (!state) return json({ schemaVersion: SYNC_SCHEMA_VERSION, histories: [], hideRead: false, deleted: [], lastSync: 0 });
     const retentionDays = await getHistoryRetentionDays();
     const compacted = compactHistoryState(state, retentionDays);
-    if (JSON.stringify(compacted) !== JSON.stringify(state)) {
-      compacted.lastSync = Date.now();
-      await HISTORY_KV.put('history:' + token, JSON.stringify(compacted));
-    }
     return json({ ...compacted, retentionDays });
   } catch (err) {
     return json({ error: 'KV read failed: ' + err.message }, 500);
@@ -618,8 +753,6 @@ async function putHistory(request) {
   const authErr = await requireAuth(request);
   if (authErr) return authErr;
   incrementCounter();
-
-  const token = getToken(request);
 
   let payload;
   try { payload = await readJsonBody(request); } catch (err) {
@@ -632,12 +765,11 @@ async function putHistory(request) {
   if (deleted !== undefined && !Array.isArray(deleted)) return json({ error: 'Invalid deleted array' }, 400);
   const incomingHistories = Array.isArray(histories) ? histories : (history ? [history] : []);
 
-  const existing = await (async () => {
-    try {
-      const raw = await HISTORY_KV.get('history:' + token);
-      return raw ? JSON.parse(raw) : { histories: [], hideRead: false, deleted: [] };
-    } catch { return { histories: [], hideRead: false, deleted: [] }; }
-  })();
+  const historyKey = getSyncKey('history', request);
+  if (!historyKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
+  try {
+    return await withMutationLock(historyKey, async () => {
+      const existing = await readScopedKvJson(historyKey, 'history:' + getToken(request), { histories: [], hideRead: false, deleted: [] });
 
   const deletedMap = new Map();
   for (const item of Array.isArray(existing.deleted) ? existing.deleted : []) {
@@ -675,25 +807,20 @@ async function putHistory(request) {
     }
   }
 
-  const normalizedDeleted = Array.from(deletedMap.entries())
-    .map(([id, deletedAt]) => ({ id, deletedAt }))
-    .sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0))
-    .slice(0, 200);
+      const retentionDays = await getHistoryRetentionDays();
+      const result = {
+        schemaVersion: SYNC_SCHEMA_VERSION,
+        histories: pruneHistoriesByRetention(Array.from(merged.values()), retentionDays),
+        hideRead: hideRead !== undefined ? hideRead : existing.hideRead !== undefined ? existing.hideRead : false,
+        deleted: normalizeDeletedItems(Array.from(deletedMap.entries()).map(([id, deletedAt]) => ({ id, deletedAt })), retentionDays),
+        lastSync: Date.now(),
+      };
 
-  const retentionDays = await getHistoryRetentionDays();
-  const result = {
-    schemaVersion: SYNC_SCHEMA_VERSION,
-    histories: pruneHistoriesByRetention(Array.from(merged.values()), retentionDays),
-    hideRead: hideRead !== undefined ? hideRead : existing.hideRead !== undefined ? existing.hideRead : false,
-    deleted: normalizedDeleted,
-    lastSync: Date.now(),
-  };
-
-  try {
-    await HISTORY_KV.put('history:' + token, JSON.stringify(result));
-    return json({ ok: true, count: result.histories.length });
+      await HISTORY_KV.put(historyKey, JSON.stringify(result));
+      return json({ ok: true, count: result.histories.length });
+    });
   } catch (err) {
-    return json({ error: 'KV write failed: ' + err.message }, 500);
+    return json({ error: 'KV mutation failed' }, 500);
   }
 }
 
@@ -703,7 +830,6 @@ async function deleteHistory(request) {
   if (authErr) return authErr;
   incrementCounter();
 
-  const token = getToken(request);
   let payload;
   try { payload = await readJsonBody(request); } catch (err) {
     return json({ error: 'Invalid JSON', detail: err.message }, 400);
@@ -712,43 +838,36 @@ async function deleteHistory(request) {
   const ids = Array.isArray(payload?.ids) ? payload.ids.map(id => String(id).trim()).filter(Boolean) : [];
   if (ids.length === 0) return json({ error: 'Missing ids array' }, 400);
   const removeSet = new Set(ids);
-
-  const existing = await (async () => {
-    try {
-      const raw = await HISTORY_KV.get('history:' + token);
-      return raw ? JSON.parse(raw) : { histories: [], hideRead: false, deleted: [] };
-    } catch { return { histories: [], hideRead: false, deleted: [] }; }
-  })();
-
-  const now = Date.now();
-  const deletedMap = new Map();
-  for (const item of Array.isArray(existing.deleted) ? existing.deleted : []) {
-    if (!item || !item.id) continue;
-    deletedMap.set(item.id, item.deletedAt || 0);
-  }
-  ids.forEach((id) => deletedMap.set(id, now));
-
-  const retentionDays = await getHistoryRetentionDays();
-  const result = {
-    schemaVersion: SYNC_SCHEMA_VERSION,
-    histories: pruneHistoriesByRetention(
-      (Array.isArray(existing.histories) ? existing.histories : []).filter((item) => item?.id && !removeSet.has(item.id)),
-      retentionDays,
-      now,
-    ),
-    hideRead: existing.hideRead !== undefined ? existing.hideRead : false,
-    deleted: Array.from(deletedMap.entries())
-      .map(([id, deletedAt]) => ({ id, deletedAt }))
-      .sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0))
-      .slice(0, 200),
-    lastSync: now,
-  };
-
+  const historyKey = getSyncKey('history', request);
+  if (!historyKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
   try {
-    await HISTORY_KV.put('history:' + token, JSON.stringify(result));
-    return json({ ok: true, removed: ids.length, count: result.histories.length });
+    return await withMutationLock(historyKey, async () => {
+      const existing = await readScopedKvJson(historyKey, 'history:' + getToken(request), { histories: [], hideRead: false, deleted: [] });
+      const now = Date.now();
+      const deletedMap = new Map();
+      for (const item of Array.isArray(existing.deleted) ? existing.deleted : []) {
+        if (!item || !item.id) continue;
+        deletedMap.set(item.id, item.deletedAt || 0);
+      }
+      ids.forEach((id) => deletedMap.set(id, now));
+
+      const retentionDays = await getHistoryRetentionDays();
+      const result = {
+        schemaVersion: SYNC_SCHEMA_VERSION,
+        histories: pruneHistoriesByRetention(
+          (Array.isArray(existing.histories) ? existing.histories : []).filter((item) => item?.id && !removeSet.has(item.id)),
+          retentionDays,
+          now,
+        ),
+        hideRead: existing.hideRead !== undefined ? existing.hideRead : false,
+        deleted: normalizeDeletedItems(Array.from(deletedMap.entries()).map(([id, deletedAt]) => ({ id, deletedAt })), retentionDays, now),
+        lastSync: now,
+      };
+      await HISTORY_KV.put(historyKey, JSON.stringify(result));
+      return json({ ok: true, removed: ids.length, count: result.histories.length });
+    });
   } catch (err) {
-    return json({ error: 'KV write failed: ' + err.message }, 500);
+    return json({ error: 'KV mutation failed' }, 500);
   }
 }
 
@@ -757,7 +876,7 @@ function normalizeWatchlistItems(values) {
   for (const item of Array.isArray(values) ? values : []) {
     const id = item?.id || item?.arcid;
     if (!id) continue;
-    const normalized = { id: String(id), addedAt: Number(item.addedAt) || Date.now() };
+    const normalized = { id: String(id), addedAt: Number(item.addedAt) || 0 };
     const old = merged.get(normalized.id);
     if (!old || (normalized.addedAt || 0) >= (old.addedAt || 0)) merged.set(normalized.id, normalized);
   }
@@ -766,13 +885,16 @@ function normalizeWatchlistItems(values) {
     .slice(0, 500);
 }
 
-async function readWatchlistState(token) {
-  try {
-    const raw = await HISTORY_KV.get('watchlist:' + token);
-    return raw ? JSON.parse(raw) : { items: [], lastSync: 0 };
-  } catch {
-    return { items: [], lastSync: 0 };
-  }
+async function readWatchlistState(key, request) {
+  return readScopedKvJson(key, 'watchlist:' + getToken(request), { items: [], deleted: [], lastSync: 0 });
+}
+
+function compactWatchlistState(state, now = Date.now()) {
+  const deleted = normalizeDeletedItems(state?.deleted, DEFAULT_HISTORY_RETENTION_DAYS, now);
+  const deletedMap = new Map(deleted.map((item) => [item.id, item.deletedAt]));
+  const items = normalizeWatchlistItems(state?.items)
+    .filter((item) => (item.addedAt || 0) > (deletedMap.get(item.id) || 0));
+  return { schemaVersion: SYNC_SCHEMA_VERSION, items, deleted, lastSync: Number(state?.lastSync) || 0 };
 }
 
 async function getWatchlist(request) {
@@ -780,14 +902,11 @@ async function getWatchlist(request) {
   if (authErr) return authErr;
   incrementCounter();
 
-  const token = getToken(request);
+  const watchlistKey = getSyncKey('watchlist', request);
+  if (!watchlistKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
   try {
-    const state = await readWatchlistState(token);
-    const compacted = { schemaVersion: SYNC_SCHEMA_VERSION, items: normalizeWatchlistItems(state.items), lastSync: Number(state.lastSync) || 0 };
-    if (JSON.stringify(compacted) !== JSON.stringify(state)) {
-      compacted.lastSync = Date.now();
-      await HISTORY_KV.put('watchlist:' + token, JSON.stringify(compacted));
-    }
+    const state = await readWatchlistState(watchlistKey, request);
+    const compacted = compactWatchlistState(state);
     return json(compacted);
   } catch (err) {
     return json({ error: 'KV read failed: ' + err.message }, 500);
@@ -799,7 +918,6 @@ async function putWatchlist(request) {
   if (authErr) return authErr;
   incrementCounter();
 
-  const token = getToken(request);
   let payload;
   try { payload = await readJsonBody(request); } catch (err) {
     return json({ error: 'Invalid JSON', detail: err.message }, 400);
@@ -808,14 +926,25 @@ async function putWatchlist(request) {
   const incoming = Array.isArray(payload?.items) ? payload.items : (payload?.item ? [payload.item] : []);
   if (incoming.length === 0) return json({ error: 'Missing item or items' }, 400);
 
-  const existing = await readWatchlistState(token);
-  const items = normalizeWatchlistItems([...(existing.items || []), ...incoming]);
-  const result = { schemaVersion: SYNC_SCHEMA_VERSION, items, lastSync: Date.now() };
+  const watchlistKey = getSyncKey('watchlist', request);
+  if (!watchlistKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
   try {
-    await HISTORY_KV.put('watchlist:' + token, JSON.stringify(result));
-    return json({ ok: true, count: items.length });
+    return await withMutationLock(watchlistKey, async () => {
+      const existing = compactWatchlistState(await readWatchlistState(watchlistKey, request));
+      const deletedMap = new Map(existing.deleted.map((item) => [item.id, item.deletedAt]));
+      const accepted = normalizeWatchlistItems(incoming)
+        .filter((item) => (item.addedAt || 0) > (deletedMap.get(item.id) || 0));
+      for (const item of accepted) deletedMap.delete(item.id);
+      const result = compactWatchlistState({
+        items: [...existing.items, ...accepted],
+        deleted: Array.from(deletedMap, ([id, deletedAt]) => ({ id, deletedAt })),
+        lastSync: Date.now(),
+      });
+      await HISTORY_KV.put(watchlistKey, JSON.stringify(result));
+      return json({ ok: true, count: result.items.length });
+    });
   } catch (err) {
-    return json({ error: 'KV write failed: ' + err.message }, 500);
+    return json({ error: 'KV mutation failed' }, 500);
   }
 }
 
@@ -824,7 +953,6 @@ async function deleteWatchlist(request) {
   if (authErr) return authErr;
   incrementCounter();
 
-  const token = getToken(request);
   let payload;
   try { payload = await readJsonBody(request); } catch (err) {
     return json({ error: 'Invalid JSON', detail: err.message }, 400);
@@ -834,17 +962,24 @@ async function deleteWatchlist(request) {
   if (ids.length === 0) return json({ error: 'Missing ids array' }, 400);
   const removeSet = new Set(ids);
 
-  const existing = await readWatchlistState(token);
-  const result = {
-    schemaVersion: SYNC_SCHEMA_VERSION,
-    items: normalizeWatchlistItems(existing.items).filter((item) => !removeSet.has(item.id)),
-    lastSync: Date.now(),
-  };
+  const watchlistKey = getSyncKey('watchlist', request);
+  if (!watchlistKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
   try {
-    await HISTORY_KV.put('watchlist:' + token, JSON.stringify(result));
-    return json({ ok: true, removed: ids.length, count: result.items.length });
+    return await withMutationLock(watchlistKey, async () => {
+      const existing = compactWatchlistState(await readWatchlistState(watchlistKey, request));
+      const now = Date.now();
+      const deletedMap = new Map(existing.deleted.map((item) => [item.id, item.deletedAt]));
+      ids.forEach((id) => deletedMap.set(id, now));
+      const result = compactWatchlistState({
+        items: existing.items.filter((item) => !removeSet.has(item.id)),
+        deleted: Array.from(deletedMap, ([id, deletedAt]) => ({ id, deletedAt })),
+        lastSync: now,
+      }, now);
+      await HISTORY_KV.put(watchlistKey, JSON.stringify(result));
+      return json({ ok: true, removed: ids.length, count: result.items.length });
+    });
   } catch (err) {
-    return json({ error: 'KV write failed: ' + err.message }, 500);
+    return json({ error: 'KV mutation failed' }, 500);
   }
 }
 
@@ -854,8 +989,17 @@ async function getNonDuplicatePairs(request) {
   incrementCounter();
   if (typeof HISTORY_KV === 'undefined') return json({ error: 'KV is not bound' }, 500);
 
+  const dedupeKey = getDedupeKey(request);
+  if (!dedupeKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
   try {
-    const raw = await HISTORY_KV.get(DEDUPE_NON_DUP_KEY);
+    let raw = await HISTORY_KV.get(dedupeKey);
+    if (!raw) {
+      raw = await HISTORY_KV.get('dedupe:non-duplicates');
+      if (raw) {
+        await HISTORY_KV.put(dedupeKey, raw);
+        await HISTORY_KV.delete('dedupe:non-duplicates');
+      }
+    }
     return json({ pairs: normalizePairKeys(raw ? JSON.parse(raw) : []) });
   } catch (err) {
     return json({ error: 'KV read failed: ' + err.message }, 500);
@@ -875,13 +1019,21 @@ async function putNonDuplicatePairs(request) {
 
   const incoming = normalizePairKeys(payload?.pairs);
   if (incoming.length === 0) return json({ error: 'Missing pairs array' }, 400);
+  const dedupeKey = getDedupeKey(request);
+  if (!dedupeKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
 
   try {
-    const raw = await HISTORY_KV.get(DEDUPE_NON_DUP_KEY);
-    const existing = normalizePairKeys(raw ? JSON.parse(raw) : []);
-    const next = normalizePairKeys([...existing, ...incoming]);
-    await HISTORY_KV.put(DEDUPE_NON_DUP_KEY, JSON.stringify(next));
-    return json({ ok: true, count: next.length, added: incoming.length });
+    return await withMutationLock(dedupeKey, async () => {
+      let raw = await HISTORY_KV.get(dedupeKey);
+      if (!raw) {
+        raw = await HISTORY_KV.get('dedupe:non-duplicates');
+        if (raw) await HISTORY_KV.delete('dedupe:non-duplicates');
+      }
+      const existing = normalizePairKeys(raw ? JSON.parse(raw) : []);
+      const next = normalizePairKeys([...existing, ...incoming]);
+      await HISTORY_KV.put(dedupeKey, JSON.stringify(next));
+      return json({ ok: true, count: next.length, added: incoming.length });
+    });
   } catch (err) {
     return json({ error: 'KV write failed: ' + err.message }, 500);
   }
@@ -914,17 +1066,19 @@ async function exportKV(request) {
   incrementCounter();
   if (typeof HISTORY_KV === 'undefined') return json({ error: 'KV is not bound' }, 500);
 
-  const token = getToken(request);
   const selected = payload?.sections || {};
   const includeHistory = selected.history !== false;
   const includeWatchlist = selected.watchlist !== false;
   const includeDedupe = selected.dedupe !== false;
-  const historyKey = 'history:' + token;
-  const watchlistKey = 'watchlist:' + token;
+  const historyKey = getSyncKey('history', request);
+  const watchlistKey = getSyncKey('watchlist', request);
+  if ((includeHistory || includeWatchlist) && (!historyKey || !watchlistKey)) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
+  const dedupeKey = getDedupeKey(request);
+  if (includeDedupe && !dedupeKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
   const data = {
-    version: 2,
-    scope: 'token',
-    tokenKey: token,
+    version: 3,
+    scope: 'token-and-server-md5',
+    serverScope: getServerScope(request),
     exportedAt: new Date().toISOString(),
     sections: {},
   };
@@ -939,8 +1093,8 @@ async function exportKV(request) {
       data.sections.watchlist = { [watchlistKey]: raw || '' };
     }
     if (includeDedupe) {
-      const raw = await HISTORY_KV.get(DEDUPE_NON_DUP_KEY);
-      data.sections.dedupe = { [DEDUPE_NON_DUP_KEY]: raw || '[]' };
+      const raw = await HISTORY_KV.get(dedupeKey);
+      data.sections.dedupe = { [dedupeKey]: raw || '[]' };
     }
     return json({ ok: true, data });
   } catch (err) {
@@ -958,15 +1112,17 @@ async function importKV(request) {
   incrementCounter();
   if (typeof HISTORY_KV === 'undefined') return json({ error: 'KV is not bound' }, 500);
 
-  const token = getToken(request);
   const selected = payload?.sections || {};
   const input = payload?.data?.sections ? payload.data.sections : payload?.data;
   if (!input || typeof input !== 'object') return json({ error: 'Invalid import data' }, 400);
+  const dedupeKey = getDedupeKey(request);
+  if (selected.dedupe !== false && input.dedupe && !dedupeKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
 
   let imported = 0;
   try {
     if (selected.history !== false && input.history && typeof input.history === 'object') {
-      const historyKey = 'history:' + token;
+      const historyKey = getSyncKey('history', request);
+      if (!historyKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
       const value = input.history[historyKey] ?? firstObjectValue(input.history);
       if (value !== undefined && value !== null && value !== '') {
         await HISTORY_KV.put(historyKey, typeof value === 'string' ? value : JSON.stringify(value));
@@ -974,7 +1130,8 @@ async function importKV(request) {
       }
     }
     if (selected.watchlist !== false && input.watchlist && typeof input.watchlist === 'object') {
-      const watchlistKey = 'watchlist:' + token;
+      const watchlistKey = getSyncKey('watchlist', request);
+      if (!watchlistKey) return json({ error: 'Missing or invalid x-lrr-server-scope' }, 400);
       const value = input.watchlist[watchlistKey] ?? firstObjectValue(input.watchlist);
       if (value !== undefined && value !== null && value !== '') {
         await HISTORY_KV.put(watchlistKey, typeof value === 'string' ? value : JSON.stringify(value));
@@ -982,12 +1139,14 @@ async function importKV(request) {
       }
     }
     if (selected.dedupe !== false && input.dedupe && typeof input.dedupe === 'object') {
-      const raw = input.dedupe[DEDUPE_NON_DUP_KEY] || input.dedupe.pairs || firstObjectValue(input.dedupe) || [];
+      const raw = input.dedupe[dedupeKey] || input.dedupe.pairs || firstObjectValue(input.dedupe) || [];
       const incoming = normalizePairKeys(typeof raw === 'string' ? JSON.parse(raw || '[]') : raw);
-      const existingRaw = await HISTORY_KV.get(DEDUPE_NON_DUP_KEY);
-      const existing = normalizePairKeys(existingRaw ? JSON.parse(existingRaw) : []);
-      const next = normalizePairKeys([...existing, ...incoming]);
-      await HISTORY_KV.put(DEDUPE_NON_DUP_KEY, JSON.stringify(next));
+      await withMutationLock(dedupeKey, async () => {
+        const existingRaw = await HISTORY_KV.get(dedupeKey);
+        const existing = normalizePairKeys(existingRaw ? JSON.parse(existingRaw) : []);
+        const next = normalizePairKeys([...existing, ...incoming]);
+        await HISTORY_KV.put(dedupeKey, JSON.stringify(next));
+      });
       imported += incoming.length;
     }
     return json({ ok: true, imported });
@@ -1004,20 +1163,20 @@ async function getStatusSummary({ force = false } = {}) {
       return { totalArchives: 'N/A', userCount: 'N/A', watchlistCount: 'N/A', dedupeCount: 'N/A' };
     }
     try {
-      const [historyKeys, watchlistKeys, dedupeRaw] = await Promise.all([
-        HISTORY_KV.list({ prefix: 'history:' }),
-        HISTORY_KV.list({ prefix: 'watchlist:' }),
-        HISTORY_KV.get(DEDUPE_NON_DUP_KEY),
+      const [historyKeys, watchlistKeys, dedupeKeys] = await Promise.all([
+        listKVKeys('history:'),
+        listKVKeys('watchlist:'),
+        listKVKeys(DEDUPE_KEY_PREFIX),
       ]);
       const allIds = new Set();
-      const historyValues = await Promise.all((historyKeys.keys || []).map((key) => HISTORY_KV.get(key.name).catch(() => null)));
+      const historyValues = await Promise.all(historyKeys.map((key) => HISTORY_KV.get(key).catch(() => null)));
       historyValues.forEach((raw) => {
         try {
           const data = raw ? JSON.parse(raw) : null;
           for (const item of Array.isArray(data?.histories) ? data.histories : []) if (item?.id) allIds.add(item.id);
         } catch {}
       });
-      const watchlistValues = await Promise.all((watchlistKeys.keys || []).map((key) => HISTORY_KV.get(key.name).catch(() => null)));
+      const watchlistValues = await Promise.all(watchlistKeys.map((key) => HISTORY_KV.get(key).catch(() => null)));
       let watchlistCount = 0;
       watchlistValues.forEach((raw) => {
         try {
@@ -1025,11 +1184,15 @@ async function getStatusSummary({ force = false } = {}) {
           watchlistCount += Array.isArray(data?.items) ? data.items.length : 0;
         } catch {}
       });
+      const dedupeValues = await Promise.all(dedupeKeys.map((key) => HISTORY_KV.get(key).catch(() => null)));
+      const dedupeCount = dedupeValues.reduce((sum, raw) => {
+        try { return sum + normalizePairKeys(raw ? JSON.parse(raw) : []).length; } catch { return sum; }
+      }, 0);
       return {
         totalArchives: allIds.size,
-        userCount: (historyKeys.keys || []).length,
+        userCount: historyKeys.length,
         watchlistCount,
-        dedupeCount: normalizePairKeys(dedupeRaw ? JSON.parse(dedupeRaw) : []).length,
+        dedupeCount,
       };
     } catch {
       return { totalArchives: '错误', userCount: '错误', watchlistCount: '错误', dedupeCount: '错误' };
@@ -1061,6 +1224,7 @@ async function statusPage(request) {
   const { totalArchives, userCount, watchlistCount, dedupeCount } = await getStatusSummary();
   const hasKV = typeof HISTORY_KV !== 'undefined';
   const tokenCount = cachedTokens ? cachedTokens.size : 0;
+  const workerUpdate = await checkWorkerUpdate();
 
   const tokenStatusHtml = authEnabled
     ? (tokenCount > 0
@@ -1070,6 +1234,9 @@ async function statusPage(request) {
   const appVersion = typeof APP_VERSION !== 'undefined' && APP_VERSION
     ? String(APP_VERSION)
     : FALLBACK_APP_VERSION;
+  const workerUpdateHtml = workerUpdate.status === 'update'
+    ? `<div class="warning">发现 Worker 更新：本地 ${WORKER_RELEASE} · 远端 ${workerUpdate.remoteRelease}。<a href="${workerUpdate.sourceUrl}" target="_blank" rel="noreferrer">查看 ${workerUpdate.branch} 源码</a></div>`
+    : `<div class="stat"><span class="label">Worker 更新</span><span class="${workerUpdate.status === 'current' ? 'ok' : 'warn'}">${workerUpdate.status === 'current' ? `${workerUpdate.branch} 最新版本` : '更新检查暂时不可用'}</span></div>`;
 
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1101,6 +1268,7 @@ async function statusPage(request) {
   .card { max-width:560px; }
   .warning { border:1px solid rgba(248,113,113,.45); background:rgba(248,113,113,.12); color:#fecaca;
              padding:12px 14px; border-radius:10px; margin:0 0 18px; font-size:13px; line-height:1.5; }
+  .warning a { color:#93c5fd; }
   .tool { display:grid; gap:10px; margin-top:10px; }
   .hidden { display:none; }
   .hint { color:#9ca3af; font-size:12px; line-height:1.5; }
@@ -1121,6 +1289,7 @@ async function statusPage(request) {
 
   <div class="section-title">服务概览</div>
   <div class="stat"><span class="label">服务状态</span><span class="ok">● 运行中</span></div>
+  ${workerUpdateHtml}
   <div class="stat"><span class="label">请求计数</span><span class="value">${reqCount}</span></div>
   <div class="stat"><span class="label">同步用户数</span><span class="value">${userCount}</span></div>
   <div class="stat"><span class="label">阅读记录数</span><span class="value">${totalArchives}</span></div>
@@ -1148,7 +1317,8 @@ async function statusPage(request) {
     </div>
   </div>
   <div id="kvPanel" class="tool hidden">
-    <div class="hint">已通过 Token 验证。导入会写入当前 Token 对应的 KV 数据，不会覆盖其他 Token。</div>
+    <div class="hint">已通过 Token 验证。请输入 LANraragi 服务器地址的 32 位 MD5 作用域；数据按 Token 与服务器共同隔离。</div>
+    <input id="serverScopeInput" type="text" inputmode="text" maxlength="32" placeholder="服务器地址 MD5（32 位小写十六进制）">
     <div class="checks">
       <label><input id="sectionHistory" type="checkbox" checked style="width:auto"> 阅读历史</label>
       <label><input id="sectionWatchlist" type="checkbox" checked style="width:auto"> 待看归档</label>
@@ -1175,7 +1345,13 @@ const kvClosed = document.getElementById('kvClosed');
 const kvAuth = document.getElementById('kvAuth');
 const kvPanel = document.getElementById('kvPanel');
 const syncTokenInput = document.getElementById('syncTokenInput');
+const serverScopeInput = document.getElementById('serverScopeInput');
 let syncToken = '';
+function serverScope() {
+  const value = serverScopeInput.value.trim().toLowerCase();
+  if (!/^[a-f0-9]{32}$/.test(value)) throw new Error('请输入有效的 32 位服务器 MD5 作用域');
+  return value;
+}
 function sections() {
   return {
     history: document.getElementById('sectionHistory').checked,
@@ -1186,7 +1362,7 @@ function sections() {
 async function call(path, body) {
   const res = await fetch(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-sync-token': syncToken },
+    headers: { 'Content-Type': 'application/json', 'x-sync-token': syncToken, 'x-lrr-server-scope': serverScope() },
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => null);

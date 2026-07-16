@@ -6,7 +6,7 @@ export function shouldSyncEhFavorite(globalEnabled, confirmationEnabled) {
 
 export function getEhFavoriteDeleteSync() {
   try {
-    return localStorage.getItem(EH_FAVORITE_DELETE_SYNC_KEY) === '1';
+    return localStorage.getItem(EH_FAVORITE_DELETE_SYNC_KEY) === '1' && hasReadyEhFavoriteSync();
   } catch {
     return false;
   }
@@ -14,9 +14,11 @@ export function getEhFavoriteDeleteSync() {
 
 export function setEhFavoriteDeleteSync(enabled) {
   try {
+    if (enabled && !hasReadyEhFavoriteSync()) return false;
     if (enabled) localStorage.setItem(EH_FAVORITE_DELETE_SYNC_KEY, '1');
     else localStorage.removeItem(EH_FAVORITE_DELETE_SYNC_KEY);
-  } catch {}
+    return true;
+  } catch { return false; }
 }
 
 export function getEhCookie() {
@@ -37,6 +39,16 @@ export function hasValidEhCookie(cookie = getEhCookie()) {
     && /(?:^|;\s*)ipb_pass_hash\s*=\s*[^;\s]+/i.test(value);
 }
 
+export function hasReadyEhFavoriteSync() {
+  try {
+    return hasValidEhCookie()
+      && !!String(localStorage.getItem('lrr_worker_url') || '').trim()
+      && !!String(localStorage.getItem('lrr_sync_token') || '').trim();
+  } catch {
+    return false;
+  }
+}
+
 export function extractEhGalleryUrl(archive) {
   const tags = String(archive?.tags || '')
     .split(',')
@@ -49,7 +61,7 @@ export function extractEhGalleryUrl(archive) {
   if (!/^https?:\/\//i.test(raw)) raw = 'https://' + raw;
   try {
     const parsed = new URL(raw);
-    if (!/(^|\.)(exhentai\.org|e-hentai\.org)$/i.test(parsed.hostname)) return '';
+    if (!['exhentai.org', 'e-hentai.org'].includes(parsed.hostname.toLowerCase())) return '';
     const match = parsed.pathname.match(/^\/g\/(\d+)\/([0-9a-f]+)\/?/i);
     if (!match) return '';
     return `https://${parsed.hostname}/g/${match[1]}/${match[2]}/`;
@@ -59,10 +71,10 @@ export function extractEhGalleryUrl(archive) {
 }
 
 export async function removeEhFavorite({ galleryUrl, cookie, workerUrl, token }) {
-  if (!galleryUrl) return { skipped: true, reason: 'missing-url' };
-  if (!cookie) return { skipped: true, reason: 'missing-cookie' };
-  if (!workerUrl) return { skipped: true, reason: 'missing-worker' };
-  if (!token) return { skipped: true, reason: 'missing-token' };
+  if (!galleryUrl) throw new Error('缺少有效的 E-Hentai 画廊地址');
+  if (!hasValidEhCookie(cookie)) throw new Error('缺少有效的 E-Hentai Cookie');
+  if (!workerUrl) throw new Error('未配置 Worker 地址');
+  if (!token) throw new Error('未配置 Worker 访问 Token');
 
   const endpoint = workerUrl.replace(/\/$/, '') + '/favorite';
   const headers = { 'Content-Type': 'application/json', 'x-sync-token': token };

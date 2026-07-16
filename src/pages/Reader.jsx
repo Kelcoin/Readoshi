@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useReducer } from 'react';
 import { flushSync } from 'react-dom';
-import { lrrApi } from '../lib/api';
+import { encodeApiKey, lrrApi, waitForMinionJob } from '../lib/api';
 import { flushHistorySync, getHistory, saveHistory, getHideRead, removeHistoryItem, loadHistoryState } from '../lib/history';
 import { clampProgressPage } from '../lib/historyProgressCache';
 import { getWatchlist, loadWatchlistState, mergeWatchlistProgress, removeWatchlistItem } from '../lib/watchlist';
 import { getReaderArchiveListMeta } from '../lib/readerArchiveList';
 import { isArchiveMissingError } from '../lib/historyMaintenance';
 import { translateTag, categorizeTags } from '../lib/tags';
-import { getCachedImage, getImage, clearImageCache, IMAGE_LOAD_PRIORITY } from '../lib/imageCache';
+import { getCachedImage, getImage, deleteImageKeys, IMAGE_LOAD_PRIORITY } from '../lib/imageCache';
 import { DEFAULT_READER_SETTINGS, READER_SETTINGS_KEY, normalizeReaderSettings, prepareReaderSettingsForArchiveChange } from '../lib/readerSettings';
 import { getArchiveProgressPercent, shouldShowArchiveProgress } from '../lib/archiveProgress';
 import { getReaderSkeletonToolbarGroups } from '../lib/readerSkeletonLayout';
@@ -32,6 +32,7 @@ import ConfirmDialog from '../components/ConfirmDialog';
 import CustomSelect from '../components/CustomSelect';
 import ToggleSwitch from '../components/ToggleSwitch';
 import { HomeSectionGlyph, NamespaceGlyph, stripDecoratedLabel, ToolbarGlyph } from '../components/AppGlyphs';
+import { acquireBodyScrollLock } from '../lib/bodyScrollLock';
 
 // ===== Authenticated Image Component =====
 const getConfiguredServerUrl = () => {
@@ -94,7 +95,7 @@ async function resolvePageImageSource(pageUrl, {
   }
   return getImage(normalized, async () => {
     const headers = {};
-    if (key) headers.Authorization = `Bearer ${btoa(key)}`;
+    if (key) headers.Authorization = `Bearer ${encodeApiKey(key)}`;
     onNetworkStart?.();
     const res = await fetch(normalized, { headers });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -106,6 +107,18 @@ const DRAWER_COLUMNS = 3;
 const DRAWER_GAP = 12;
 const DRAWER_OVERSCAN_ROWS = 4;
 const DRAWER_ITEM_RATIO = 1.3;
+const drawerMinionWaits = new Map();
+
+function waitForDrawerMinion(job) {
+  const jobId = Number(job?.job ?? job);
+  if (!Number.isFinite(jobId) || jobId <= 0) return Promise.resolve(null);
+  if (!drawerMinionWaits.has(jobId)) {
+    const task = waitForMinionJob(jobId, { timeoutMs: 2 * 60 * 1000 })
+      .finally(() => drawerMinionWaits.delete(jobId));
+    drawerMinionWaits.set(jobId, task);
+  }
+  return drawerMinionWaits.get(jobId);
+}
 function getDrawerItemWidth(gridWidth) {
   return gridWidth > 0
     ? Math.max(72, (gridWidth - (DRAWER_COLUMNS - 1) * DRAWER_GAP) / DRAWER_COLUMNS)
@@ -172,7 +185,11 @@ const DrawerThumb = ({ archiveId, pageIndex, active, cacheOnly = false, eager = 
           : await getCachedImage(thumbKey);
         if (!blobUrl && !(cacheOnly && !allowNetworkFallback)) {
           blobUrl = await getImage(thumbKey, async () => {
-            const result = await lrrApi.getArchiveThumbnail(archiveId, { page, noFallback: true });
+            let result = await lrrApi.getArchiveThumbnail(archiveId, { page, noFallback: true });
+            if (result.status === 202 && result.job) {
+              await waitForDrawerMinion(result.job);
+              result = await lrrApi.getArchiveThumbnail(archiveId, { page, noFallback: true });
+            }
             return result.status !== 202 ? result.blob : null;
           }, { priority: IMAGE_LOAD_PRIORITY.NORMAL });
         }
@@ -378,6 +395,15 @@ const PageImage = React.forwardRef(({
   }, [onError, pageIndex]);
 
   const isReady = !!imgSrc && loadState === 'ready';
+  useEffect(() => {
+    if (!cropBorders) {
+      setCropInsets({ top: 0, right: 0, bottom: 0, left: 0 });
+      return;
+    }
+    const image = imgRef.current;
+    if (!isReady || !image?.complete || !image.naturalWidth) return;
+    try { setCropInsets(detectImageBorderInsets(image)); } catch {}
+  }, [cropBorders, isReady, imgSrc]);
   const showSplit = isReady && splitWide && naturalSize.width > naturalSize.height * 1.2;
   const pageShellStyle = isReady ? style : {
     ...style,
@@ -405,7 +431,7 @@ const PageImage = React.forwardRef(({
         alt="Comic Content"
         draggable={false}
         loading="eager"
-        fetchpriority="high"
+        fetchPriority="high"
         decoding="async"
         onLoad={handleMountedImageLoad}
         onError={handleMountedImageError}
@@ -485,7 +511,7 @@ const ReaderArchiveThumb = ({ archiveId, cacheOnly = false }) => {
               const base = (localStorage.getItem('lrr_server_url') || '').replace(/\/$/, '');
               const key = localStorage.getItem('lrr_api_key') || '';
               const h = {};
-              if (key) h['Authorization'] = `Bearer ${btoa(key)}`;
+              if (key) h['Authorization'] = `Bearer ${encodeApiKey(key)}`;
               const r = await fetch(`${base}/api/archives/${archiveId}/thumbnail`, { headers: h });
               if (!r.ok) throw new Error();
               return r.blob();
@@ -735,7 +761,7 @@ async function primePageImage(pageUrl, priority = IMAGE_LOAD_PRIORITY.PRELOAD) {
   const key = localStorage.getItem('lrr_api_key') || '';
   const src = await getImage(normalized, async () => {
     const headers = {};
-    if (key) headers.Authorization = `Bearer ${btoa(key)}`;
+    if (key) headers.Authorization = `Bearer ${encodeApiKey(key)}`;
     const res = await fetch(normalized, { headers });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.blob();
@@ -1376,21 +1402,17 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
 
   useEffect(() => {
     if (showDrawer) {
-      document.body.style.overflow = 'hidden';
-      return () => { document.body.style.overflow = ''; };
+      return acquireBodyScrollLock();
     }
+    return undefined;
   }, [showDrawer]);
 
   // Lock body scroll in immersive mode
   useEffect(() => {
     if (viewMode === 'immersive') {
-      document.body.style.overflow = 'hidden';
-      document.documentElement.style.overflow = 'hidden';
-      return () => {
-        document.body.style.overflow = '';
-        document.documentElement.style.overflow = '';
-      };
+      return acquireBodyScrollLock();
     }
+    return undefined;
   }, [viewMode]);
 
   // ── bfcache / visibility / keep-alive guard ──
@@ -1441,6 +1463,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const highestLrrSyncedPageRef = useRef(new Map());
   const highestLrrQueuedPageRef = useRef(new Map());
   const lrrProgressChainRef = useRef(new Map());
+  const lrrProgressRetryTimersRef = useRef(new Map());
   const commitPageTargetRef = useRef(null);
   const viewModeRef = useRef(viewMode);
   const currentIndexRef = useRef(0);
@@ -1455,15 +1478,17 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     return timer;
   }, []);
 
-  const enqueueLrrProgressSync = useCallback((id, page) => {
-    const targetPage = Math.max(0, Number.parseInt(page, 10) || 0);
+  const enqueueLrrProgressSync = useCallback((id, page, { keepalive = false } = {}) => {
+    let targetPage = Math.max(0, Number.parseInt(page, 10) || 0);
     if (!id || targetPage <= 0) return Promise.resolve();
 
     const syncedPage = highestLrrSyncedPageRef.current.get(id) || 0;
     const queuedPage = highestLrrQueuedPageRef.current.get(id) || 0;
-    if (targetPage <= Math.max(syncedPage, queuedPage)) {
+    if (targetPage <= syncedPage) return lrrProgressChainRef.current.get(id) || Promise.resolve();
+    if (targetPage <= queuedPage && !keepalive) {
       return lrrProgressChainRef.current.get(id) || Promise.resolve();
     }
+    targetPage = Math.max(targetPage, queuedPage);
 
     highestLrrQueuedPageRef.current.set(id, targetPage);
     const previous = lrrProgressChainRef.current.get(id) || Promise.resolve();
@@ -1472,12 +1497,19 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       .then(async () => {
         const latestSyncedPage = highestLrrSyncedPageRef.current.get(id) || 0;
         if (targetPage <= latestSyncedPage) return;
-        await lrrApi.updateProgress(id, targetPage);
+        await lrrApi.updateProgress(id, targetPage, { keepalive });
         highestLrrSyncedPageRef.current.set(id, targetPage);
       })
       .catch(() => {
         if ((highestLrrQueuedPageRef.current.get(id) || 0) === targetPage) {
           highestLrrQueuedPageRef.current.set(id, highestLrrSyncedPageRef.current.get(id) || 0);
+          const oldTimer = lrrProgressRetryTimersRef.current.get(id);
+          if (oldTimer) clearTimeout(oldTimer);
+          const timer = setTimeout(() => {
+            lrrProgressRetryTimersRef.current.delete(id);
+            enqueueLrrProgressSync(id, targetPage);
+          }, 5000);
+          lrrProgressRetryTimersRef.current.set(id, timer);
         }
       });
 
@@ -1491,20 +1523,19 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   }, []);
 
   useEffect(() => {
-    const flushProgress = () => {
+    const flushProgress = ({ keepalive = false } = {}) => {
       if (!serverTracksProgress || !archiveId) return;
-      enqueueLrrProgressSync(
-        archiveId,
-        clampProgressPage(highestObservedPageRef.current.get(archiveId) || 0, pages.length),
-      );
+      const page = clampProgressPage(highestObservedPageRef.current.get(archiveId) || 0, pages.length);
+      enqueueLrrProgressSync(archiveId, page, { keepalive });
     };
     const handleVisibility = () => {
-      if (document.visibilityState === 'hidden') flushProgress();
+      if (document.visibilityState === 'hidden') flushProgress({ keepalive: true });
     };
-    window.addEventListener('pagehide', flushProgress);
+    const handlePageHide = () => flushProgress({ keepalive: true });
+    window.addEventListener('pagehide', handlePageHide);
     document.addEventListener('visibilitychange', handleVisibility);
     return () => {
-      window.removeEventListener('pagehide', flushProgress);
+      window.removeEventListener('pagehide', handlePageHide);
       document.removeEventListener('visibilitychange', handleVisibility);
       flushProgress();
     };
@@ -1621,6 +1652,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     }
     readerCleanupTimersRef.current.forEach((timer) => clearTimeout(timer));
     readerCleanupTimersRef.current.clear();
+    lrrProgressRetryTimersRef.current.forEach((timer) => clearTimeout(timer));
+    lrrProgressRetryTimersRef.current.clear();
     releaseReaderImageElements();
   }, [releaseReaderImageElements]);
 
@@ -1652,11 +1685,11 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         const normalized = toLocalUrl(pageUrl);
         let src;
         try {
-          src = coldRestoreRef.current
+          src = assetCacheOnly
             ? await getCachedImage(normalized)
             : await getImage(normalized, async () => {
               const headers = {};
-              if (key) headers.Authorization = `Bearer ${btoa(key)}`;
+              if (key) headers.Authorization = `Bearer ${encodeApiKey(key)}`;
               if (trackNetwork && alive && loadSeq === immersiveLoadSeqRef.current) {
                 setImmersiveNetworkPending(true);
               }
@@ -1745,7 +1778,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     return () => {
       alive = false;
     };
-  }, [viewMode, currentIndex, pages, settings.direction]);
+  }, [assetCacheOnly, viewMode, currentIndex, pages, settings.direction]);
 
   // ===== Immersive header auto-hide (only top-zone shows header) =====
   useEffect(() => {
@@ -2248,7 +2281,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         });
       }
     }
-  }, [applyZoomAtPoint, scheduleZoomTransform, viewMode]);
+  }, [applyZoomAtPoint, scheduleZoomTransform, settings.direction, viewMode]);
 
   // ===== Pointer up =====
   const handlePointerUp = useCallback(() => {
@@ -2578,7 +2611,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     setCoverSetting(true);
     try {
       await lrrApi.setArchiveThumbnail(archiveId, page);
-      clearImageCache();
+      await deleteImageKeys([`thumb:${archiveId}`, `thumb:hist:${archiveId}`]);
       setCoverSetPage(page);
       setCoverConfirmPage(0);
       scheduleReaderCleanupTimer(() => setCoverSetPage((prev) => (prev === page ? 0 : prev)), 1800);
