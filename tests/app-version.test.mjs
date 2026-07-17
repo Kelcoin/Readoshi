@@ -24,8 +24,35 @@ test('branch history cannot change application SemVer', () => {
   assert.equal(resolved.buildId, `${packageVersion}-1234567`);
 });
 
-test('Android workflow uses the shared application version resolver', () => {
-  const workflow = fs.readFileSync(new URL('../.github/workflows/android-apk.yml', import.meta.url), 'utf8');
+test('mobile workflow uses the shared application version resolver', () => {
+  const workflow = fs.readFileSync(new URL('../.github/workflows/mobile-build.yml', import.meta.url), 'utf8');
   assert.match(workflow, /import \{ resolveAppVersion \} from '\.\/scripts\/app-version\.mjs'/);
   assert.match(workflow, /resolveAppVersion\(\{ cwd: process\.cwd\(\), hash: process\.env\.GITHUB_SHA \}\)/);
+});
+
+test('mobile workflow builds APKs and an unsigned IPA with shared release publishing', () => {
+  const workflow = fs.readFileSync(new URL('../.github/workflows/mobile-build.yml', import.meta.url), 'utf8');
+
+  assert.match(workflow, /^name: Build Readoshi Mobile Apps$/m);
+  assert.match(workflow, /build-apk:[\s\S]*runs-on: ubuntu-latest/);
+  assert.match(workflow, /build-ipa:[\s\S]*runs-on: macos-latest/);
+  assert.match(workflow, /@capacitor\/ios@8\.4\.1/);
+  assert.match(workflow, /cap add ios/);
+  assert.match(workflow, /capacitor-assets generate --ios/);
+  assert.match(workflow, /public\/logo-white\.png/);
+  assert.match(workflow, /readoshi-ios-safe-area/);
+  assert.match(workflow, /Add :UILaunchScreen dict/);
+  assert.match(workflow, /Add :UILaunchScreen:UIColorName string LaunchBackground/);
+  assert.match(workflow, /LaunchBackground\.colorset/);
+  assert.match(workflow, /red: '0\.956863'/);
+  assert.match(workflow, /appearances: \[\{ appearance: 'luminosity', value: 'dark' \}\]/);
+  assert.match(workflow, /red: '0\.058824'/);
+  assert.match(workflow, /NSAllowsArbitraryLoadsInWebContent/);
+  assert.match(workflow, /NSAllowsLocalNetworking/);
+  assert.match(workflow, /NSLocalNetworkUsageDescription/);
+  assert.match(workflow, /CODE_SIGNING_ALLOWED=NO/);
+  assert.match(workflow, /Payload\/Readoshi\.app/);
+  assert.match(workflow, /-unsigned\.ipa/);
+  assert.match(workflow, /publish-release:[\s\S]*needs: \[build-apk, build-ipa\]/);
+  assert.match(workflow, /actions\/download-artifact@v4/);
 });

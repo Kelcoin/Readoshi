@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Readoshi Mobile Apps
 
 on:
   workflow_dispatch:
@@ -7,9 +7,15 @@ permissions:
   contents: write
 
 jobs:
-  build-apk:
+  metadata:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    outputs:
+      package_version: ${{ steps.resolve.outputs.package_version }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      version_name: ${{ steps.resolve.outputs.version_name }}
+      version_code: ${{ steps.resolve.outputs.version_code }}
+      apk_prefix: ${{ steps.resolve.outputs.apk_prefix }}
+      ipa_prefix: ${{ steps.resolve.outputs.ipa_prefix }}
 
     steps:
       - name: Checkout
@@ -22,14 +28,8 @@ jobs:
         with:
           node-version: 22
 
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-
       - name: Resolve build metadata
-        id: metadata
+        id: resolve
         run: |
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
@@ -37,7 +37,7 @@ jobs:
 
           const branch = process.env.GITHUB_REF_NAME;
           if (!['dev', 'main'].includes(branch)) {
-            throw new Error('Android builds only support dev or main');
+            throw new Error('Mobile builds only support dev or main');
           }
 
           const resolved = resolveAppVersion({ cwd: process.cwd(), hash: process.env.GITHUB_SHA });
@@ -56,12 +56,35 @@ jobs:
             version_name: versionName,
             version_code: String(versionCode),
             apk_prefix: `Readoshi-${versionName}`,
+            ipa_prefix: `Readoshi-${versionName}-unsigned`,
           };
           fs.appendFileSync(
             process.env.GITHUB_OUTPUT,
             Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(''),
           );
           NODE
+
+  build-apk:
+    needs: metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    outputs:
+      release_tag: ${{ needs.metadata.outputs.release_tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
 
       - name: Install web dependencies
         run: npm ci --no-audit --no-fund
@@ -141,8 +164,8 @@ jobs:
 
       - name: Configure Android version and signing
         env:
-          APP_VERSION_NAME: ${{ steps.metadata.outputs.version_name }}
-          APP_VERSION_CODE: ${{ steps.metadata.outputs.version_code }}
+          APP_VERSION_NAME: ${{ needs.metadata.outputs.version_name }}
+          APP_VERSION_CODE: ${{ needs.metadata.outputs.version_code }}
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -187,8 +210,8 @@ jobs:
 
       - name: Verify temporary Android wrapper
         env:
-          APP_VERSION_NAME: ${{ steps.metadata.outputs.version_name }}
-          APP_VERSION_CODE: ${{ steps.metadata.outputs.version_code }}
+          APP_VERSION_NAME: ${{ needs.metadata.outputs.version_name }}
+          APP_VERSION_CODE: ${{ needs.metadata.outputs.version_code }}
         run: |
           node <<'NODE'
           const fs = require('node:fs');
@@ -227,7 +250,7 @@ jobs:
 
       - name: Collect and verify APKs
         env:
-          APK_PREFIX: ${{ steps.metadata.outputs.apk_prefix }}
+          APK_PREFIX: ${{ needs.metadata.outputs.apk_prefix }}
         run: |
           set -euo pipefail
           mkdir -p artifacts
@@ -235,20 +258,221 @@ jobs:
           cp android/app/build/outputs/apk/release/app-release.apk "artifacts/${APK_PREFIX}-release.apk"
           "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" verify --print-certs "artifacts/${APK_PREFIX}-release.apk"
 
-      - name: Upload dev APKs
-        if: github.ref_name == 'dev'
+      - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.metadata.outputs.apk_prefix }}
+          name: ${{ needs.metadata.outputs.apk_prefix }}-android
           path: artifacts/*.apk
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish main APKs to Release
-        if: github.ref_name == 'main'
+  build-ipa:
+    needs: metadata
+    runs-on: macos-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install web dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install temporary Capacitor dependencies
+        run: >-
+          npm install --no-save --package-lock=false --no-audit --no-fund
+          @capacitor/core@8.4.1 @capacitor/cli@8.4.1 @capacitor/ios@8.4.1
+          @capacitor/assets@3.0.5
+
+      - name: Build web app
+        env:
+          VITE_GIT_SHA: ${{ github.sha }}
+        run: npm run build
+
+      - name: Prepare temporary iOS wrapper
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+
+          const config = {
+            appId: 'com.kelcoin.readoshi',
+            appName: 'Readoshi',
+            webDir: 'dist',
+            backgroundColor: '#0f1115'
+          };
+          fs.writeFileSync('capacitor.config.json', JSON.stringify(config, null, 2) + '\n');
+
+          if (!fs.existsSync('public/logo-white.png')) throw new Error('public/logo-white.png missing');
+          fs.mkdirSync('assets', { recursive: true });
+          fs.copyFileSync('public/logo-white.png', path.join('assets', 'logo.png'));
+
+          const indexPath = path.join('dist', 'index.html');
+          let html = fs.readFileSync(indexPath, 'utf8');
+          const viewport = /(<meta\s+name="viewport"\s+content=")([^"]*)(")/;
+          if (!viewport.test(html)) throw new Error('viewport meta anchor missing');
+          html = html.replace(viewport, (_, start, value, end) =>
+            start + (value.includes('viewport-fit=cover') ? value : value + ', viewport-fit=cover') + end);
+          fs.writeFileSync(indexPath, html);
+
+          const assetDir = path.join('dist', 'assets');
+          const cssFiles = fs.readdirSync(assetDir).filter((name) => /^index-.*\.css$/.test(name));
+          if (cssFiles.length !== 1) throw new Error('expected one Vite CSS asset');
+          fs.appendFileSync(path.join(assetDir, cssFiles[0]), `
+          /* readoshi-ios-safe-area */
+          :root{--readoshi-ios-safe-top:env(safe-area-inset-top,0px)}
+          html{background:#0f1115}
+          body{box-sizing:border-box;padding-top:var(--readoshi-ios-safe-top);min-height:100dvh}
+          .login-shell{min-height:calc(100dvh - var(--readoshi-ios-safe-top))!important}
+          .reader-root{margin-top:calc(-1 * var(--readoshi-ios-safe-top))}
+          .reader-toolbar{padding-top:calc(14px + var(--readoshi-ios-safe-top))!important}
+          `);
+          NODE
+
+          npx --no-install cap add ios
+          npx --no-install cap sync ios
+          npx --no-install capacitor-assets generate --ios \
+            --iconBackgroundColor '#1C1E24' \
+            --iconBackgroundColorDark '#1C1E24' \
+            --splashBackgroundColor '#0f1115' \
+            --splashBackgroundColorDark '#0f1115'
+
+      - name: Configure iOS wrapper
+        run: |
+          set -euo pipefail
+          PLIST='ios/App/App/Info.plist'
+
+          /usr/libexec/PlistBuddy -c 'Delete :NSAppTransportSecurity' "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity dict' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity:NSAllowsArbitraryLoadsInWebContent bool true' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :NSLocalNetworkUsageDescription string 用于连接局域网中的 LANraragi 服务器。' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Readoshi' "$PLIST" 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c 'Add :CFBundleDisplayName string Readoshi' "$PLIST"
+
+          /usr/libexec/PlistBuddy -c 'Delete :UILaunchStoryboardName' "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Delete :UILaunchScreen' "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Add :UILaunchScreen dict' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :UILaunchScreen:UIColorName string LaunchBackground' "$PLIST"
+
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const colorSet = {
+            colors: [{
+              idiom: 'universal',
+              color: {
+                'color-space': 'srgb',
+                components: {
+                  red: '0.956863',
+                  green: '0.968627',
+                  blue: '0.980392',
+                  alpha: '1.000'
+                }
+              }
+            }, {
+              appearances: [{ appearance: 'luminosity', value: 'dark' }],
+              idiom: 'universal',
+              color: {
+                'color-space': 'srgb',
+                components: {
+                  red: '0.058824',
+                  green: '0.066667',
+                  blue: '0.082353',
+                  alpha: '1.000'
+                }
+              }
+            }],
+            info: { author: 'xcode', version: 1 }
+          };
+          const colorDir = 'ios/App/App/Assets.xcassets/LaunchBackground.colorset';
+          fs.mkdirSync(colorDir, { recursive: true });
+          fs.writeFileSync(path.join(colorDir, 'Contents.json'), JSON.stringify(colorSet, null, 2) + '\n');
+          NODE
+
+          test -d 'ios/App/App/Assets.xcassets/AppIcon.appiconset'
+          find 'ios/App/App/Assets.xcassets/AppIcon.appiconset' -name '*.png' -print -quit | grep -q .
+          test "$(/usr/libexec/PlistBuddy -c 'Print :UILaunchScreen:UIColorName' "$PLIST")" = 'LaunchBackground'
+          test ! -e 'ios/App/App/Assets.xcassets/LaunchBackground.imageset'
+
+      - name: Build unsigned iOS app
+        env:
+          APP_VERSION: ${{ needs.metadata.outputs.package_version }}
+          APP_BUILD: ${{ needs.metadata.outputs.version_code }}
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -workspace ios/App/App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$PWD/build/ios" \
+            MARKETING_VERSION="$APP_VERSION" \
+            CURRENT_PROJECT_VERSION="$APP_BUILD" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            PROVISIONING_PROFILE_SPECIFIER='' \
+            build
+
+      - name: Collect and verify unsigned IPA
+        env:
+          APP_VERSION: ${{ needs.metadata.outputs.package_version }}
+          APP_BUILD: ${{ needs.metadata.outputs.version_code }}
+          IPA_PREFIX: ${{ needs.metadata.outputs.ipa_prefix }}
+        run: |
+          set -euo pipefail
+          APP_PATH='build/ios/Build/Products/Release-iphoneos/App.app'
+          INFO="$APP_PATH/Info.plist"
+          test -d "$APP_PATH"
+          test "$(plutil -extract CFBundleIdentifier raw -o - "$INFO")" = 'com.kelcoin.readoshi'
+          test "$(plutil -extract CFBundleDisplayName raw -o - "$INFO")" = 'Readoshi'
+          test "$(plutil -extract CFBundleShortVersionString raw -o - "$INFO")" = "$APP_VERSION"
+          test "$(plutil -extract CFBundleVersion raw -o - "$INFO")" = "$APP_BUILD"
+          if codesign --verify "$APP_PATH" 2>/dev/null; then
+            echo 'Expected unsigned app, but code signature is valid' >&2
+            exit 1
+          fi
+
+          mkdir -p artifacts/Payload
+          cp -R "$APP_PATH" artifacts/Payload/Readoshi.app
+          (cd artifacts && /usr/bin/zip -qry "${IPA_PREFIX}.ipa" Payload)
+          rm -rf artifacts/Payload
+          unzip -l "artifacts/${IPA_PREFIX}.ipa" > artifacts/ipa-contents.txt
+          grep -q 'Payload/Readoshi.app/Info.plist' artifacts/ipa-contents.txt
+          rm artifacts/ipa-contents.txt
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.metadata.outputs.ipa_prefix }}-ios
+          path: artifacts/*-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-release:
+    needs: [build-apk, build-ipa]
+    if: github.ref_name == 'main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download mobile artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: Readoshi-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish mobile builds to Release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.metadata.outputs.release_tag }}
+          RELEASE_TAG: ${{ needs.build-apk.outputs.release_tag }}
         run: |
           set -euo pipefail
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
@@ -257,9 +481,9 @@ jobs:
               echo "::error title=Version already released::${RELEASE_TAG} points to ${release_sha}. Bump package.json before publishing ${GITHUB_SHA}."
               exit 1
             fi
-            gh release upload "$RELEASE_TAG" artifacts/*.apk --clobber
+            gh release upload "$RELEASE_TAG" artifacts/* --clobber
           else
-            gh release create "$RELEASE_TAG" artifacts/*.apk \
+            gh release create "$RELEASE_TAG" artifacts/* \
               --target "$GITHUB_SHA" \
               --title "$RELEASE_TAG" \
               --generate-notes

@@ -13,7 +13,7 @@ test('project branding is consistently Readoshi', () => {
   const app = text('src/App.jsx');
   const home = text('src/pages/Home.jsx');
   const css = text('src/index.css');
-  const workflow = text('.github/workflows/android-apk.yml');
+  const workflow = text('.github/workflows/mobile-build.yml');
 
   assert.equal(pkg.name, 'readoshi');
   assert.equal(manifest.name, 'Readoshi');

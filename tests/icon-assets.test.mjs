@@ -13,7 +13,7 @@ const oldIconHashes = new Set([
   'E31DFC509F215B852FBE4CADC0EFF26A4229B384BB656CEEB49B9A015D040D0B',
 ]);
 
-test('web and Android builds use Readoshi monochrome icon sources', () => {
+test('web and mobile builds use Readoshi monochrome icon sources', () => {
   const html = text('index.html');
   assert.match(html, /rel="icon"[^>]+media="\(prefers-color-scheme: light\)"[^>]+href="\/icons\/favicon-black-32\.png"/);
   assert.match(html, /rel="icon"[^>]+media="\(prefers-color-scheme: dark\)"[^>]+href="\/icons\/favicon-white-32\.png"/);
@@ -36,6 +36,6 @@ test('web and Android builds use Readoshi monochrome icon sources', () => {
     assert.equal(oldIconHashes.has(sha256(png)), false, `icon-${size}.png still uses old artwork`);
   }
 
-  const workflow = text('.github/workflows/android-apk.yml');
+  const workflow = text('.github/workflows/mobile-build.yml');
   assert.match(workflow, /copyFileSync\('public\/logo-white\.png', path\.join\('assets', 'logo\.png'\)\)/);
 });

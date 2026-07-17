@@ -38,7 +38,7 @@ test('Reader recovery reacts to cache fallback and live direction/crop changes',
 
 test('build and proxy hardening are reproducible', () => {
   const vite = read('vite.config.js');
-  const workflow = read('.github/workflows/android-apk.yml');
+  const workflow = read('.github/workflows/mobile-build.yml');
   assert.doesNotMatch(vite, /secure:\s*false/);
   assert.doesNotMatch(vite, /wildcards/);
   assert.match(vite, /VITE_LRR_PROXY_TARGET/);
