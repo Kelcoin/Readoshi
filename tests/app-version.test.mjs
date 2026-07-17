@@ -50,6 +50,9 @@ test('mobile workflow builds APKs and an unsigned IPA with shared release publis
   assert.match(workflow, /NSAllowsArbitraryLoadsInWebContent/);
   assert.match(workflow, /NSAllowsLocalNetworking/);
   assert.match(workflow, /NSLocalNetworkUsageDescription/);
+  assert.match(workflow, /test -d 'ios\/App\/App\.xcodeproj'/);
+  assert.match(workflow, /-project ios\/App\/App\.xcodeproj/);
+  assert.doesNotMatch(workflow, /-workspace ios\/App\/App\.xcworkspace/);
   assert.match(workflow, /CODE_SIGNING_ALLOWED=NO/);
   assert.match(workflow, /Payload\/Readoshi\.app/);
   assert.match(workflow, /-unsigned\.ipa/);

@@ -345,6 +345,7 @@ jobs:
       - name: Configure iOS wrapper
         run: |
           set -euo pipefail
+          test -d 'ios/App/App.xcodeproj'
           PLIST='ios/App/App/Info.plist'
 
           /usr/libexec/PlistBuddy -c 'Delete :NSAppTransportSecurity' "$PLIST" 2>/dev/null || true
@@ -407,7 +408,7 @@ jobs:
         run: |
           set -euo pipefail
           xcodebuild \
-            -workspace ios/App/App.xcworkspace \
+            -project ios/App/App.xcodeproj \
             -scheme App \
             -configuration Release \
             -sdk iphoneos \
