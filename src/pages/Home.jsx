@@ -52,13 +52,12 @@ const FILTER_INPUT_MIN_WIDTH = 400;
 const FILTER_ACTIONS_MIN_WIDTH = 320;
 const FILTER_LAYOUT_GAP = 12;
 const FILTER_STACK_BREAKPOINT = FILTER_INPUT_MIN_WIDTH + FILTER_ACTIONS_MIN_WIDTH + FILTER_LAYOUT_GAP;
-const HOME_CAROUSEL_GLOW_PADDING = 44;
 const HOME_CAROUSEL_EXPANDED_HEIGHT = '420px';
 const UNTAGGED_CATEGORY_ID = '__untagged__';
 const UNTAGGED_CATEGORY = Object.freeze({ id: UNTAGGED_CATEGORY_ID, name: '无标签' });
 
 function getHomeCarouselPadding(isNarrow) {
-  return `${HOME_CAROUSEL_GLOW_PADDING}px ${isNarrow ? 14 : 20}px`;
+  return `12px ${isNarrow ? 14 : 20}px 20px`;
 }
 
 function readFilter() {

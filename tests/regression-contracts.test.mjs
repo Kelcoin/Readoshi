@@ -92,3 +92,9 @@ test('configuration transfer warning and settings layers stay concise and isolat
   assert.match(home, /className="settings-panel-footer"/);
   assert.match(css, /\.settings-panel-footer\s*\{[^}]*flex:\s*0 0 auto;[^}]*background:/s);
 });
+
+test('home carousels use compact shared vertical padding', () => {
+  const home = read('src/pages/Home.jsx');
+  assert.match(home, /function getHomeCarouselPadding\(isNarrow\)\s*\{\s*return `12px \$\{isNarrow \? 14 : 20\}px 20px`;/s);
+  assert.doesNotMatch(home, /HOME_CAROUSEL_GLOW_PADDING|44px/);
+});
