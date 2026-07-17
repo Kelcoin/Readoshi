@@ -46,6 +46,29 @@ test('build and proxy hardening are reproducible', () => {
   assert.equal(fs.existsSync(new URL('../package-lock.json', import.meta.url)), true);
 });
 
+test('Docker publish runs only when runtime image inputs change', () => {
+  const workflow = read('.github/workflows/docker-publish.yml');
+  assert.match(workflow, /push:[\s\S]*paths:/);
+  assert.doesNotMatch(workflow, /paths-ignore:/);
+  for (const input of [
+    'src/**',
+    'public/**',
+    'scripts/app-version.mjs',
+    'index.html',
+    'package.json',
+    'package-lock.json',
+    'vite.config.js',
+    'Dockerfile',
+    '.dockerignore',
+    'docker-entrypoint.sh',
+    'nginx.conf.template',
+  ]) {
+    assert.equal(workflow.includes(`- '${input}'`), true, `missing Docker input path: ${input}`);
+  }
+  assert.doesNotMatch(workflow, /- 'tests\/\*\*'/);
+  assert.doesNotMatch(workflow, /- 'worker\.js'/);
+});
+
 test('login import feedback stays outside the height-limited form and expires', () => {
   const app = read('src/App.jsx');
   const css = read('src/index.css');
