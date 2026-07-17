@@ -473,6 +473,7 @@ jobs:
       - name: Publish mobile builds to Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.build-apk.outputs.release_tag }}
         run: |
           set -euo pipefail
