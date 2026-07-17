@@ -5,11 +5,18 @@ on:
     branches:
       - main
       - dev
-    paths-ignore:
-      - '.github/**'
-      - '**/*.md'
-      - 'docs/**'
-      - 'LICENSE'
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'scripts/app-version.mjs'
+      - 'index.html'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'vite.config.js'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'docker-entrypoint.sh'
+      - 'nginx.conf.template'
 
 jobs:
   publish:
