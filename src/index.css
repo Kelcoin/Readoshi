@@ -1041,8 +1041,8 @@ textarea:focus-visible,
 }
 
 .settings-control {
-  flex: 0 0 128px;
-  width: 128px;
+  flex: 0 0 148px;
+  width: 148px;
   min-width: 0;
 }
 
@@ -2492,7 +2492,7 @@ textarea:focus-visible,
   .home-carousel-header { padding-inline: 14px; }
 
   .settings-overlay {
-    padding-top: max(24px, calc(env(safe-area-inset-top, 0px) + 16px));
+    padding-top: max(24px, calc(var(--lrr-android-safe-top, env(safe-area-inset-top, 0px)) + 16px));
     padding-right: max(24px, calc(env(safe-area-inset-right, 0px) + 16px));
     padding-bottom: max(24px, calc(env(safe-area-inset-bottom, 0px) + 16px));
     padding-left: max(24px, calc(env(safe-area-inset-left, 0px) + 16px));

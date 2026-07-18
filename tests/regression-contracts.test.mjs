@@ -203,12 +203,16 @@ test('archive title keeps exactly two non-overlapping lines inside a fixed verti
 test('mobile settings respect safe areas and reveal animations release compositor layers', () => {
   const home = read('src/pages/Home.jsx');
   const css = read('src/index.css');
+  const customSelect = read('src/components/CustomSelect.jsx');
 
   assert.match(home, /className="settings-overlay"/);
   assert.match(home, /className="glass-panel settings-panel"/);
   assert.match(css, /\.settings-panel\s*\{[^}]*max-height:\s*100%;/s);
-  assert.match(css, /@media \(max-width:\s*560px\)[\s\S]*\.settings-overlay\s*\{[\s\S]*padding-top:\s*max\(24px,\s*calc\(env\(safe-area-inset-top,\s*0px\) \+ 16px\)\);/s);
+  assert.match(css, /@media \(max-width:\s*560px\)[\s\S]*\.settings-overlay\s*\{[\s\S]*padding-top:\s*max\(24px,\s*calc\(var\(--lrr-android-safe-top,\s*env\(safe-area-inset-top,\s*0px\)\) \+ 16px\)\);/s);
   assert.match(css, /\.settings-overlay\s*\{[\s\S]*padding-bottom:\s*max\(24px,\s*calc\(env\(safe-area-inset-bottom,\s*0px\) \+ 16px\)\);/s);
+  assert.match(css, /\.settings-control\s*\{[^}]*flex:\s*0 0 148px;[^}]*width:\s*148px;/s);
+  assert.match(customSelect, /display:\s*'flex'[^}]*gap:\s*'8px'/s);
+  assert.match(customSelect, /<span style=\{\{[^}]*flex:\s*1[^}]*minWidth:\s*0[^}]*textOverflow:\s*'ellipsis'/s);
   assert.match(css, /@keyframes sectionReveal\s*\{[\s\S]*to\s*\{[^}]*transform:\s*none;/s);
 });
 
@@ -239,7 +243,7 @@ test('progress regression is configured only from the general settings section',
   assert.match(home, /allowProgressRegression: checked/);
   assert.match(home, /className="settings-control"/);
   assert.match(home, /className="settings-control settings-toggle-control"/);
-  assert.match(css, /\.settings-control\s*\{[^}]*width:\s*128px/s);
+  assert.match(css, /\.settings-control\s*\{[^}]*width:\s*148px/s);
   assert.match(css, /\.settings-toggle-control\s*\{[^}]*justify-content:\s*flex-end/s);
   assert.doesNotMatch(reader, />允许阅读进度回溯</);
 });

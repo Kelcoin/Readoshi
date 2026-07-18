@@ -53,7 +53,7 @@ export default function CustomSelect({ value, options, onChange, style, compact,
         aria-label={ariaLabel}
         tabIndex={0}
         style={{ 
-          cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', 
+          cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px',
           userSelect: 'none',
           padding: compact && isNarrow ? '6px 8px' : undefined,
           background: isOpen ? 'rgba(88, 183, 255, 0.14)' : undefined,
@@ -73,7 +73,7 @@ export default function CustomSelect({ value, options, onChange, style, compact,
           if (e.key === 'Escape') setIsOpen(false);
         }}
       >
-        <span style={{ fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        <span style={{ flex: 1, minWidth: 0, fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
           {selectedOption ? selectedOption.label : '请选择…'}
         </span>
         <span style={{ transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.3s', fontSize: '10px', color: 'var(--text-sub)', flexShrink: 0 }}>▼</span>
