@@ -192,11 +192,24 @@ test('archive title keeps exactly two non-overlapping lines inside a fixed verti
   assert.match(card, /height:\s*`\$\{ARCHIVE_TITLE_VERTICAL_BUDGET - titleLayout\.gap\}px`/);
   assert.match(card, /className="archive-title-slot"/);
   assert.match(card, /fontSize:\s*`\$\{titleLayout\.fontSize\}px`/);
-  assert.match(card, /height:\s*`\$\{titleLayout\.fontSize \* titleLayout\.lineHeight \* 2\}px`/);
+  assert.match(card, /className="archive-title"[\s\S]*height:\s*'100%'/);
+  assert.doesNotMatch(card, /height:\s*`\$\{titleLayout\.fontSize \* titleLayout\.lineHeight \* 2\}px`/);
   assert.match(card, /WebkitLineClamp:\s*2/);
   assert.match(card, /if \(lines\.length < 2\) return;/);
   assert.match(card, /if \(lines\.length >= 2 && titleLayoutIndex === 0\)/);
   assert.match(card, /lastVisibleLineBottom > titleBox\.bottom/);
+});
+
+test('mobile settings respect safe areas and reveal animations release compositor layers', () => {
+  const home = read('src/pages/Home.jsx');
+  const css = read('src/index.css');
+
+  assert.match(home, /className="settings-overlay"/);
+  assert.match(home, /className="glass-panel settings-panel"/);
+  assert.match(css, /\.settings-panel\s*\{[^}]*max-height:\s*100%;/s);
+  assert.match(css, /@media \(max-width:\s*560px\)[\s\S]*\.settings-overlay\s*\{[\s\S]*padding-top:\s*max\(24px,\s*calc\(env\(safe-area-inset-top,\s*0px\) \+ 16px\)\);/s);
+  assert.match(css, /\.settings-overlay\s*\{[\s\S]*padding-bottom:\s*max\(24px,\s*calc\(env\(safe-area-inset-bottom,\s*0px\) \+ 16px\)\);/s);
+  assert.match(css, /@keyframes sectionReveal\s*\{[\s\S]*to\s*\{[^}]*transform:\s*none;/s);
 });
 
 test('configuration transfer warning and settings layers stay concise and isolated', () => {

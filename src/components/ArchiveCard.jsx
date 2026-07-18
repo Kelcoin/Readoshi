@@ -740,7 +740,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
               WebkitLineClamp: 2,
               WebkitBoxOrient: 'vertical',
               lineHeight: titleLayout.lineHeight,
-              height: `${titleLayout.fontSize * titleLayout.lineHeight * 2}px`,
+              height: '100%',
             }}
           >
             {archive.title}

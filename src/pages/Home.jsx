@@ -2431,23 +2431,21 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
       </section>
     </div>
     {showConfig && createPortal(
-      <div onClick={() => setShowConfig(false)} style={{
+      <div className="settings-overlay" onClick={() => setShowConfig(false)} style={{
         position: 'fixed', inset: 0, zIndex: 100000,
         background: 'rgba(0,0,0,0.55)',
         backdropFilter: 'blur(12px)',
         WebkitBackdropFilter: 'blur(12px)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        padding: '16px',
       }}>
-        <form className="glass-panel" onClick={e => e.stopPropagation()} onSubmit={(e) => {
+        <form className="glass-panel settings-panel" onClick={e => e.stopPropagation()} onSubmit={(e) => {
           e.preventDefault();
           setWorkerUrl(cfgWorkerUrl);
           setSyncToken(cfgSyncToken);
           setShowConfig(false);
         }} style={{
           padding: 0, display: 'flex', flexDirection: 'column', gap: 0,
-          width: '100%', maxWidth: '640px',
-          maxHeight: 'calc(100dvh - 32px)', overflow: 'hidden',
+          overflow: 'hidden',
         }}>
           <div className="settings-panel-header" style={{ textAlign: 'center', padding: '28px 28px 12px' }}>
             <h2 className="settings-title">设置</h2>
