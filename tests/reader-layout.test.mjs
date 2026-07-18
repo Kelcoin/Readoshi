@@ -7,9 +7,17 @@ import {
   getAdjacentSpreadLocation,
   getSpreadProgressPage,
   getImmersiveSpreadGeometry,
+  hasWebtoonTag,
   isWidePageSize,
   resolveAutoReadingLayout,
 } from '../src/lib/readerLayout.js';
+
+test('Webtoon metadata tag matching is exact and case insensitive', () => {
+  assert.equal(hasWebtoonTag('artist:a, other:webtoon, language:english'), true);
+  assert.equal(hasWebtoonTag('OTHER:WebToon'), true);
+  assert.equal(hasWebtoonTag('other:webtoon parody'), false);
+  assert.equal(hasWebtoonTag(null), false);
+});
 
 test('manga page classifier requires enough conventional portrait samples', () => {
   const matching = (ratio) => ({ width: ratio * 1000, height: 1000 });

@@ -1991,6 +1991,10 @@ textarea:focus-visible,
 
 .reader-root { color: var(--text-main); }
 .reader-stage-frame { background: var(--reader-stage-bg) !important; border-color: var(--reader-stage-border) !important; }
+.reader-webtoon-page {
+  width: min(100%, 80dvh, 960px);
+  margin-inline: auto;
+}
 .reader-page-nav-button { background: var(--reader-control-bg) !important; border-color: var(--reader-control-border) !important; color: var(--reader-control-text) !important; }
 .reader-page-nav-button:not(:disabled):hover { background: var(--reader-control-hover-bg) !important; }
 .reader-panel-surface { background: var(--reader-panel-bg) !important; color: var(--text-main) !important; border-color: var(--reader-control-border) !important; }

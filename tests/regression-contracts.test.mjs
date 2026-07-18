@@ -79,12 +79,20 @@ test('Reader toolbar has three measured states and page commits preserve transie
 
 test('Reader auto layout prioritizes scrolling and dynamically measures the reader container', () => {
   const reader = read('src/pages/Reader.jsx');
+  const css = read('src/index.css');
   assert.match(reader, /resolveAutoReadingLayout/);
   assert.match(reader, /effectiveReadingLayout/);
   assert.match(reader, /new ResizeObserver\(updateReaderContainerSize\)/);
   assert.match(reader, /doublePage: effectiveReadingLayout === 'double'/);
   assert.match(reader, /label: '滚动', value: 'webtoon'/);
   assert.doesNotMatch(reader, /label: 'Webtoon'/);
+  const autoGuard = reader.indexOf("if (!secondaryContentReady || settings.readingLayout !== 'auto')");
+  const tagCheck = reader.indexOf('hasWebtoonTag(archive?.tags)', autoGuard);
+  const seamCheck = reader.indexOf('classifyWebtoonSeams(seams', tagCheck);
+  assert.ok(autoGuard >= 0 && autoGuard < tagCheck && tagCheck < seamCheck);
+  assert.match(reader, /\[archive\?\.tags, pages, secondaryContentReady, settings\.readingLayout\]/);
+  assert.equal((reader.match(/className="reader-webtoon-page"/g) || []).length, 2);
+  assert.match(css, /\.reader-webtoon-page\s*\{[^}]*width:\s*min\(100%,\s*80dvh,\s*960px\);[^}]*margin-inline:\s*auto;/s);
 });
 
 test('reading progress can be cleared from archive menus and the Reader drawer', () => {
