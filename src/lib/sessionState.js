@@ -1,4 +1,4 @@
-import { getConfigScopeId } from './configScope';
+import { getConfigScopeId } from './configScope.js';
 
 const SNAPSHOT_VERSION = 3;
 const SNAPSHOT_TTL = 12 * 60 * 60 * 1000;
@@ -215,7 +215,9 @@ export function markPwaUpdateReload() {
 }
 
 export function saveHomeSnapshot(snapshot) {
-  writeJson(HOME_KEY, normalizeSnapshot(snapshot));
+  const normalized = normalizeSnapshot(snapshot);
+  writeJson(HOME_KEY, normalized);
+  return normalized;
 }
 
 export function loadHomeSnapshot() {
@@ -225,17 +227,20 @@ export function loadHomeSnapshot() {
 }
 
 export function saveHomeNavigationSnapshot(snapshot) {
+  const homeSnapshot = saveHomeSnapshot(snapshot);
   writeStorageJson(sessionStorage, HOME_NAV_KEY, normalizeSnapshot({
-    ...snapshot,
     reason: 'home-navigation',
+    homeSnapshotTs: homeSnapshot.ts,
   }));
 }
 
 export function consumeHomeNavigationSnapshot() {
-  const snapshot = readStorageJson(sessionStorage, HOME_NAV_KEY);
+  const marker = readStorageJson(sessionStorage, HOME_NAV_KEY);
   safeRemove(sessionStorage, HOME_NAV_KEY);
-  if (!matchesConfig(snapshot) || !isFresh(snapshot?.ts, 30 * 60 * 1000)) return null;
-  return snapshot;
+  if (!matchesConfig(marker) || !isFresh(marker?.ts, 30 * 60 * 1000)) return null;
+  const snapshot = loadHomeSnapshot();
+  if (!snapshot || snapshot.ts !== marker.homeSnapshotTs) return null;
+  return { ...snapshot, reason: 'home-navigation' };
 }
 
 export function clearHomeNavigationSnapshot() {
@@ -251,6 +256,37 @@ export function loadReaderSnapshot(archiveId = null) {
   if (!matchesConfig(snapshot) || !isFresh(snapshot?.ts)) return null;
   if (archiveId && snapshot.archiveId !== archiveId) return null;
   return snapshot;
+}
+
+export function clearReaderSnapshot(archiveId = null) {
+  if (archiveId) {
+    const snapshot = readJson(READER_KEY);
+    if (snapshot?.archiveId !== archiveId) return;
+  }
+  safeRemove(localStorage, READER_KEY);
+}
+
+function patchArchiveProgressList(items, archiveId, page) {
+  return Array.isArray(items) ? items.map((item) => (
+    String(item?.id || item?.arcid || '') === archiveId
+      ? { ...item, page, progress: page }
+      : item
+  )) : items;
+}
+
+export function updateArchiveProgressInSessionSnapshots(archiveId, page) {
+  const id = String(archiveId || '').trim();
+  if (!id) return;
+  const patch = (snapshot) => {
+    if (!snapshot) return snapshot;
+    const next = { ...snapshot };
+    for (const key of ['archives', 'randoms', 'history', 'watchlist']) {
+      next[key] = patchArchiveProgressList(next[key], id, page);
+    }
+    return next;
+  };
+  const home = readJson(HOME_KEY);
+  if (home) writeJson(HOME_KEY, patch(home));
 }
 
 export function clearAllSessionSnapshots() {

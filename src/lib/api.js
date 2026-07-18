@@ -231,7 +231,12 @@ export const lrrApi = {
     request(`/archives/${id}/files/thumbnails${force ? '?force=true' : ''}`, 'POST'),
   extractArchive: (id, options = {}) => request(`/archives/${id}/extract`, 'POST', null, options),
   clearCache: (id) => request(`/archives/${id}/extract`, 'DELETE'),
-  updateProgress: (id, page, options = {}) => request(`/archives/${id}/progress/${page}`, 'PUT', null, options),
+  updateProgress: (id, page, options = {}) => request(
+    `/archives/${id}/progress/${page}${options.force ? '?force=1' : ''}`,
+    'PUT',
+    null,
+    options,
+  ),
   getCategories: () => request('/categories'),
   getServerInfo: () => request('/info'),
 };

@@ -1,10 +1,15 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { ToolbarGlyph } from './AppGlyphs';
 import { classifyEhGalleryPage, presentEhError } from '../lib/ehCommentsState';
+import {
+  createEhCommentsCacheKey,
+  deleteEhCommentsCache,
+  readEhCommentsCache,
+  writeEhCommentsCache,
+} from '../lib/ehCommentsCache';
 
-const commentsCache = new Map();
-const CACHE_TTL = 24 * 60 * 60 * 1000;
 const EMPTY_API_DATA = Object.freeze({ apiuid: null, apikey: null, gid: null, token: null, apiUrl: 'https://api.e-hentai.org/api.php' });
+const EH_REQUEST_TIMEOUT_MS = 20 * 1000;
 
 const VoteIcon = ({ direction, active = false }) => (
   <svg
@@ -54,10 +59,6 @@ function extractApiData(htmlText) {
     token: tokenMatch ? tokenMatch[1] : null,
     apiUrl: apiUrlMatch ? apiUrlMatch[1] : 'https://api.e-hentai.org/api.php'
   };
-}
-
-function hasVotingApiData(value) {
-  return !!(value?.apiuid && value?.apikey && value?.gid && value?.token);
 }
 
 function parseEHCommentsFromDOM(htmlText) {
@@ -182,16 +183,27 @@ function normaliseEhUrl(rawUrl) {
   return 'https://' + trimmed;
 }
 
-async function workerApi(workerBase, path, body, token) {
+async function workerApi(workerBase, path, body, token, parentSignal = null) {
   if (!token) throw new Error('Worker Token 无效或缺失。请在设定面板填入 KV tokens 中配置的 Token。');
   const url = (workerBase || '').replace(/\/$/, '') + path;
   const headers = { 'Content-Type': 'application/json', 'x-sync-token': token };
-  const res = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
-  return res.json();
+  const controller = new AbortController();
+  const forwardAbort = () => controller.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) forwardAbort();
+  else parentSignal?.addEventListener('abort', forwardAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(), EH_REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+    parentSignal?.removeEventListener('abort', forwardAbort);
+  }
 }
 
 function ehRequestError(code, detail = '') {
@@ -207,13 +219,11 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(null);
   const [needsCookie, setNeedsCookie] = useState(false);
-  const [retryTick, setRetryTick] = useState(0);
   const [shouldAutoLoad, setShouldAutoLoad] = useState(false);
   const sectionRef = useRef(null);
-  const autoLoadSourceRef = useRef('');
-  const hasAutoLoaded = useRef(false);
-  const autoRetryTimerRef = useRef(null);
-  const autoRetryCountRef = useRef(0);
+  const hasAutoLoadedRef = useRef(false);
+  const requestSeqRef = useRef(0);
+  const requestAbortRef = useRef(null);
 
   const [apiData, setApiData] = useState(EMPTY_API_DATA);
   const [postText, setPostText] = useState('');
@@ -226,62 +236,81 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
   const cookie = getSafeCookie(ehCookie);
 
   useEffect(() => {
+    requestSeqRef.current += 1;
+    requestAbortRef.current?.abort();
+    requestAbortRef.current = null;
     setComments([]);
+    setLoading(false);
     setLoaded(false);
     setError(null);
     setNeedsCookie(false);
     setApiData(EMPTY_API_DATA);
     setShouldAutoLoad(false);
-    autoLoadSourceRef.current = '';
-    hasAutoLoaded.current = false;
-    autoRetryCountRef.current = 0;
+    hasAutoLoadedRef.current = false;
 
     if (!sourceUrl || !ehEnabled) return undefined;
     const node = sectionRef.current;
     if (!node || typeof IntersectionObserver === 'undefined') {
-      autoLoadSourceRef.current = sourceUrl;
       setShouldAutoLoad(true);
-      return undefined;
+      return () => requestAbortRef.current?.abort();
     }
     const observer = new IntersectionObserver((entries) => {
       if (entries.some((entry) => entry.isIntersecting)) {
-        autoLoadSourceRef.current = sourceUrl;
         setShouldAutoLoad(true);
         observer.disconnect();
       }
     }, { rootMargin: '600px 0px' });
     observer.observe(node);
-    return () => observer.disconnect();
-  }, [ehEnabled, sourceUrl]);
+    return () => {
+      observer.disconnect();
+      requestAbortRef.current?.abort();
+    };
+  }, [cookie, ehEnabled, ehToken, ehWorker, sourceUrl]);
 
   const fetchComments = useCallback(async (forceRefresh) => {
     if (!sourceUrl) return;
 
+    const requestSeq = requestSeqRef.current + 1;
+    requestSeqRef.current = requestSeq;
+    requestAbortRef.current?.abort();
+    const controller = new AbortController();
+    requestAbortRef.current = controller;
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, EH_REQUEST_TIMEOUT_MS);
+    const isCurrent = () => requestSeqRef.current === requestSeq && !controller.signal.aborted;
+
     const showError = (code, detail = '') => {
+      if (requestSeqRef.current !== requestSeq) return;
       const presentation = presentEhError(code, detail);
       setError(presentation);
       setNeedsCookie(presentation.needsCookie);
     };
 
-    const cacheKey = `${sourceUrl}::${cookie}`;
-    if (!forceRefresh) {
-      const cached = commentsCache.get(cacheKey);
-      const cacheCanRestoreVoting = !ehWorker || !cookie || hasVotingApiData(cached?.apiData);
-      if (cached && cacheCanRestoreVoting && Date.now() - cached.ts < CACHE_TTL) {
-        setComments(cached.data);
-        setApiData(cached.apiData || EMPTY_API_DATA);
-        setLoading(false);
-        setLoaded(true);
-        return;
-      }
-    }
-
-    setLoading(true);
-    setError(null);
-    setNeedsCookie(false);
-    setApiData(EMPTY_API_DATA);
+    const cacheKey = createEhCommentsCacheKey(sourceUrl, cookie);
+    let cachedComments = null;
 
     try {
+      if (!forceRefresh) {
+        cachedComments = await readEhCommentsCache(cacheKey);
+        if (!isCurrent()) return;
+        if (cachedComments) {
+          setComments(cachedComments);
+          setLoading(false);
+          setLoaded(true);
+          setError(null);
+          setNeedsCookie(false);
+          if (!ehWorker || !cookie) return;
+        }
+      }
+
+      if (!cachedComments) setLoading(true);
+      setError(null);
+      setNeedsCookie(false);
+      if (!cachedComments) setApiData(EMPTY_API_DATA);
+
       const realUrl = normaliseEhUrl(sourceUrl);
       const workerUrl = ehUrl(realUrl, ehWorker);
 
@@ -294,6 +323,7 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
           method: 'POST',
           headers: workerHeaders,
           body: JSON.stringify({ url: realUrl, cookie: cookie || '' }),
+          signal: controller.signal,
         });
 
         if (!galleryRes.ok) {
@@ -324,7 +354,7 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
       } else {
         const headers = {};
         if (cookie) headers['X-EH-Cookie'] = cookie;
-        const galleryRes = await fetch(workerUrl, { headers, redirect: 'manual' });
+        const galleryRes = await fetch(workerUrl, { headers, redirect: 'manual', signal: controller.signal });
 
         if (galleryRes.type === 'opaqueredirect') {
           throw ehRequestError('NETWORK_ERROR', '请求被重定向到外部域名。');
@@ -343,30 +373,30 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
       const blockType = isContentWarningOrLogin(htmlText);
 
       if (blockType) {
-        setComments([]);
+        if (!isCurrent()) return;
+        if (!cachedComments) setComments([]);
         setLoaded(true);
         showError(blockType === 'warning' ? 'CONTENT_WARNING' : 'EH_REQUIRES_LOGIN');
-        setLoading(false);
         return;
       }
 
       if (classifyEhGalleryPage(htmlText, 200) === 'unavailable') {
-        setComments([]);
+        if (!isCurrent()) return;
+        if (!cachedComments) setComments([]);
         setLoaded(true);
         showError('GALLERY_UNAVAILABLE');
-        setLoading(false);
         return;
       }
 
       const parsedApi = extractApiData(htmlText);
-      if (parsedApi.apiuid) setApiData(parsedApi);
+      if (parsedApi.apiuid && isCurrent()) setApiData(parsedApi);
 
       const domResult = parseEHCommentsFromDOM(htmlText);
       if (domResult.contentWarning) {
-        setComments([]);
+        if (!isCurrent()) return;
+        if (!cachedComments) setComments([]);
         setLoaded(true);
         showError('CONTENT_WARNING');
-        setLoading(false);
         return;
       }
 
@@ -383,26 +413,35 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
               gidlist: [[parsedApi.gid, parsedApi.token]],
               namespace: 1,
             },
-          }, ehToken);
+          }, ehToken, controller.signal);
           const apiComments = parseEHCommentsFromAPI(apiRes);
           if (apiComments.length > 0) {
             finalComments = apiComments;
-            commentsCache.set(cacheKey + '::api', { data: finalComments, ts: Date.now() });
           }
         } catch {}
       }
 
+      if (!isCurrent()) return;
       setComments(finalComments);
-      commentsCache.set(cacheKey, { data: finalComments, apiData: parsedApi, ts: Date.now() });
       setLoaded(true);
+      writeEhCommentsCache(cacheKey, finalComments).catch(() => {});
     } catch (e) {
+      if (requestSeqRef.current !== requestSeq) return;
+      if (controller.signal.aborted && !timedOut) return;
       if (e instanceof TypeError && e.message === 'Failed to fetch') {
         showError('NETWORK_ERROR');
+      } else if (timedOut) {
+        showError('NETWORK_ERROR', '请求超时，请检查 Worker 或网络连接。');
       } else {
         showError(e.ehCode || 'UNKNOWN_WORKER_ERROR', e.ehDetail || e.message);
       }
+      if (cachedComments) setLoaded(true);
     } finally {
-      setLoading(false);
+      clearTimeout(timeout);
+      if (requestSeqRef.current === requestSeq) {
+        requestAbortRef.current = null;
+        setLoading(false);
+      }
     }
   }, [sourceUrl, cookie, ehWorker, ehToken]);
 
@@ -428,8 +467,8 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
           comment_vote: voteValue,
         },
       }, ehToken);
-      const cacheKey = `${sourceUrl}::${cookie}`;
-      commentsCache.delete(cacheKey);
+      const cacheKey = createEhCommentsCacheKey(sourceUrl, cookie);
+      await deleteEhCommentsCache(cacheKey);
       await fetchComments(true);
     } catch {} finally {
       votingRef.current = null;
@@ -446,9 +485,9 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
       await workerApi(ehWorker, '/comment', { galleryUrl: normalUrl, cookie, formBody }, ehToken);
       setPostText('');
       // Invalidate cache then force refresh
-      const cacheKey = `${sourceUrl}::${cookie}`;
-      commentsCache.delete(cacheKey);
-      fetchComments(true);
+      const cacheKey = createEhCommentsCacheKey(sourceUrl, cookie);
+      await deleteEhCommentsCache(cacheKey);
+      await fetchComments(true);
     } catch {} finally {
       setPosting(false);
     }
@@ -462,56 +501,21 @@ export default function EhComments({ sourceUrl, ehEnabled, ehCookie, ehWorker, e
       await workerApi(ehWorker, '/comment', { galleryUrl: normalUrl, cookie, formBody }, ehToken);
       setEditingId(null);
       setEditText('');
-      const cacheKey = `${sourceUrl}::${cookie}`;
-      commentsCache.delete(cacheKey);
-      fetchComments(true);
+      const cacheKey = createEhCommentsCacheKey(sourceUrl, cookie);
+      await deleteEhCommentsCache(cacheKey);
+      await fetchComments(true);
     } catch {}
   }, [editText, ehWorker, cookie, sourceUrl, fetchComments]);
 
   const handleReload = useCallback(() => {
-    autoLoadSourceRef.current = sourceUrl;
-    hasAutoLoaded.current = true;
-    setShouldAutoLoad(true);
-    setRetryTick((value) => value + 1);
-  }, [sourceUrl]);
+    fetchComments(true);
+  }, [fetchComments]);
 
   useEffect(() => {
-    if (!sourceUrl || !ehEnabled || !shouldAutoLoad || autoLoadSourceRef.current !== sourceUrl) return;
-    fetchComments(!hasAutoLoaded.current ? false : true);
-    hasAutoLoaded.current = true;
-  }, [sourceUrl, ehEnabled, fetchComments, retryTick, shouldAutoLoad]);
-
-  useEffect(() => {
-    if (!sourceUrl || !ehEnabled) return undefined;
-    if (loading) return undefined;
-    if (!loaded) return undefined;
-    if (comments.length > 0) {
-      if (ehWorker && cookie && !hasVotingApiData(apiData) && autoRetryCountRef.current < 1) {
-        autoRetryTimerRef.current = setTimeout(() => {
-          commentsCache.delete(`${sourceUrl}::${cookie}`);
-          autoRetryCountRef.current += 1;
-          setRetryTick((value) => value + 1);
-        }, 900);
-        return () => {
-          if (autoRetryTimerRef.current) clearTimeout(autoRetryTimerRef.current);
-        };
-      }
-      autoRetryCountRef.current = 0;
-      return undefined;
-    }
-    if (needsCookie) return undefined;
-    if (autoRetryCountRef.current >= 2) return undefined;
-    autoRetryTimerRef.current = setTimeout(() => {
-      const cacheKey = `${sourceUrl}::${cookie}`;
-      commentsCache.delete(cacheKey);
-      commentsCache.delete(cacheKey + '::api');
-      autoRetryCountRef.current += 1;
-      setRetryTick((v) => v + 1);
-    }, 1500);
-    return () => {
-      if (autoRetryTimerRef.current) clearTimeout(autoRetryTimerRef.current);
-    };
-  }, [apiData, comments.length, cookie, ehEnabled, ehWorker, loaded, loading, needsCookie, sourceUrl]);
+    if (!sourceUrl || !ehEnabled || !shouldAutoLoad || hasAutoLoadedRef.current) return;
+    hasAutoLoadedRef.current = true;
+    fetchComments(false);
+  }, [sourceUrl, ehEnabled, fetchComments, shouldAutoLoad]);
 
   if (!ehEnabled) return null;
   if (!sourceUrl) return null;

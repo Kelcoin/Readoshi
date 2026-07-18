@@ -1,21 +1,32 @@
 import React, { useEffect, useState } from 'react';
+import { ToolbarGlyph } from './AppGlyphs';
+import { dismissInstallPrompt, isInstallDismissed, isStandaloneDisplay } from '../lib/pwaInstallState';
+import { markPwaUpdateReload } from '../lib/sessionState';
 
 export default function PwaStatus() {
   const [updateWorker, setUpdateWorker] = useState(null);
+  const [installEvent, setInstallEvent] = useState(null);
+  const [installDismissed, setInstallDismissed] = useState(isInstallDismissed);
   const [connectionMessage, setConnectionMessage] = useState(() => (
     navigator.onLine ? '' : '已离线，可继续打开已缓存页面'
   ));
 
   useEffect(() => {
+    if (isStandaloneDisplay()) return undefined;
     const handleBeforeInstallPrompt = (event) => {
+      if (installDismissed) return;
       event.preventDefault();
+      setInstallEvent(event);
     };
+    const handleInstalled = () => setInstallEvent(null);
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleInstalled);
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleInstalled);
     };
-  }, []);
+  }, [installDismissed]);
 
   useEffect(() => {
     const handleUpdateReady = (event) => {
@@ -33,7 +44,14 @@ export default function PwaStatus() {
     const applyTimer = setTimeout(() => {
       updateWorker.postMessage({ type: 'SKIP_WAITING' });
     }, 900);
-    return () => clearTimeout(applyTimer);
+    const reloadTimer = setTimeout(() => {
+      markPwaUpdateReload();
+      window.location.reload();
+    }, 8000);
+    return () => {
+      clearTimeout(applyTimer);
+      clearTimeout(reloadTimer);
+    };
   }, [updateWorker]);
 
   useEffect(() => {
@@ -68,8 +86,25 @@ export default function PwaStatus() {
     : connectionMessage
       ? { message: connectionMessage }
       : null;
+  const showInstall = !primary && !!installEvent && !installDismissed;
 
-  if (!primary) return null;
+  const handleInstall = async () => {
+    if (!installEvent) return;
+    const event = installEvent;
+    setInstallEvent(null);
+    try {
+      await event.prompt();
+      await event.userChoice;
+    } catch {}
+  };
+
+  const handleDismissInstall = () => {
+    dismissInstallPrompt();
+    setInstallDismissed(true);
+    setInstallEvent(null);
+  };
+
+  if (!primary && !showInstall) return null;
 
   return (
     <div
@@ -105,8 +140,23 @@ export default function PwaStatus() {
         }}
       >
         <span style={{ flex: 1, minWidth: 0, fontSize: '13px', fontWeight: 600, textAlign: 'center' }}>
-          {primary.message}
+          {primary?.message || '安装 Readoshi，获得独立应用体验。'}
         </span>
+        {showInstall && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+            <button type="button" className="btn" onClick={handleInstall} style={{ padding: '6px 10px', fontSize: '12px' }}>安装应用</button>
+            <button
+              type="button"
+              className="btn"
+              onClick={handleDismissInstall}
+              aria-label="关闭安装提示"
+              title="关闭"
+              style={{ width: '30px', height: '30px', padding: 0, display: 'grid', placeItems: 'center' }}
+            >
+              <ToolbarGlyph name="close" size={16} />
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

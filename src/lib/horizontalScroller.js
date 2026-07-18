@@ -13,6 +13,10 @@ export function getHorizontalWheelDelta(event, scrollWidth, clientWidth) {
   return delta === 0 ? null : delta;
 }
 
+export function isOutsideHorizontalViewport(rect, viewport) {
+  return rect.right <= viewport.left || rect.left >= viewport.right;
+}
+
 export function useHorizontalScroller() {
   const scrollerElRef = useRef(null);
   const dragStateRef = useRef({

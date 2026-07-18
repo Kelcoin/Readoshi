@@ -9,15 +9,26 @@ import { isArchiveMissingError } from '../lib/historyMaintenance';
 import { translateTag, categorizeTags } from '../lib/tags';
 import { getCachedImage, getImage, deleteImageKeys, IMAGE_LOAD_PRIORITY } from '../lib/imageCache';
 import { DEFAULT_READER_SETTINGS, READER_SETTINGS_KEY, normalizeReaderSettings, prepareReaderSettingsForArchiveChange } from '../lib/readerSettings';
-import { getArchiveProgressPercent, shouldShowArchiveProgress } from '../lib/archiveProgress';
+import {
+  clearArchiveProgressMarker,
+  getArchiveProgressPercent,
+  hasArchiveProgressMarker,
+  hasArchiveReadingProgress,
+  shouldPersistArchiveReadingProgress,
+  shouldShowArchiveProgress,
+} from '../lib/archiveProgress';
+import { clearConfiguredArchiveReadingProgress } from '../lib/archiveProgressActions';
 import { getReaderSkeletonToolbarGroups } from '../lib/readerSkeletonLayout';
 import { createReaderRenderState, getReaderCapabilities, loadReaderBootstrapResource, readerRenderReducer } from '../lib/readerRenderPipeline';
 import {
   getReaderArchivePanelModel,
   getReaderArchivePanelWindow,
+  getCenteredToolbarTitleWidth,
+  getDrawerRowStride,
+  getContentLanguage,
   isIosWebKitPlatform,
   isReaderMobileViewport,
-  shouldUseCompactReaderToolbar,
+  resolveReaderToolbarMode,
 } from '../lib/readerUiState';
 import { computeContainedImageRect, rectsOverlap } from '../lib/pageIndicatorLayout';
 import { classifyWebtoonSeams, compareSeamPixels, sampleImageSeam } from '../lib/webtoonDetector';
@@ -33,6 +44,17 @@ import CustomSelect from '../components/CustomSelect';
 import ToggleSwitch from '../components/ToggleSwitch';
 import { HomeSectionGlyph, NamespaceGlyph, stripDecoratedLabel, ToolbarGlyph } from '../components/AppGlyphs';
 import { acquireBodyScrollLock } from '../lib/bodyScrollLock';
+import {
+  buildReaderSpreads,
+  classifyMangaPageSizes,
+  findSpreadIndex,
+  getContainedHalfFrame,
+  getAdjacentSpreadLocation,
+  getSpreadProgressPage,
+  getImmersiveSpreadGeometry,
+  isWidePageSize,
+  resolveAutoReadingLayout,
+} from '../lib/readerLayout';
 
 // ===== Authenticated Image Component =====
 const getConfiguredServerUrl = () => {
@@ -106,7 +128,6 @@ async function resolvePageImageSource(pageUrl, {
 const DRAWER_COLUMNS = 3;
 const DRAWER_GAP = 12;
 const DRAWER_OVERSCAN_ROWS = 4;
-const DRAWER_ITEM_RATIO = 1.3;
 const drawerMinionWaits = new Map();
 
 function waitForDrawerMinion(job) {
@@ -119,16 +140,6 @@ function waitForDrawerMinion(job) {
   }
   return drawerMinionWaits.get(jobId);
 }
-function getDrawerItemWidth(gridWidth) {
-  return gridWidth > 0
-    ? Math.max(72, (gridWidth - (DRAWER_COLUMNS - 1) * DRAWER_GAP) / DRAWER_COLUMNS)
-    : 110;
-}
-
-function getDrawerRowHeight(gridWidth) {
-  return getDrawerItemWidth(gridWidth) * DRAWER_ITEM_RATIO;
-}
-
 const DrawerThumb = ({ archiveId, pageIndex, active, cacheOnly = false, eager = false }) => {
   const [src, setSrc] = useState(null);
   const [shouldLoad, setShouldLoad] = useState(false);
@@ -279,7 +290,9 @@ const PageImage = React.forwardRef(({
   onLoadStart,
   onReady,
   onError,
-  splitWide = false,
+  cropSide = null,
+  rotateWide = false,
+  onNaturalSize,
   cropBorders = false,
   priority = IMAGE_LOAD_PRIORITY.NORMAL,
 }, fwdRef) => {
@@ -291,7 +304,9 @@ const PageImage = React.forwardRef(({
   const requestSeqRef = useRef(0);
   const readyPageUrlRef = useRef(null);
   const imgRef = useRef(null);
+  const shellRef = useRef(null);
   const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
+  const [shellSize, setShellSize] = useState({ width: 0, height: 0 });
   const [cropInsets, setCropInsets] = useState({ top: 0, right: 0, bottom: 0, left: 0 });
 
   useEffect(() => {
@@ -306,6 +321,25 @@ const PageImage = React.forwardRef(({
     if (typeof fwdRef === 'function') fwdRef(el);
     else fwdRef.current = el;
   }, [fwdRef]);
+
+  useLayoutEffect(() => {
+    const shell = shellRef.current;
+    if (!shell) return undefined;
+    const update = () => {
+      const next = { width: shell.clientWidth, height: shell.clientHeight };
+      setShellSize((prev) => (
+        prev.width === next.width && prev.height === next.height ? prev : next
+      ));
+    };
+    update();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', update);
+      return () => window.removeEventListener('resize', update);
+    }
+    const observer = new ResizeObserver(update);
+    observer.observe(shell);
+    return () => observer.disconnect();
+  }, []);
 
   useLayoutEffect(() => {
     const preserveReadySource = readyPageUrlRef.current === pageUrl;
@@ -381,12 +415,13 @@ const PageImage = React.forwardRef(({
     }
     if (image !== imgRef.current || image.src !== imgSrc) return;
     setNaturalSize({ width: image.naturalWidth, height: image.naturalHeight });
+    onNaturalSize?.(pageIndex, { width: image.naturalWidth, height: image.naturalHeight });
     if (cropBorders) {
       try { setCropInsets(detectImageBorderInsets(image)); } catch {}
     }
     setLoadState('ready');
     onReady?.(pageIndex);
-  }, [cropBorders, imgSrc, onReady, pageIndex, pageUrl]);
+  }, [cropBorders, imgSrc, onNaturalSize, onReady, pageIndex, pageUrl]);
 
   const handleMountedImageError = useCallback(() => {
     readyPageUrlRef.current = null;
@@ -404,7 +439,10 @@ const PageImage = React.forwardRef(({
     if (!isReady || !image?.complete || !image.naturalWidth) return;
     try { setCropInsets(detectImageBorderInsets(image)); } catch {}
   }, [cropBorders, isReady, imgSrc]);
-  const showSplit = isReady && splitWide && naturalSize.width > naturalSize.height * 1.2;
+  const isWide = isReady && isWidePageSize(naturalSize);
+  const showCrop = isWide && !!cropSide;
+  const showRotate = isWide && rotateWide;
+  const cropFrame = showCrop ? getContainedHalfFrame(naturalSize, shellSize, cropSide) : null;
   const pageShellStyle = isReady ? style : {
     ...style,
     width: '100%',
@@ -414,6 +452,7 @@ const PageImage = React.forwardRef(({
   };
   return (
     <div
+      ref={shellRef}
       className={[className, 'reader-page-image-shell'].filter(Boolean).join(' ')}
       style={{
         ...pageShellStyle,
@@ -431,17 +470,16 @@ const PageImage = React.forwardRef(({
         alt="Comic Content"
         draggable={false}
         loading="eager"
-        fetchPriority="high"
         decoding="async"
         onLoad={handleMountedImageLoad}
         onError={handleMountedImageError}
         onContextMenu={(e) => isImmersive && e.preventDefault()}
         style={{
-          display: showSplit ? 'none' : 'block',
-          width: style?.width || '100%',
-          height: style?.height || '100%',
-          maxWidth: style?.maxWidth,
-          maxHeight: style?.maxHeight,
+          display: cropFrame ? 'none' : 'block',
+          width: showRotate ? 'auto' : (style?.width || '100%'),
+          height: showRotate ? 'auto' : (style?.height || '100%'),
+          maxWidth: showRotate ? `${shellSize.height}px` : style?.maxWidth,
+          maxHeight: showRotate ? `${shellSize.width}px` : style?.maxHeight,
           objectFit: style?.objectFit || 'contain',
           opacity: isReady ? 1 : 0,
           userSelect: 'none',
@@ -450,17 +488,31 @@ const PageImage = React.forwardRef(({
           WebkitUserDrag: 'none',
           MozUserSelect: 'none',
           msUserSelect: 'none',
+          transform: showRotate ? 'rotate(90deg)' : style?.transform,
+          transformOrigin: 'center center',
           ...(cropBorders ? { clipPath: `inset(${cropInsets.top * 100}% ${cropInsets.right * 100}% ${cropInsets.bottom * 100}% ${cropInsets.left * 100}%)` } : {}),
         }}
       />
-      {showSplit && (
-        <div style={{ display: 'flex', width: '100%', height: '100%', gap: 2 }}>
-          {[0, 1].map((part) => (
-            <div key={part} style={{ width: '50%', height: '100%', overflow: 'hidden', position: 'relative' }}>
-              <img src={imgSrc} alt="Comic Content" draggable={false} decoding="async" style={{ position: 'absolute', height: '100%', width: '200%', maxWidth: 'none', objectFit: 'fill', left: part === 0 ? 0 : '-100%', userSelect: 'none' }} />
-            </div>
-          ))}
-        </div>
+      {cropFrame && (
+        <img
+          src={imgSrc}
+          alt="Comic Content"
+          draggable={false}
+          decoding="async"
+          style={{
+            position: 'absolute',
+            top: `${cropFrame.top}px`,
+            left: `${cropFrame.left}px`,
+            width: `${cropFrame.width}px`,
+            height: `${cropFrame.height}px`,
+            maxWidth: 'none',
+            maxHeight: 'none',
+            objectFit: 'fill',
+            clipPath: cropSide === 'left' ? 'inset(0 50% 0 0)' : 'inset(0 0 0 50%)',
+            userSelect: 'none',
+            pointerEvents: isImmersive ? 'none' : 'auto',
+          }}
+        />
       )}
       {!isReady && (loadState === 'error' || showLoadingStatus) && (
         <div
@@ -879,27 +931,60 @@ function getPageNavButtonStyle(isMobile) {
   };
 }
 
-function useCompactReaderToolbar(isMobile) {
+function useReaderToolbarMode(isMobile, layoutKey = null) {
   const toolbarRef = useRef(null);
-  const expandedWidthRef = useRef(0);
-  const [compact, setCompact] = useState(isMobile);
+  const [mode, setMode] = useState(isMobile ? 'mobile' : 'full');
 
   useLayoutEffect(() => {
     const toolbar = toolbarRef.current;
     if (!toolbar) return undefined;
     const update = () => {
       const availableWidth = toolbar.clientWidth;
-      if (!compact) {
-        const left = toolbar.querySelector('.reader-toolbar-group-left');
-        const right = toolbar.querySelector('.reader-toolbar-group-right');
-        const title = toolbar.querySelector('.reader-toolbar-title');
-        const horizontalPadding = 48;
-        const groupGaps = 32;
-        const titleWidth = title ? Math.min(title.scrollWidth, 240) : 0;
-        expandedWidthRef.current = (left?.scrollWidth || 0) + (right?.scrollWidth || 0) + titleWidth + horizontalPadding + groupGaps;
+      const left = toolbar.querySelector('.reader-toolbar-group-left');
+      const right = toolbar.querySelector('.reader-toolbar-group-right');
+      const title = toolbar.querySelector('.reader-toolbar-title');
+      const titleContent = title?.querySelector('.reader-toolbar-title-content');
+      const buttons = (group) => Array.from(group?.querySelectorAll('button, .reader-toolbar-button') || []);
+      const fullGroupWidth = (group, gap) => {
+        const groupButtons = buttons(group);
+        return groupButtons.reduce((sum, button) => {
+          const label = button.querySelector('.reader-toolbar-label');
+          return sum + Math.max(40, (label?.scrollWidth || button.scrollWidth || 0) + 28);
+        }, 0) + Math.max(0, groupButtons.length - 1) * gap;
+      };
+      const leftButtons = buttons(left).length;
+      const rightButtons = buttons(right).length;
+      const leftButtonRects = buttons(left).map((button) => button.getBoundingClientRect());
+      const rightButtonRects = buttons(right).map((button) => button.getBoundingClientRect());
+      const safeTitleWidth = getCenteredToolbarTitleWidth({
+        toolbar: toolbar.getBoundingClientRect(),
+        leftGroup: leftButtonRects.length ? { right: Math.max(...leftButtonRects.map((rect) => rect.right)) } : null,
+        rightGroup: rightButtonRects.length ? { left: Math.min(...rightButtonRects.map((rect) => rect.left)) } : null,
+      });
+      const titleWidthValue = `${safeTitleWidth}px`;
+      if (toolbar.style.getPropertyValue('--reader-toolbar-title-width') !== titleWidthValue) {
+        toolbar.style.setProperty('--reader-toolbar-title-width', titleWidthValue);
       }
-      const requiredWidth = expandedWidthRef.current || availableWidth;
-      setCompact(shouldUseCompactReaderToolbar({ isMobile, availableWidth, requiredWidth }));
+      const titleWidth = titleContent
+        ? Math.max(Math.ceil(titleContent.getBoundingClientRect().width), 80)
+        : 0;
+      const computed = getComputedStyle(toolbar);
+      const horizontalPadding = (Number.parseFloat(computed.paddingLeft) || 0) + (Number.parseFloat(computed.paddingRight) || 0);
+      const groupGaps = 32;
+      const fullLeftWidth = fullGroupWidth(left, 16);
+      const fullRightWidth = fullGroupWidth(right, 8);
+      const iconLeftWidth = (leftButtons * 40) + (Math.max(0, leftButtons - 1) * 6);
+      const iconRightWidth = (rightButtons * 40) + (Math.max(0, rightButtons - 1) * 6);
+      const measured = {
+        full: (Math.max(fullLeftWidth, fullRightWidth) * 2) + titleWidth + horizontalPadding + groupGaps,
+        icons: (Math.max(iconLeftWidth, iconRightWidth) * 2) + titleWidth + horizontalPadding + groupGaps,
+      };
+      setMode(resolveReaderToolbarMode({
+        isMobile,
+        availableWidth,
+        fullRequiredWidth: measured.full || availableWidth,
+        iconRequiredWidth: measured.icons || availableWidth,
+      }));
     };
     update();
     if (typeof ResizeObserver === 'undefined') {
@@ -908,10 +993,12 @@ function useCompactReaderToolbar(isMobile) {
     }
     const observer = new ResizeObserver(update);
     observer.observe(toolbar);
+    toolbar.querySelectorAll('.reader-toolbar-group, .reader-toolbar-title').forEach((node) => observer.observe(node));
+    document.fonts?.ready?.then(update).catch(() => {});
     return () => observer.disconnect();
-  }, [compact, isMobile]);
+  }, [isMobile, layoutKey, mode]);
 
-  return { toolbarRef, compact };
+  return { toolbarRef, mode };
 }
 
 function ReaderToolbarButtonContent({ icon, label, size = 18 }) {
@@ -924,7 +1011,8 @@ function ReaderToolbarButtonContent({ icon, label, size = 18 }) {
 }
 
 function ReaderStageSkeleton({ title = '', hasMeta = false, hasPages = false, isMobile = false }) {
-  const { toolbarRef, compact } = useCompactReaderToolbar(isMobile);
+  const { toolbarRef, mode } = useReaderToolbarMode(isMobile);
+  const compact = mode !== 'full';
   const topBtnStyle = getTopBarButtonStyle(compact);
   const toolbarGroups = getReaderSkeletonToolbarGroups(compact);
   const pageNavBtnStyle = getPageNavButtonStyle(isMobile);
@@ -937,18 +1025,21 @@ function ReaderStageSkeleton({ title = '', hasMeta = false, hasPages = false, is
           className="reader-toolbar"
           data-reader-toolbar
           data-mobile={isMobile ? 'true' : 'false'}
+          data-mode={mode}
           data-compact={compact ? 'true' : 'false'}
           style={{
             padding: '14px 24px',
             background: 'var(--reader-toolbar-bg)',
             backdropFilter: 'blur(16px)',
             borderBottom: '1px solid var(--reader-control-border)',
-            display: 'flex',
-            justifyContent: 'space-between',
+            display: 'grid',
+            gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr)',
+            columnGap: '16px',
             alignItems: 'center',
+            position: 'relative',
           }}
         >
-          <div className="reader-toolbar-group-left" style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '6px' : '16px', flex: '1 0 0', minWidth: 0 }}>
+          <div className="reader-toolbar-group reader-toolbar-group-left" style={{ gridColumn: '1', display: 'flex', alignItems: 'center', gap: isMobile ? '6px' : '16px', minWidth: 0 }}>
             {toolbarGroups.left.map((label, index) => (
               <div
                 key={index}
@@ -969,8 +1060,11 @@ function ReaderStageSkeleton({ title = '', hasMeta = false, hasPages = false, is
             <div
               className="reader-toolbar-title"
               style={{
-                flex: '0 1 auto',
-                maxWidth: '50vw',
+                position: 'absolute',
+                left: '50%',
+                top: '50%',
+                transform: 'translate(-50%, -50%)',
+                width: 'min(var(--reader-toolbar-title-width, 240px), calc(100% - 48px))',
                 minWidth: 0,
                 height: '18px',
                 borderRadius: '8px',
@@ -984,11 +1078,13 @@ function ReaderStageSkeleton({ title = '', hasMeta = false, hasPages = false, is
                 fontWeight: 700,
               }}
             >
-              {title || 'loading'}
+              <span className="reader-toolbar-title-content" style={{ display: 'inline-block' }}>
+                {title || 'loading'}
+              </span>
             </div>
           )}
-          {compact && <span style={{ flex: '0 0 0', minWidth: 0 }} />}
-          <div className="reader-toolbar-group-right" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: isMobile ? '6px' : '8px', flex: '1 0 0', minWidth: 0 }}>
+          {compact && <span style={{ minWidth: 0 }} />}
+          <div className="reader-toolbar-group reader-toolbar-group-right" style={{ gridColumn: '3', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: isMobile ? '6px' : '8px', minWidth: 0 }}>
             {toolbarGroups.right.map((label, index) => (
               <div
                 key={index}
@@ -1090,6 +1186,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const coldRestoreRef = useRef(!!readerSnapshot);
   const serverUrlRef = useRef((localStorage.getItem('lrr_server_url') || '').replace(/\/$/, ''));
   const serverInfoRef = useRef(getStoredServerInfo());
+  const containerRef = useRef(null);
   // ===== Core States =====
   const [archive, setArchive] = useState(() => readerSnapshot?.archive || null);
   const [pages, setPages] = useState(() => Array.isArray(readerSnapshot?.pages) ? readerSnapshot.pages : []);
@@ -1097,6 +1194,10 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     const next = readerSnapshot?.currentIndex;
     return typeof next === 'number' && next >= 0 ? next : 0;
   });
+  const [splitPart, setSplitPart] = useState(() => (
+    readerSnapshot?.splitPart === 1 ? 1 : 0
+  ));
+  const [pageSizes, setPageSizes] = useState({});
   const [displayedIndex, setDisplayedIndex] = useState(() => {
     const next = readerSnapshot?.displayedIndex;
     return typeof next === 'number' && next >= 0 ? next : 0;
@@ -1119,6 +1220,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const [showDrawer, setShowDrawer] = useState(false);
   const [showSettingsPanel, setShowSettingsPanel] = useState(false);
   const [showArchivePanel, setShowArchivePanel] = useState(false);
+  const [immersiveControlsSide, setImmersiveControlsSide] = useState(null);
   const [archivePanelType, setArchivePanelType] = useState('history');
   const [randomEntries, setRandomEntries] = useState([]);
   const [randomEntriesLoading, setRandomEntriesLoading] = useState(false);
@@ -1126,6 +1228,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const [coverSetting, setCoverSetting] = useState(false);
   const [coverSetPage, setCoverSetPage] = useState(0);
   const [coverConfirmPage, setCoverConfirmPage] = useState(0);
+  const [progressClearing, setProgressClearing] = useState(false);
+  const [progressNotice, setProgressNotice] = useState('');
   const [drawerPrefetchSet, setDrawerPrefetchSet] = useState(() => new Set());
   const [drawerViewport, setDrawerViewport] = useState({ height: 0, scrollTop: 0, width: 0 });
   const [assetCacheOnly, setAssetCacheOnly] = useState(() => hasSnapshot);
@@ -1133,7 +1237,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const [watchlistEntries, setWatchlistEntries] = useState(() => getWatchlist());
   const [hideRead] = useState(getHideRead);
   const [isMobile, setIsMobile] = useState(() => isReaderMobileViewport(window.innerWidth, 'ontouchstart' in window));
-  const { toolbarRef, compact: toolbarCompact } = useCompactReaderToolbar(isMobile);
+  const { toolbarRef, mode: toolbarMode } = useReaderToolbarMode(isMobile, viewMode);
+  const toolbarCompact = toolbarMode !== 'full';
   const isIosWebKit = useMemo(() => isIosWebKitPlatform(
     navigator.userAgent,
     navigator.platform,
@@ -1204,6 +1309,29 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     return { ...DEFAULT_READER_SETTINGS };
   });
   const [autoWebtoon, setAutoWebtoon] = useState(false);
+  const [autoMangaEligible, setAutoMangaEligible] = useState(false);
+  const [readerContainerWidth, setReaderContainerWidth] = useState(() => window.innerWidth);
+  const [readerContainerHeight, setReaderContainerHeight] = useState(() => window.innerHeight);
+  const effectiveReadingLayout = settings.readingLayout === 'auto'
+    ? resolveAutoReadingLayout({ isWebtoon: autoWebtoon, isManga: autoMangaEligible, containerWidth: readerContainerWidth })
+    : settings.readingLayout;
+  const webtoonActive = effectiveReadingLayout === 'webtoon';
+  const splitWidePages = useMemo(() => {
+    const result = new Set();
+    if (!settings.splitWidePagesEnabled || webtoonActive) return result;
+    for (const [rawIndex, size] of Object.entries(pageSizes)) {
+      if (isWidePageSize(size)) result.add(Number(rawIndex));
+    }
+    return result;
+  }, [pageSizes, settings.splitWidePagesEnabled, webtoonActive]);
+  const readerSpreads = useMemo(() => buildReaderSpreads({
+    pageCount: pages.length,
+    doublePage: effectiveReadingLayout === 'double',
+    splitWidePages,
+    direction: settings.direction,
+  }), [effectiveReadingLayout, pages.length, settings.direction, splitWidePages]);
+  const currentSpreadIndex = findSpreadIndex(readerSpreads, { pageIndex: currentIndex, splitPart });
+  const currentSpread = readerSpreads[Math.max(0, currentSpreadIndex)] || [];
   const snapshotSaveTimerRef = useRef(null);
 
   const [preloadInput, setPreloadInput] = useState(String(settings.preloadCount));
@@ -1211,6 +1339,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const archiveRef = useRef(archive);
   const pagesRef = useRef(pages);
   const currentIndexRefSnapshot = useRef(currentIndex);
+  const splitPartRef = useRef(splitPart);
   const displayedIndexRef = useRef(displayedIndex);
   const viewModeSnapshotRef = useRef(viewMode);
   const pageLoadPhaseRef = useRef(pageLoadPhase);
@@ -1219,6 +1348,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   useEffect(() => { archiveRef.current = archive; }, [archive]);
   useEffect(() => { pagesRef.current = pages; }, [pages]);
   useEffect(() => { currentIndexRefSnapshot.current = currentIndex; }, [currentIndex]);
+  useEffect(() => { splitPartRef.current = splitPart; }, [splitPart]);
   useEffect(() => { displayedIndexRef.current = displayedIndex; }, [displayedIndex]);
   useEffect(() => { viewModeSnapshotRef.current = viewMode; }, [viewMode]);
   useEffect(() => { pageLoadPhaseRef.current = pageLoadPhase; }, [pageLoadPhase]);
@@ -1257,6 +1387,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       archive: archiveRef.current,
       pages: pagesRef.current,
       currentIndex: currentIndexRefSnapshot.current,
+      splitPart: splitPartRef.current,
       displayedIndex: displayedIndexRef.current,
       viewMode: viewModeSnapshotRef.current,
       showHeader,
@@ -1320,12 +1451,34 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     updateSettings(prepareReaderSettingsForArchiveChange);
   }, [archiveId, updateSettings]);
 
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) return undefined;
+    const updateReaderContainerSize = () => {
+      setReaderContainerWidth(container.clientWidth || window.innerWidth);
+      setReaderContainerHeight(container.clientHeight || window.innerHeight);
+    };
+    updateReaderContainerSize();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateReaderContainerSize);
+      return () => window.removeEventListener('resize', updateReaderContainerSize);
+    }
+    const observer = new ResizeObserver(updateReaderContainerSize);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
   useEffect(() => {
-    if (!secondaryContentReady || settings.readingLayout !== 'auto' || pages.length < 2) { setAutoWebtoon(false); return undefined; }
+    if (!secondaryContentReady || settings.readingLayout !== 'auto' || pages.length < 2) {
+      setAutoWebtoon(false);
+      setAutoMangaEligible(false);
+      return undefined;
+    }
     let active = true;
     const detectorImages = new Map();
     (async () => {
       const seams = [];
+      const pageSizeSamples = [];
       const count = Math.min(12, pages.length - 1);
       const loadDetectorImage = async (pageUrl) => {
         const source = await resolvePageImageSource(pageUrl);
@@ -1344,15 +1497,25 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         });
       };
       let previousImage = await loadDetectorImage(pages[0]);
+      pageSizeSamples.push({ width: previousImage.naturalWidth, height: previousImage.naturalHeight });
       for (let index = 0; index < count; index++) {
         if (!active) return;
         const nextImage = await loadDetectorImage(pages[index + 1]);
+        pageSizeSamples.push({ width: nextImage.naturalWidth, height: nextImage.naturalHeight });
         seams.push(compareSeamPixels(await sampleImageSeam(previousImage, 'bottom'), await sampleImageSeam(nextImage, 'top')));
         previousImage = nextImage;
       }
       const result = classifyWebtoonSeams(seams, { minimumValid: pages.length <= 3 ? 1 : 3 });
-      if (active) setAutoWebtoon(result.isWebtoon);
-    })().catch(() => { if (active) setAutoWebtoon(false); });
+      if (active) {
+        setAutoWebtoon(result.isWebtoon);
+        setAutoMangaEligible(classifyMangaPageSizes(pageSizeSamples).isManga);
+      }
+    })().catch(() => {
+      if (active) {
+        setAutoWebtoon(false);
+        setAutoMangaEligible(false);
+      }
+    });
     return () => {
       active = false;
       detectorImages.forEach((reject, image) => {
@@ -1378,7 +1541,15 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         snapshotSaveTimerRef.current = null;
       }
     };
-  }, [archive, pages, currentIndex, displayedIndex, viewMode, zoomScale, panX, panY, saveReaderStateSnapshot]);
+  }, [archive, pages, currentIndex, splitPart, displayedIndex, viewMode, zoomScale, panX, panY, saveReaderStateSnapshot]);
+
+  useEffect(() => {
+    if (splitPart !== 1) return;
+    const stillSplit = currentSpread.some((unit) => (
+      unit.pageIndex === currentIndex && unit.splitPart === 1 && unit.cropSide
+    ));
+    if (!stillSplit) setSplitPart(0);
+  }, [currentIndex, currentSpread, splitPart]);
 
   useEffect(() => {
     if (pages.length === 0) {
@@ -1452,8 +1623,11 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const swipeDidMoveRef = useRef(false);
   const swipeContainerRef = useRef(null);
   const imgCurrRef = useRef(null);
+  const imgCurrSecondRef = useRef(null);
   const imgLeftRef = useRef(null);
+  const imgLeftSecondRef = useRef(null);
   const imgRightRef = useRef(null);
+  const imgRightSecondRef = useRef(null);
   const leftDivRef = useRef(null);
   const rightDivRef = useRef(null);
   const immersiveLoadSeqRef = useRef(0);
@@ -1467,7 +1641,11 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const commitPageTargetRef = useRef(null);
   const viewModeRef = useRef(viewMode);
   const currentIndexRef = useRef(0);
-  const pagesLenRef = useRef(0);
+  const splitPartCurrentRef = useRef(0);
+  const currentSpreadIndexRef = useRef(0);
+  const readerSpreadsRef = useRef([]);
+  const allowProgressRegressionRef = useRef(settings.allowProgressRegression);
+  allowProgressRegressionRef.current = settings.allowProgressRegression;
 
   const scheduleReaderCleanupTimer = useCallback((callback, delay) => {
     const timer = setTimeout(() => {
@@ -1479,30 +1657,31 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   }, []);
 
   const enqueueLrrProgressSync = useCallback((id, page, { keepalive = false } = {}) => {
-    let targetPage = Math.max(0, Number.parseInt(page, 10) || 0);
+    const targetPage = Math.max(0, Number.parseInt(page, 10) || 0);
     if (!id || targetPage <= 0) return Promise.resolve();
 
     const syncedPage = highestLrrSyncedPageRef.current.get(id) || 0;
     const queuedPage = highestLrrQueuedPageRef.current.get(id) || 0;
-    if (targetPage <= syncedPage) return lrrProgressChainRef.current.get(id) || Promise.resolve();
-    if (targetPage <= queuedPage && !keepalive) {
+    const allowRegression = allowProgressRegressionRef.current;
+    if (!allowRegression && targetPage <= syncedPage) return lrrProgressChainRef.current.get(id) || Promise.resolve();
+    if (targetPage === queuedPage && !keepalive) {
       return lrrProgressChainRef.current.get(id) || Promise.resolve();
     }
-    targetPage = Math.max(targetPage, queuedPage);
 
     highestLrrQueuedPageRef.current.set(id, targetPage);
     const previous = lrrProgressChainRef.current.get(id) || Promise.resolve();
     const next = previous
       .catch(() => {})
       .then(async () => {
+        if ((highestLrrQueuedPageRef.current.get(id) || 0) !== targetPage) return;
         const latestSyncedPage = highestLrrSyncedPageRef.current.get(id) || 0;
-        if (targetPage <= latestSyncedPage) return;
+        if (targetPage === latestSyncedPage) return;
+        if (!allowProgressRegressionRef.current && targetPage < latestSyncedPage) return;
         await lrrApi.updateProgress(id, targetPage, { keepalive });
         highestLrrSyncedPageRef.current.set(id, targetPage);
       })
       .catch(() => {
         if ((highestLrrQueuedPageRef.current.get(id) || 0) === targetPage) {
-          highestLrrQueuedPageRef.current.set(id, highestLrrSyncedPageRef.current.get(id) || 0);
           const oldTimer = lrrProgressRetryTimersRef.current.get(id);
           if (oldTimer) clearTimeout(oldTimer);
           const timer = setTimeout(() => {
@@ -1548,6 +1727,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const zoomTransformFrameRef = useRef(null);
   const zoomTransformAnimatedRef = useRef(false);
   const wheelZoomCommitTimerRef = useRef(null);
+  const webtoonContainerRef = useRef(null);
+  const webtoonScrollRafRef = useRef(null);
   const lastTapRef = useRef(0);
   const lastTapPosRef = useRef({ x: 0, y: 0 });
   const singleTapTimerRef = useRef(null);
@@ -1555,20 +1736,33 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const overshootTimerRef = useRef(null);
   const skipNextClickRef = useRef(false);
   const lastTouchTimeRef = useRef(0);
+  const immersiveControlsTimerRef = useRef(null);
 
   // ===== Pan refs =====
   const panRef = useRef({ x: panX, y: panY, startX: 0, startY: 0, originX: panX, originY: panY });
   const isPanningRef = useRef(false);
 
-  const getImmersiveTopTriggerHeight = useCallback(() => {
-    return isMobile ? 112 : 104;
-  }, [isMobile]);
-
-  const revealImmersiveHeader = useCallback(() => {
-    setShowHeader(true);
-    if (headerTimerRef.current) clearTimeout(headerTimerRef.current);
-    headerTimerRef.current = setTimeout(() => setShowHeader(false), 2600);
+  const hideImmersiveControls = useCallback(() => {
+    if (immersiveControlsTimerRef.current) clearTimeout(immersiveControlsTimerRef.current);
+    immersiveControlsTimerRef.current = null;
+    setImmersiveControlsSide(null);
   }, []);
+
+  const holdImmersiveControls = useCallback((side) => {
+    const nextSide = side === 'left' ? 'left' : 'right';
+    if (immersiveControlsTimerRef.current) clearTimeout(immersiveControlsTimerRef.current);
+    immersiveControlsTimerRef.current = null;
+    setImmersiveControlsSide(nextSide);
+  }, []);
+
+  const revealImmersiveControls = useCallback((side) => {
+    const nextSide = side === 'left' ? 'left' : 'right';
+    holdImmersiveControls(nextSide);
+    immersiveControlsTimerRef.current = setTimeout(() => {
+      immersiveControlsTimerRef.current = null;
+      setImmersiveControlsSide(null);
+    }, 2500);
+  }, [holdImmersiveControls]);
 
   const scheduleZoomTransform = useCallback((animated = false) => {
     zoomTransformAnimatedRef.current = animated;
@@ -1622,25 +1816,25 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   useEffect(() => () => {
     if (zoomTransformFrameRef.current) cancelAnimationFrame(zoomTransformFrameRef.current);
     if (wheelZoomCommitTimerRef.current) clearTimeout(wheelZoomCommitTimerRef.current);
+    if (webtoonScrollRafRef.current) cancelAnimationFrame(webtoonScrollRafRef.current);
   }, []);
 
   // ===== Refs =====
   const autoTurnTimerRef = useRef(null);
-  const headerTimerRef = useRef(null);
   const progressBarRef = useRef(null);
-  const containerRef = useRef(null);
   const indicatorRef = useRef(null);
   const resizeObserverRef = useRef(null);
   const drawerGridRef = useRef(null);
 
   const releaseReaderImageElements = useCallback(() => {
-    [imgLeftRef.current, imgCurrRef.current, imgRightRef.current].forEach((image) => {
+    [imgLeftRef.current, imgLeftSecondRef.current, imgCurrRef.current, imgCurrSecondRef.current, imgRightRef.current, imgRightSecondRef.current].forEach((image) => {
       if (!image) return;
       image.onload = null;
       image.onerror = null;
       image.style.display = 'none';
       image.removeAttribute('src');
       delete image.dataset.pageIndex;
+      delete image.dataset.readerUnit;
     });
   }, []);
 
@@ -1667,20 +1861,55 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
 
   // ===== Immersive image loader (raw img.src via ref — never unmounts) =====
   useLayoutEffect(() => {
-    if (viewMode !== 'immersive' || pages.length === 0) return;
+    if (viewMode !== 'immersive' || webtoonActive || pages.length === 0 || currentSpreadIndex < 0) return;
     const idx = currentIndex;
+    const activeSpreadIndex = currentSpreadIndex;
+    const activeSpread = readerSpreads[activeSpreadIndex] || [];
     const loadSeq = immersiveLoadSeqRef.current + 1;
     immersiveLoadSeqRef.current = loadSeq;
     let alive = true;
+    let resizeObserver = null;
     const key = localStorage.getItem('lrr_api_key') || '';
 
-    const loadImg = async (imgRef, pageUrl, pageIndex, priority, trackNetwork = false) => {
+    const applyUnitStyle = (image, unit) => {
+      const wide = isWidePageSize({ width: image.naturalWidth, height: image.naturalHeight });
+      const cropped = wide && !!unit?.cropSide;
+      const slot = image.parentElement;
+      const slotSize = { width: slot?.clientWidth || 0, height: slot?.clientHeight || 0 };
+      const cropFrame = cropped
+        ? getContainedHalfFrame(
+          { width: image.naturalWidth, height: image.naturalHeight },
+          slotSize,
+          unit.cropSide,
+        )
+        : null;
+      image.style.position = cropped ? 'absolute' : 'static';
+      image.style.top = cropFrame ? `${cropFrame.top}px` : '';
+      image.style.left = cropFrame ? `${cropFrame.left}px` : '';
+      const rotated = !cropped && settings.rotateWidePagesEnabled && wide;
+      image.style.width = cropFrame ? `${cropFrame.width}px` : (rotated ? 'auto' : '100%');
+      image.style.height = cropFrame ? `${cropFrame.height}px` : (rotated ? 'auto' : '100%');
+      image.style.maxWidth = cropped ? 'none' : (rotated ? `${slotSize.height}px` : '100%');
+      image.style.maxHeight = cropped ? 'none' : (rotated ? `${slotSize.width}px` : '100%');
+      image.style.objectFit = cropped ? 'fill' : 'contain';
+      image.style.clipPath = cropped
+        ? (unit.cropSide === 'left' ? 'inset(0 50% 0 0)' : 'inset(0 0 0 50%)')
+        : 'none';
+      image.style.transform = rotated ? 'rotate(90deg)' : 'none';
+      image.style.transformOrigin = 'center center';
+    };
+
+    const loadImg = async (imgRef, unit, priority, trackNetwork = false) => {
+      const pageUrl = unit ? pages[unit.pageIndex] : null;
+      const pageIndex = unit?.pageIndex;
       if (!pageUrl || !imgRef.current) return false;
       try {
         const initialImage = imgRef.current;
-        if (initialImage.dataset.pageIndex !== String(pageIndex)) {
+        const unitKey = `${pageIndex}:${unit.splitPart}`;
+        if (initialImage.dataset.readerUnit !== unitKey) {
           initialImage.style.display = 'none';
           delete initialImage.dataset.pageIndex;
+          delete initialImage.dataset.readerUnit;
         }
         const normalized = toLocalUrl(pageUrl);
         let src;
@@ -1711,6 +1940,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             && image.complete
             && image.naturalWidth > 0;
           if (imageAlreadyReady) {
+            image.dataset.readerUnit = unitKey;
+            applyUnitStyle(image, unit);
             image.style.display = '';
             return true;
           }
@@ -1728,11 +1959,19 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
           if (!alive || loadSeq !== immersiveLoadSeqRef.current || image !== imgRef.current) return false;
           if (!image.naturalWidth || !image.naturalHeight) throw new Error('Image decode failed');
           image.dataset.pageIndex = String(pageIndex);
+          image.dataset.readerUnit = unitKey;
+          setPageSizes((previous) => {
+            const current = previous[pageIndex];
+            if (current?.width === image.naturalWidth && current?.height === image.naturalHeight) return previous;
+            return { ...previous, [pageIndex]: { width: image.naturalWidth, height: image.naturalHeight } };
+          });
+          applyUnitStyle(image, unit);
           image.style.display = '';
         } else {
           imgRef.current.src = '';
           imgRef.current.style.display = 'none';
           delete imgRef.current.dataset.pageIndex;
+          delete imgRef.current.dataset.readerUnit;
         }
         return !!src;
       } catch {
@@ -1744,17 +1983,44 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         imgRef.current.src = '';
         imgRef.current.style.display = 'none';
         delete imgRef.current.dataset.pageIndex;
+        delete imgRef.current.dataset.readerUnit;
       }
     };
 
     const l2r = settings.direction === 'ltr';
-    const prevIdx = l2r ? idx - 1 : idx + 1;
-    const nextIdx = l2r ? idx + 1 : idx - 1;
+    const leftSpreadIndex = activeSpreadIndex + (l2r ? -1 : 1);
+    const rightSpreadIndex = activeSpreadIndex + (l2r ? 1 : -1);
+    const leftSpread = readerSpreads[leftSpreadIndex] || [];
+    const rightSpread = readerSpreads[rightSpreadIndex] || [];
+    const styleEntries = [
+      [imgCurrRef, activeSpread[0]],
+      [imgCurrSecondRef, activeSpread[1]],
+      [imgLeftRef, leftSpread[0]],
+      [imgLeftSecondRef, leftSpread[1]],
+      [imgRightRef, rightSpread[0]],
+      [imgRightSecondRef, rightSpread[1]],
+    ];
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        for (const [ref, unit] of styleEntries) {
+          if (unit && ref.current?.naturalWidth) applyUnitStyle(ref.current, unit);
+        }
+      });
+      for (const [ref] of styleEntries) {
+        if (ref.current?.parentElement) resizeObserver.observe(ref.current.parentElement);
+      }
+    }
+    const loadSpread = async (refs, spread, priority, trackNetwork = false) => {
+      const first = spread[0] ? loadImg(refs[0], spread[0], priority, trackNetwork) : (unloadImg(refs[0]), Promise.resolve(false));
+      const second = spread[1] ? loadImg(refs[1], spread[1], priority) : (unloadImg(refs[1]), Promise.resolve(true));
+      const [firstReady, secondReady] = await Promise.all([first, second]);
+      return firstReady && secondReady;
+    };
 
     setImmersiveNetworkPending(false);
-    loadImg(imgCurrRef, pages[idx], idx, IMAGE_LOAD_PRIORITY.CRITICAL, true).then((ok) => {
+    loadSpread([imgCurrRef, imgCurrSecondRef], activeSpread, IMAGE_LOAD_PRIORITY.CRITICAL, true).then((ok) => {
       if (!alive || loadSeq !== immersiveLoadSeqRef.current) return;
-      if (currentIndexRef.current !== idx) return;
+      if (currentIndexRef.current !== idx || currentSpreadIndexRef.current !== activeSpreadIndex) return;
       if (ok) {
         setDisplayedIndex(idx);
         setLoadingUiArmed(false);
@@ -1763,10 +2029,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             ? prev
             : { status: 'ready', visibleIndex: idx, targetIndex: idx, shownAt: prev.shownAt }
         ));
-        if (prevIdx >= 0 && prevIdx < pages.length) void loadImg(imgLeftRef, pages[prevIdx], prevIdx, IMAGE_LOAD_PRIORITY.ADJACENT);
-        else unloadImg(imgLeftRef);
-        if (nextIdx >= 0 && nextIdx < pages.length) void loadImg(imgRightRef, pages[nextIdx], nextIdx, IMAGE_LOAD_PRIORITY.ADJACENT);
-        else unloadImg(imgRightRef);
+        void loadSpread([imgLeftRef, imgLeftSecondRef], leftSpread, IMAGE_LOAD_PRIORITY.ADJACENT);
+        void loadSpread([imgRightRef, imgRightSecondRef], rightSpread, IMAGE_LOAD_PRIORITY.ADJACENT);
       } else {
         setPageLoadPhase((prev) => (
           idx !== prev.targetIndex
@@ -1777,30 +2041,16 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     });
     return () => {
       alive = false;
+      resizeObserver?.disconnect();
     };
-  }, [assetCacheOnly, viewMode, currentIndex, pages, settings.direction]);
+  }, [assetCacheOnly, currentIndex, currentSpreadIndex, pages, readerSpreads, settings.direction, settings.rotateWidePagesEnabled, viewMode, webtoonActive]);
 
-  // ===== Immersive header auto-hide (only top-zone shows header) =====
+  // ===== Immersive corner controls =====
   useEffect(() => {
-    if (viewMode !== 'immersive') {
-      setShowHeader(true);
-      if (headerTimerRef.current) clearTimeout(headerTimerRef.current);
-      return;
-    }
-
-    const handleMouse = (e) => {
-      if (e.clientY >= getImmersiveTopTriggerHeight()) return;
-      revealImmersiveHeader();
-    };
-
-    setShowHeader(false);
-    window.addEventListener('mousemove', handleMouse, { passive: true });
-
     return () => {
-      window.removeEventListener('mousemove', handleMouse);
-      if (headerTimerRef.current) clearTimeout(headerTimerRef.current);
+      if (immersiveControlsTimerRef.current) clearTimeout(immersiveControlsTimerRef.current);
     };
-  }, [getImmersiveTopTriggerHeight, revealImmersiveHeader, viewMode]);
+  }, [viewMode]);
 
   // ===== Page number visibility with overlap detection =====
   const pageIndicatorVisibilityMode = settings.pageIndicatorVisibilityMode;
@@ -1937,7 +2187,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       window.visualViewport?.removeEventListener('resize', scheduleOverlapCheck);
       window.visualViewport?.removeEventListener('scroll', scheduleOverlapCheck);
     };
-  }, [viewMode, currentIndex, pageIndicatorVisibilityMode, checkIndicatorOverlap]);
+  }, [viewMode, pageIndicatorVisibilityMode, checkIndicatorOverlap]);
 
   // ===== Inject scrollbar-hide CSS =====
   useEffect(() => {
@@ -1946,7 +2196,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     style.innerHTML = `
       .no-scrollbar::-webkit-scrollbar { display: none !important; }
       .no-scrollbar { scrollbar-width: none !important; -ms-overflow-style: none !important; }
-      [data-reader-immersive-stage="true"] { touch-action: none !important; }
+      [data-reader-immersive-stage="true"]:not([data-webtoon="true"]) { touch-action: none !important; }
       .reader-page-enter { transform: translateX(100%); }
       .reader-page-enter-active { transform: translateX(0); transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1); }
       .reader-page-exit { transform: translateX(0); }
@@ -1965,8 +2215,9 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       const serverUrl = serverUrlRef.current;
 
       if (coldRestoreRef.current && readerSnapshot) {
+        const progressWasCleared = hasArchiveProgressMarker(archiveId);
         let restoredArchive = readerSnapshot.archive || null;
-        if (archiveHasNewMarker(restoredArchive)) {
+        if (archiveHasNewMarker(restoredArchive) && !progressWasCleared) {
           try {
             await lrrApi.updateProgress(archiveId, 1);
             highestLrrSyncedPageRef.current.set(archiveId, Math.max(1, highestLrrSyncedPageRef.current.get(archiveId) || 0));
@@ -1981,13 +2232,13 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
           10,
         ) || 0, restoredPages.length);
         const restoredSnapshotProgress = clampProgressPage((readerSnapshot.currentIndex || 0) + 1, restoredPages.length);
-        const restoredHighestPage = Math.max(restoredLrrProgress, restoredLocalProgress, restoredSnapshotProgress);
-        highestLrrSyncedPageRef.current.set(archiveId, Math.max(
-          highestLrrSyncedPageRef.current.get(archiveId) || 0,
-          restoredLrrProgress,
-        ));
+        const restoredCanonicalProgress = allowProgressRegressionRef.current
+          ? (restoredLocalProgress || restoredLrrProgress)
+          : Math.max(restoredLrrProgress, restoredLocalProgress);
+        const restoredHighestPage = progressWasCleared ? 0 : restoredCanonicalProgress;
+        highestLrrSyncedPageRef.current.set(archiveId, progressWasCleared ? 0 : restoredLrrProgress);
         highestObservedPageRef.current.set(archiveId, restoredHighestPage);
-        const restoredIndex = Math.min(
+        const restoredIndex = progressWasCleared ? 0 : Math.min(
           Math.max(0, restoredPages.length - 1),
           Math.max(readerSnapshot.currentIndex || 0, restoredHighestPage - 1),
         );
@@ -2035,7 +2286,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
           archiveRef.current = meta;
           setArchive(meta);
           dispatchRender({ type: 'ready', resource: 'metadata' });
-          if (archiveHasNewMarker(meta)) {
+          if (archiveHasNewMarker(meta) && !hasArchiveProgressMarker(archiveId)) {
             void lrrApi.updateProgress(archiveId, 1).then(() => {
               if (!isActive()) return;
               highestLrrSyncedPageRef.current.set(archiveId, Math.max(1, highestLrrSyncedPageRef.current.get(archiveId) || 0));
@@ -2086,11 +2337,11 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
           getHistory().find((item) => item.id === archiveId)?.page,
           10,
         ) || 0, extractedPages.length);
-        const savedProgress = Math.max(lrrProgress, localProgress);
-        highestLrrSyncedPageRef.current.set(archiveId, Math.max(
-          highestLrrSyncedPageRef.current.get(archiveId) || 0,
-          lrrProgress,
-        ));
+        const progressWasCleared = hasArchiveProgressMarker(archiveId);
+        const savedProgress = progressWasCleared
+          ? 0
+          : (allowProgressRegressionRef.current ? (localProgress || lrrProgress) : Math.max(lrrProgress, localProgress));
+        highestLrrSyncedPageRef.current.set(archiveId, progressWasCleared ? 0 : lrrProgress);
         highestObservedPageRef.current.set(archiveId, savedProgress);
         if (savedProgress > 0 && savedProgress <= extractedPages.length) {
           setCurrentIndex(savedProgress - 1);
@@ -2115,13 +2366,25 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   // ===== 2. Save progress =====
   useEffect(() => {
     if (archive && pages.length > 0) {
-      const page = currentIndex + 1;
+      if (settings.splitWidePagesEnabled && !webtoonActive
+        && currentSpread.some((unit) => !pageSizes[unit.pageIndex])) return undefined;
+      const page = getSpreadProgressPage(currentSpread);
       const archiveId = archive.arcid || archive.id;
+      const progressWasCleared = hasArchiveProgressMarker(archiveId);
+      if (!shouldPersistArchiveReadingProgress(progressWasCleared, page)) {
+        highestObservedPageRef.current.set(archiveId, 0);
+        return undefined;
+      }
+      if (progressWasCleared) clearArchiveProgressMarker(archiveId);
       const observedPage = highestObservedPageRef.current.get(archiveId) || 0;
-      const highestPage = clampProgressPage(Math.max(observedPage, page), pages.length);
+      const highestPage = clampProgressPage(
+        settings.allowProgressRegression ? page : Math.max(observedPage, page),
+        pages.length,
+      );
       highestObservedPageRef.current.set(archiveId, highestPage);
       saveHistory(archive, highestPage, {
         immediateRemote: serverTracksProgress === false,
+        allowRegression: settings.allowProgressRegression,
       }).catch(() => {});
       setHistoryEntries(getHistory());
       const totalPages = Number(archive.pagecount || pages.length) || 0;
@@ -2134,11 +2397,11 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       }
     }
     return undefined;
-  }, [currentIndex, archive, pages, serverTracksProgress, enqueueLrrProgressSync]);
+  }, [archive, currentSpread, enqueueLrrProgressSync, pageSizes, pages, serverTracksProgress, settings.allowProgressRegression, settings.splitWidePagesEnabled, webtoonActive]);
 
   // ===== Pointer down =====
   const handlePointerDown = useCallback((e) => {
-    if (viewMode !== 'immersive') return;
+    if (viewMode !== 'immersive' || webtoonActive) return;
 
     const touches = e.touches;
     const isTouchEvent = !!touches;
@@ -2206,11 +2469,11 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     if (sctr) { sctr.style.transition = 'none'; sctr.style.transform = 'translateX(0px)'; }
     if (leftDivRef.current)  { leftDivRef.current.style.transition = 'none'; leftDivRef.current.style.transform = 'translateX(-100%)'; }
     if (rightDivRef.current) { rightDivRef.current.style.transition = 'none'; rightDivRef.current.style.transform = 'translateX(100%)'; }
-  }, [applyZoomAtPoint, viewMode]);
+  }, [applyZoomAtPoint, viewMode, webtoonActive]);
 
   // ===== Pointer move (RAF-batched — translateX only, zero adjacent manipulation) =====
   const handlePointerMove = useCallback((e) => {
-    if (viewMode !== 'immersive') return;
+    if (viewMode !== 'immersive' || webtoonActive) return;
 
     const touches = e.touches;
     if (touches && touches.length >= 2 && isZoomingRef.current) {
@@ -2249,8 +2512,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     swipeDidMoveRef.current = true;
 
     if (Math.abs(deltaX) > Math.abs(deltaY)) {
-      const curIdx = currentIndexRef.current;
-      const totalPages = pagesLenRef.current;
+      const curIdx = currentSpreadIndexRef.current;
+      const totalPages = readerSpreadsRef.current.length;
       const l2r = settings.direction === 'ltr';
       const atFirst = curIdx === 0;
       const atLast = curIdx >= totalPages - 1;
@@ -2281,10 +2544,11 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         });
       }
     }
-  }, [applyZoomAtPoint, scheduleZoomTransform, settings.direction, viewMode]);
+  }, [applyZoomAtPoint, scheduleZoomTransform, settings.direction, viewMode, webtoonActive]);
 
   // ===== Pointer up =====
   const handlePointerUp = useCallback(() => {
+    if (webtoonActive) return;
     if (isZoomingRef.current) {
       isZoomingRef.current = false;
       pinchStartRef.current.dist = 0;
@@ -2347,13 +2611,19 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     const threshold = Math.max(imgWidth * 0.20, 55);
 
     const l2r = settings.direction === 'ltr';
-    const curIdx = currentIndexRef.current;
-    const totalPages = pagesLenRef.current;
+    const curIdx = currentSpreadIndexRef.current;
+    const totalPages = readerSpreadsRef.current.length;
     const atFirst = curIdx === 0;
     const atLast = curIdx >= totalPages - 1;
     const toPrev = l2r ? (deltaX > 0) : (deltaX < 0);
     const toNext = l2r ? (deltaX < 0) : (deltaX > 0);
-    const nextIdx = toPrev ? Math.max(curIdx - 1, 0) : Math.min(curIdx + 1, totalPages - 1);
+    const spreadDelta = toPrev ? -1 : 1;
+    const targetLocation = getAdjacentSpreadLocation(
+      readerSpreadsRef.current,
+      { pageIndex: currentIndexRef.current, splitPart: splitPartCurrentRef.current },
+      spreadDelta,
+    );
+    const nextIdx = targetLocation?.pageIndex ?? currentIndexRef.current;
 
     const shouldFlip = Math.abs(deltaX) > threshold || velocity > 0.55;
 
@@ -2388,11 +2658,16 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         const currImg = imgCurrRef.current;
         const previewSrc = previewImg?.currentSrc || previewImg?.src || '';
         const targetIndex = nextIdx;
+        const targetSplitPart = targetLocation?.splitPart ?? 0;
+        const targetSpread = readerSpreadsRef.current[curIdx + spreadDelta] || [];
         const canPromotePreview = !!(
+          targetSpread.length === 1 &&
+          !targetSpread[0]?.cropSide &&
           currImg &&
           previewImg &&
           previewSrc &&
           previewImg.dataset.pageIndex === String(targetIndex) &&
+          previewImg.dataset.readerUnit === `${targetIndex}:${targetSplitPart}` &&
           previewImg.style.display !== 'none' &&
           previewImg.complete &&
           previewImg.naturalWidth > 0
@@ -2408,10 +2683,19 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             currImg.src = '';
             currImg.style.display = 'none';
             delete currImg.dataset.pageIndex;
+            delete currImg.dataset.readerUnit;
           }
+        }
+        const currSecondImg = imgCurrSecondRef.current;
+        if (currSecondImg) {
+          currSecondImg.src = '';
+          currSecondImg.style.display = 'none';
+          delete currSecondImg.dataset.pageIndex;
+          delete currSecondImg.dataset.readerUnit;
         }
         flushSync(() => {
           commitPageTargetRef.current?.(targetIndex, {
+            targetSplitPart,
             showIndicator: true,
             assumeVisible: canPromotePreview,
             preserveSwipePosition: true,
@@ -2424,17 +2708,16 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
 
     animReset(0);
     scheduleReaderCleanupTimer(resetAll, 180);
-  }, [applyZoomAtPoint, commitZoomTransform, scheduleReaderCleanupTimer, settings.direction]);
+  }, [applyZoomAtPoint, commitZoomTransform, scheduleReaderCleanupTimer, settings.direction, webtoonActive]);
 
   // ===== Click zones: left 45% / middle 10% / right 45% (top 12% excluded on mobile) =====
   const handleScreenClick = useCallback((e) => {
-    if (viewMode !== 'immersive') return;
+    if (viewMode !== 'immersive' || webtoonActive) return;
     if (skipNextClickRef.current) { skipNextClickRef.current = false; return; }
     if (swipeDidMoveRef.current) { swipeDidMoveRef.current = false; return; }
     if (zoomScaleRef.current !== 1.0) return;
-
-    if (e.clientY < getImmersiveTopTriggerHeight()) {
-      revealImmersiveHeader();
+    if (immersiveControlsSide) {
+      hideImmersiveControls();
       return;
     }
 
@@ -2446,14 +2729,15 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     } else if (x > w * 0.55) {
       settings.direction === 'ltr' ? handleNextRef.current() : handlePrevRef.current();
     }
-  }, [getImmersiveTopTriggerHeight, revealImmersiveHeader, viewMode, settings.direction]);
+  }, [hideImmersiveControls, immersiveControlsSide, viewMode, settings.direction, webtoonActive]);
 
   // ===== Wheel zoom =====
   useEffect(() => {
-    if (viewMode !== 'immersive') return;
+    if (viewMode !== 'immersive' || webtoonActive) return;
     const el = containerRef.current;
     if (!el) return;
     const onWheel = (e) => {
+      if (showDrawer) return;
       if (e.cancelable) e.preventDefault();
       const delta = -e.deltaY * 0.002;
       let s = zoomScaleRef.current + delta;
@@ -2476,9 +2760,9 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         wheelZoomCommitTimerRef.current = null;
       }
     };
-  }, [applyZoomAtPoint, commitZoomTransform, viewMode]);
+  }, [applyZoomAtPoint, commitZoomTransform, showDrawer, viewMode, webtoonActive]);
 
-  const commitPageTarget = useCallback((targetIndex, { resetZoom = true, showIndicator = false, assumeVisible = false, preserveSwipePosition = false } = {}) => {
+  const commitPageTarget = useCallback((targetIndex, { targetSplitPart = 0, resetZoom = true, showIndicator = false, assumeVisible = false, preserveSwipePosition = false } = {}) => {
     if (pages.length === 0) return;
     const bounded = Math.max(0, Math.min(targetIndex, pages.length - 1));
     void exitColdRestoreMode();
@@ -2493,10 +2777,12 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     }
     if (showIndicator && viewMode === 'immersive') {
       showTransientPageIndicator();
+      requestAnimationFrame(() => checkIndicatorOverlap(true));
     }
     if (assumeVisible) {
       setDisplayedIndex(bounded);
     }
+    setSplitPart(targetSplitPart === 1 ? 1 : 0);
     setCurrentIndex(bounded);
     setPageLoadPhase((prev) => ({
       status: assumeVisible || bounded === prev.visibleIndex ? 'ready' : 'loading',
@@ -2505,13 +2791,13 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       shownAt: assumeVisible || bounded === prev.visibleIndex ? prev.shownAt : Date.now(),
     }));
     if (!preserveSwipePosition && swipeContainerRef.current) swipeContainerRef.current.style.transform = 'translateX(0px)';
-  }, [exitColdRestoreMode, pages.length, scheduleZoomTransform, showTransientPageIndicator, viewMode]);
+  }, [checkIndicatorOverlap, exitColdRestoreMode, pages.length, scheduleZoomTransform, showTransientPageIndicator, viewMode]);
   commitPageTargetRef.current = commitPageTarget;
 
   // ===== 3. Auto turn timer =====
   useEffect(() => {
     const pageReady = pageLoadPhase.status === 'ready' && pageLoadPhase.targetIndex === currentIndex;
-    if (settings.autoTurnActive && viewMode === 'immersive' && pageReady) {
+    if (settings.autoTurnActive && viewMode === 'immersive' && !webtoonActive && pageReady) {
       if (progressBarRef.current) {
         progressBarRef.current.style.transition = 'none';
         progressBarRef.current.style.width = '0%';
@@ -2528,20 +2814,54 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       }
     }
     return () => { if (autoTurnTimerRef.current) clearTimeout(autoTurnTimerRef.current); };
-  }, [settings.autoTurnActive, currentIndex, settings.autoTurnInterval, viewMode, pageLoadPhase.status, pageLoadPhase.targetIndex]);
+  }, [settings.autoTurnActive, currentIndex, splitPart, currentSpreadIndex, settings.autoTurnInterval, viewMode, pageLoadPhase.status, pageLoadPhase.targetIndex, webtoonActive]);
 
   // ===== Page flip =====
   const handleNext = useCallback(() => {
-    if (viewMode === 'immersive' && currentIndex >= pages.length - 1) {
+    const target = getAdjacentSpreadLocation(readerSpreads, { pageIndex: currentIndex, splitPart }, 1);
+    if (!target || currentSpreadIndex >= readerSpreads.length - 1) {
+      if (viewMode !== 'immersive') return;
       setViewMode('normal');
       return;
     }
-    commitPageTarget(currentIndex + 1, { showIndicator: viewMode === 'immersive' });
-  }, [commitPageTarget, currentIndex, pages.length, viewMode]);
+    commitPageTarget(target.pageIndex, { targetSplitPart: target.splitPart, showIndicator: viewMode === 'immersive' });
+  }, [commitPageTarget, currentIndex, currentSpreadIndex, readerSpreads, splitPart, viewMode]);
 
   const handlePrev = useCallback(() => {
-    commitPageTarget(currentIndex - 1, { showIndicator: viewMode === 'immersive' });
-  }, [commitPageTarget, currentIndex, viewMode]);
+    const target = getAdjacentSpreadLocation(readerSpreads, { pageIndex: currentIndex, splitPart }, -1);
+    if (!target || currentSpreadIndex <= 0) return;
+    commitPageTarget(target.pageIndex, { targetSplitPart: target.splitPart, showIndicator: viewMode === 'immersive' });
+  }, [commitPageTarget, currentIndex, currentSpreadIndex, readerSpreads, splitPart, viewMode]);
+
+  const handleClearCurrentProgress = useCallback(async () => {
+    if (!archive || progressClearing) return;
+    setProgressClearing(true);
+    setProgressNotice('');
+    try {
+      const id = archive.arcid || archive.id;
+      const retryTimer = lrrProgressRetryTimersRef.current.get(id);
+      if (retryTimer) clearTimeout(retryTimer);
+      lrrProgressRetryTimersRef.current.delete(id);
+      highestLrrQueuedPageRef.current.set(id, 0);
+      await (lrrProgressChainRef.current.get(id) || Promise.resolve()).catch(() => {});
+      const result = await clearConfiguredArchiveReadingProgress(archive);
+      highestObservedPageRef.current.set(id, result.page);
+      highestLrrSyncedPageRef.current.set(id, result.page);
+      highestLrrQueuedPageRef.current.set(id, result.page);
+      setArchive((previous) => {
+        const next = previous ? { ...previous, progress: result.page, page: result.page } : previous;
+        archiveRef.current = next;
+        return next;
+      });
+      setHistoryEntries(getHistory());
+      commitPageTarget(0, { targetSplitPart: 0 });
+      setProgressNotice(result.fallback ? '服务器不支持清零，已回退到第一页。' : '阅读进度已清除，已返回第一页。');
+    } catch (error) {
+      setProgressNotice(`清除阅读进度失败：${error?.message || '未知错误'}`);
+    } finally {
+      setProgressClearing(false);
+    }
+  }, [archive, commitPageTarget, progressClearing]);
 
   const handleNextRef = useRef(handleNext);
   const handlePrevRef = useRef(handlePrev);
@@ -2557,6 +2877,60 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         : { ...prev, status: 'loading' }
     ));
   }, []);
+
+  const handlePageNaturalSize = useCallback((pageIndex, size) => {
+    if (!Number.isInteger(pageIndex) || !size?.width || !size?.height) return;
+    setPageSizes((previous) => {
+      const current = previous[pageIndex];
+      if (current?.width === size.width && current?.height === size.height) return previous;
+      return { ...previous, [pageIndex]: size };
+    });
+  }, []);
+
+  const handleWebtoonScroll = useCallback(() => {
+    if (webtoonScrollRafRef.current) return;
+    webtoonScrollRafRef.current = requestAnimationFrame(() => {
+      webtoonScrollRafRef.current = null;
+      const container = webtoonContainerRef.current;
+      if (!container) return;
+      const viewport = container.getBoundingClientRect();
+      const centerY = viewport.top + viewport.height / 2;
+      let bestIndex = -1;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      container.querySelectorAll('[data-webtoon-page]').forEach((element) => {
+        const rect = element.getBoundingClientRect();
+        if (rect.bottom <= viewport.top || rect.top >= viewport.bottom) return;
+        const distance = Math.abs((rect.top + rect.bottom) / 2 - centerY);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIndex = Number.parseInt(element.dataset.webtoonPage, 10);
+        }
+      });
+      if (!Number.isInteger(bestIndex) || bestIndex < 0 || bestIndex === currentIndexRef.current) return;
+      currentIndexRef.current = bestIndex;
+      setSplitPart(0);
+      setCurrentIndex(bestIndex);
+      setDisplayedIndex(bestIndex);
+      setPageLoadPhase((previous) => ({
+        status: 'ready',
+        visibleIndex: bestIndex,
+        targetIndex: bestIndex,
+        shownAt: previous.shownAt,
+      }));
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!webtoonActive) return undefined;
+    const frame = requestAnimationFrame(() => {
+      const container = webtoonContainerRef.current;
+      const target = container?.querySelector(`[data-webtoon-page="${currentIndexRef.current}"]`);
+      if (!container || !target) return;
+      container.scrollTop = Math.max(0, target.offsetTop - (container.clientHeight - target.clientHeight) / 2);
+      handleWebtoonScroll();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [handleWebtoonScroll, viewMode, webtoonActive]);
 
   const handlePageVisualReady = useCallback((pageIndex) => {
     if (typeof pageIndex !== 'number') return;
@@ -2630,15 +3004,17 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       if (archive && pages.length > 0) {
         const highestPage = clampProgressPage(Math.max(
           highestObservedPageRef.current.get(archiveId) || 0,
-          currentIndex + 1,
+          getSpreadProgressPage(currentSpread),
         ), pages.length);
-        saveHistory(archive, highestPage).then(() => flushHistorySync()).catch(() => {});
-        if (serverTracksProgress) enqueueLrrProgressSync(archiveId, highestPage);
-        setHistoryEntries(getHistory());
+        if (shouldPersistArchiveReadingProgress(hasArchiveProgressMarker(archiveId), highestPage)) {
+          saveHistory(archive, highestPage).then(() => flushHistorySync()).catch(() => {});
+          if (serverTracksProgress) enqueueLrrProgressSync(archiveId, highestPage);
+          setHistoryEntries(getHistory());
+        }
       }
       onBack();
     }
-  }, [archive, archiveId, currentIndex, enqueueLrrProgressSync, onBack, pages.length, serverTracksProgress, viewMode]);
+  }, [archive, archiveId, currentSpread, enqueueLrrProgressSync, onBack, pages.length, serverTracksProgress, viewMode]);
 
   // ===== Preload indices =====
   const getPreloadIndices = () => {
@@ -2666,7 +3042,6 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   })();
   const groupedTags = useMemo(() => categorizeTags(currentTags), [archive?.tags]);
   const archiveSizeLabel = formatArchiveSize(archive?.size ?? archive?.filesize ?? archive?.file_size);
-  const archivePageCount = Number(archive?.pagecount) || pages.length;
 
   const historyList = useMemo(() => {
     return hideRead ? historyEntries.filter(h => !(h.total > 0 && h.page >= h.total)) : historyEntries;
@@ -2710,19 +3085,18 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   }, [viewMode]);
 
   const drawerGridWidth = Math.max(0, drawerViewport.width || (isMobile ? 0 : 372));
-  const drawerItemWidth = getDrawerItemWidth(drawerGridWidth);
-  const drawerRowHeight = getDrawerRowHeight(drawerGridWidth);
+  const drawerRowStride = getDrawerRowStride(drawerGridWidth);
   const drawerTotalRows = Math.ceil(pages.length / DRAWER_COLUMNS);
-  const drawerVisibleStartRow = Math.max(0, Math.floor((drawerViewport.scrollTop / Math.max(drawerRowHeight, 1))) - DRAWER_OVERSCAN_ROWS);
+  const drawerVisibleStartRow = Math.max(0, Math.floor((drawerViewport.scrollTop / Math.max(drawerRowStride, 1))) - DRAWER_OVERSCAN_ROWS);
   const drawerVisibleEndRow = Math.min(
     drawerTotalRows,
-    Math.ceil(((drawerViewport.scrollTop + drawerViewport.height) / Math.max(drawerRowHeight, 1))) + DRAWER_OVERSCAN_ROWS,
+    Math.ceil(((drawerViewport.scrollTop + drawerViewport.height) / Math.max(drawerRowStride, 1))) + DRAWER_OVERSCAN_ROWS,
   );
   const drawerSliceStart = drawerVisibleStartRow * DRAWER_COLUMNS;
   const drawerSliceEnd = Math.min(pages.length, Math.max(drawerSliceStart, drawerVisibleEndRow * DRAWER_COLUMNS));
   const drawerVisiblePages = pages.slice(drawerSliceStart, drawerSliceEnd);
-  const drawerTopSpacer = drawerVisibleStartRow * drawerRowHeight;
-  const drawerBottomSpacer = Math.max(0, (drawerTotalRows - drawerVisibleEndRow) * drawerRowHeight);
+  const drawerTopSpacer = drawerVisibleStartRow * drawerRowStride;
+  const drawerBottomSpacer = Math.max(0, (drawerTotalRows - drawerVisibleEndRow) * drawerRowStride);
 
   useEffect(() => {
     if (!showDrawer || pages.length === 0) {
@@ -2772,20 +3146,21 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     const updateViewport = () => {
       const nextTop = el.scrollTop;
       const nextHeight = el.clientHeight;
-      const nextWidth = Math.round(el.getBoundingClientRect().width);
+      const paddingRight = Number.parseFloat(window.getComputedStyle(el).paddingRight) || 0;
+      const nextWidth = Math.max(0, Math.round(el.clientWidth - paddingRight));
 
       setDrawerViewport((prev) => {
-        const prevRowHeight = getDrawerRowHeight(prev.width || nextWidth);
-        const nextRowHeight = getDrawerRowHeight(nextWidth);
-        const prevStartRow = Math.max(0, Math.floor((prev.scrollTop / Math.max(prevRowHeight, 1))) - DRAWER_OVERSCAN_ROWS);
+        const prevRowStride = getDrawerRowStride(prev.width || nextWidth);
+        const nextRowStride = getDrawerRowStride(nextWidth);
+        const prevStartRow = Math.max(0, Math.floor((prev.scrollTop / Math.max(prevRowStride, 1))) - DRAWER_OVERSCAN_ROWS);
         const prevEndRow = Math.min(
           Math.ceil(pages.length / DRAWER_COLUMNS),
-          Math.ceil(((prev.scrollTop + prev.height) / Math.max(prevRowHeight, 1))) + DRAWER_OVERSCAN_ROWS,
+          Math.ceil(((prev.scrollTop + prev.height) / Math.max(prevRowStride, 1))) + DRAWER_OVERSCAN_ROWS,
         );
-        const nextStartRow = Math.max(0, Math.floor((nextTop / Math.max(nextRowHeight, 1))) - DRAWER_OVERSCAN_ROWS);
+        const nextStartRow = Math.max(0, Math.floor((nextTop / Math.max(nextRowStride, 1))) - DRAWER_OVERSCAN_ROWS);
         const nextEndRow = Math.min(
           Math.ceil(pages.length / DRAWER_COLUMNS),
-          Math.ceil(((nextTop + nextHeight) / Math.max(nextRowHeight, 1))) + DRAWER_OVERSCAN_ROWS,
+          Math.ceil(((nextTop + nextHeight) / Math.max(nextRowStride, 1))) + DRAWER_OVERSCAN_ROWS,
         );
         const next = {
           height: nextHeight,
@@ -2817,21 +3192,22 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   useEffect(() => {
     if (!showDrawer) return;
     const el = drawerGridRef.current;
-    if (!el || drawerRowHeight <= 0) return;
+    if (!el || drawerRowStride <= 0) return;
     const targetRow = Math.max(0, Math.floor(currentIndex / DRAWER_COLUMNS) - 1);
-    const targetTop = targetRow * drawerRowHeight;
+    const targetTop = targetRow * drawerRowStride;
     const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
     const nextTop = Math.max(0, Math.min(targetTop, maxTop));
     if (Math.abs(el.scrollTop - nextTop) > 8) {
       el.scrollTop = nextTop;
-      const nextWidth = Math.round(el.getBoundingClientRect().width);
+      const paddingRight = Number.parseFloat(window.getComputedStyle(el).paddingRight) || 0;
+      const nextWidth = Math.max(0, Math.round(el.clientWidth - paddingRight));
       setDrawerViewport((prev) => (
         prev.scrollTop === nextTop && prev.height === el.clientHeight && prev.width === nextWidth
           ? prev
           : { ...prev, scrollTop: nextTop, height: el.clientHeight, width: nextWidth }
       ));
     }
-  }, [currentIndex, drawerRowHeight, showDrawer]);
+  }, [currentIndex, drawerRowStride, showDrawer]);
 
   useEffect(() => {
     if (!canRenderPage) return undefined;
@@ -2879,24 +3255,76 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const isLTR = settings.direction === 'ltr';
   const leftAction = isLTR ? handlePrev : handleNext;
   const rightAction = isLTR ? handleNext : handlePrev;
-  const leftDisabled = !canNavigate || (isLTR ? currentIndex === 0 : currentIndex === pages.length - 1);
-  const rightDisabled = !canNavigate || (isLTR ? currentIndex === pages.length - 1 : currentIndex === 0);
+  const atFirstSpread = currentSpreadIndex <= 0;
+  const atLastSpread = currentSpreadIndex >= readerSpreads.length - 1;
+  const leftDisabled = !canNavigate || (isLTR ? atFirstSpread : atLastSpread);
+  const rightDisabled = !canNavigate || (isLTR ? atLastSpread : atFirstSpread);
 
   const btnBase = getTopBarButtonStyle(toolbarCompact);
 
   const navBtnBase = getPageNavButtonStyle(isMobile);
-  const normalReaderFrameStyle = getNormalReaderFrameStyle(isMobile);
-  const webtoonActive = settings.readingLayout === 'webtoon' || (settings.readingLayout === 'auto' && autoWebtoon);
+  const normalReaderFrameStyle = {
+    ...getNormalReaderFrameStyle(isMobile),
+    maxWidth: effectiveReadingLayout === 'double' ? '1300px' : '850px',
+  };
   const scaleStyle = settings.scaleMode === 'fit-width' ? { width: '100%', height: 'auto', objectFit: 'contain' }
     : settings.scaleMode === 'fit-height' ? { width: 'auto', height: '100%', objectFit: 'contain' }
       : settings.scaleMode === 'original' ? { width: 'auto', height: 'auto', maxWidth: 'none', maxHeight: 'none', objectFit: 'none' }
         : { width: '100%', height: '100%', objectFit: 'contain' };
-  const transformStyle = settings.rotateWidePagesEnabled ? { transform: 'rotate(90deg) scale(.82)' } : {};
   const normalTargetIndex = Math.max(0, Math.min(currentIndex, Math.max(pages.length - 1, 0)));
   const targetPending = pages.length > 0 && currentIndex !== displayedIndex;
   const loadingUiVisible = targetPending && pageLoadPhase.status === 'loading' && loadingUiArmed;
   const immersivePagePending = viewMode === 'immersive' && loadingUiVisible;
-  const normalDisplayIndex = normalTargetIndex;
+  const spreadPageNumbers = [...new Set(currentSpread.map((unit) => unit.pageIndex + 1))].sort((a, b) => a - b);
+  const normalPageLabel = currentSpread.some((unit) => unit.cropSide)
+    ? `${normalTargetIndex + 1}（${splitPart + 1}/2） / ${pages.length}`
+    : `${spreadPageNumbers.join('–') || normalTargetIndex + 1} / ${pages.length}`;
+  const immersiveLeftSpread = readerSpreads[currentSpreadIndex + (isLTR ? -1 : 1)] || [];
+  const immersiveRightSpread = readerSpreads[currentSpreadIndex + (isLTR ? 1 : -1)] || [];
+  const immersiveDoublePageGap = Math.min(6, Math.max(0, Number(settings.doublePageGap) || 0));
+  const getImmersiveUnitRatio = (unit) => {
+    const size = pageSizes[unit?.pageIndex];
+    const width = Math.max(1, Number(size?.width) || 1);
+    const height = Math.max(1, Number(size?.height) || 1);
+    if (unit?.cropSide) return (width / 2) / height;
+    return settings.rotateWidePagesEnabled && isWidePageSize(size) ? height / width : width / height;
+  };
+  const getImmersiveSpreadGeometryFor = (spread) => getImmersiveSpreadGeometry({
+    viewportWidth: readerContainerWidth,
+    viewportHeight: readerContainerHeight,
+    gap: immersiveDoublePageGap,
+    ratios: spread.map(getImmersiveUnitRatio),
+  });
+  const immersiveSlotStyle = {
+    flex: '0 0 auto',
+    height: '100%',
+    position: 'relative',
+    overflow: 'hidden',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+  };
+  const getImmersiveSpreadSlotStyle = (spread, slotIndex) => {
+    const geometry = getImmersiveSpreadGeometryFor(spread);
+    return {
+    ...immersiveSlotStyle,
+    width: `${geometry.pageWidths[slotIndex] || 0}px`,
+    justifyContent: 'center',
+    boxSizing: 'border-box',
+    };
+  };
+  const getImmersiveSpreadGroupStyle = (spread) => {
+    const geometry = getImmersiveSpreadGeometryFor(spread);
+    return {
+      width: `${geometry.width}px`,
+      height: `${geometry.height}px`,
+      display: 'flex',
+      gap: `${geometry.gap}px`,
+      justifyContent: 'center',
+      alignItems: 'center',
+      flex: '0 0 auto',
+    };
+  };
   const pageIndicatorShouldRender = pageIndicatorVisibilityMode !== 'hidden';
   const pageIndicatorShouldShow = zoomScale === 1.0 && (
     pageIndicatorVisibilityMode === 'pinned' ||
@@ -2904,7 +3332,9 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   );
   // Keep swipe-related refs in sync (closure-free access for handlePointerMove/Up)
   currentIndexRef.current = currentIndex;
-  pagesLenRef.current = pages.length;
+  splitPartCurrentRef.current = splitPart;
+  currentSpreadIndexRef.current = Math.max(0, currentSpreadIndex);
+  readerSpreadsRef.current = readerSpreads;
 
   return (
     <div
@@ -2920,30 +3350,31 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       <div
         style={viewMode === 'normal'
           ? { display: 'flex', flexDirection: 'column', position: 'relative', touchAction: 'manipulation' }
-          : { height: '100dvh', display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative', touchAction: 'none' }}
+          : { height: '100dvh', display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative', touchAction: webtoonActive ? 'pan-y' : 'none' }}
       >
         {/* ===== Top Bar ===== */}
+        {viewMode === 'normal' && (
         <div
           ref={toolbarRef}
           className="reader-toolbar"
           data-reader-toolbar
           data-mobile={isMobile ? 'true' : 'false'}
+          data-mode={toolbarMode}
           data-compact={toolbarCompact ? 'true' : 'false'}
           style={{
             padding: '14px 24px',
             background: 'var(--reader-toolbar-bg)',
             backdropFilter: 'blur(16px)',
             borderBottom: '1px solid var(--reader-control-border)',
-            display: 'flex',
-            justifyContent: 'space-between',
+            display: 'grid',
+            gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr)',
+            columnGap: '16px',
             alignItems: 'center',
-            position: viewMode === 'immersive' ? 'absolute' : 'relative',
+            position: 'sticky',
             top: 0, left: 0, right: 0, zIndex: 100,
-            transform: viewMode === 'immersive' && !showHeader ? 'translateY(-100%)' : 'translateY(0)',
-            transition: 'transform 0.3s cubic-bezier(0.25, 1, 0.5, 1)',
           }}
         >
-          <div className="reader-toolbar-group reader-toolbar-group-left" style={{ display: 'flex', alignItems: 'center', gap: toolbarCompact ? '6px' : '16px', flex: '1 0 0', minWidth: 0 }}>
+          <div className="reader-toolbar-group reader-toolbar-group-left" style={{ gridColumn: '1', display: 'flex', alignItems: 'center', gap: toolbarCompact ? '6px' : '16px', minWidth: 0 }}>
             <button className="reader-toolbar-button" style={btnBase} onClick={handleGoBack} title="返回" aria-label="返回">
               <ReaderToolbarButtonContent icon="back" label="返回" size={20} />
             </button>
@@ -2962,36 +3393,42 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             )}
           </div>
 
-          {!toolbarCompact && (
+          {toolbarMode !== 'mobile' && (
             <span
+              lang={getContentLanguage(archive?.title)}
               className="reader-toolbar-title"
               style={{
+                position: 'absolute',
+                left: '50%',
+                top: '50%',
+                transform: 'translate(-50%, -50%)',
                 fontSize: '15px',
                 fontWeight: 'bold',
                 textAlign: 'center',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
-                flex: '0 1 auto',
-                maxWidth: '50vw',
+                width: 'min(var(--reader-toolbar-title-width, 240px), calc(100% - 48px))',
                 minWidth: 0,
               }}
             >
-              {canShowMetadata ? archive?.title : (
-                <span
-                  className={renderState.metadata.status === 'error' ? 'reader-slot-error' : 'reader-title-skeleton reader-shell-pulse'}
-                  role="status"
-                  aria-live="polite"
-                >
-                  {renderState.metadata.status === 'error' ? '元数据加载失败' : '正在加载元数据…'}
-                </span>
-              )}
+              <span className="reader-toolbar-title-content" style={{ display: 'inline-block' }}>
+                {canShowMetadata ? archive?.title : (
+                  <span
+                    className={renderState.metadata.status === 'error' ? 'reader-slot-error' : 'reader-title-skeleton reader-shell-pulse'}
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {renderState.metadata.status === 'error' ? '元数据加载失败' : '正在加载元数据…'}
+                  </span>
+                )}
+              </span>
             </span>
           )}
-          {toolbarCompact && <span style={{ flex: '0 0 0', minWidth: 0 }} />}
+          {toolbarMode === 'mobile' && <span style={{ minWidth: 0 }} />}
 
-          <div className="reader-toolbar-group reader-toolbar-group-right" style={{ display: 'flex', alignItems: 'center', gap: toolbarCompact ? '6px' : '8px', flex: '1 0 0', justifyContent: 'flex-end', minWidth: 0 }}>
-            {viewMode === 'immersive' && (
+          <div className="reader-toolbar-group reader-toolbar-group-right" style={{ gridColumn: '3', display: 'flex', alignItems: 'center', gap: toolbarCompact ? '6px' : '8px', justifyContent: 'flex-end', minWidth: 0 }}>
+            {viewMode === 'immersive' && !webtoonActive && (
               <button className="reader-toolbar-button" style={btnBase} onClick={() => updateSettings((s) => ({ ...s, autoTurnActive: !s.autoTurnActive }))} title={settings.autoTurnActive ? '停止翻页' : '自动翻页'} aria-label={settings.autoTurnActive ? '停止翻页' : '自动翻页'}>
                 <ReaderToolbarButtonContent
                   icon={settings.autoTurnActive ? 'pause' : 'play'}
@@ -3040,6 +3477,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             </button>
           </div>
         </div>
+        )}
 
         {/* ===== Settings Panel ===== */}
         {showSettingsPanel && (
@@ -3081,7 +3519,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                   </label>
                   <label style={{ fontSize: '12px', color: 'var(--text-sub)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
                     <span>阅读布局</span>
-                    <div style={{ width: '135px' }}><CustomSelect value={settings.readingLayout} options={[{ label: '单页', value: 'single' }, { label: '双页', value: 'double' }, { label: 'Webtoon', value: 'webtoon' }, { label: '自动检测', value: 'auto' }]} onChange={(v) => updateSettings((s) => ({ ...s, readingLayout: v }))} compact /></div>
+                    <div style={{ width: '135px' }}><CustomSelect value={settings.readingLayout} options={[{ label: '单页', value: 'single' }, { label: '双页', value: 'double' }, { label: '滚动', value: 'webtoon' }, { label: '自动检测', value: 'auto' }]} onChange={(v) => updateSettings((s) => ({ ...s, readingLayout: v }))} compact /></div>
                   </label>
                   <label style={{ fontSize: '12px', color: 'var(--text-sub)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
                     <span>缩放模式</span>
@@ -3145,41 +3583,73 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
               className="reader-stage-frame"
               style={{ ...normalReaderFrameStyle, position: 'relative' }}
             >
-              {canRenderPage ? (webtoonActive ? <div style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: settings.webtoonGap, overflow: 'auto' }}>
-                {pages.map((pageUrl, index) => {
-                  const distance = Math.abs(index - currentIndex);
-                  const priority = distance === 0
-                    ? IMAGE_LOAD_PRIORITY.CRITICAL
-                    : (distance === 1 ? IMAGE_LOAD_PRIORITY.ADJACENT : IMAGE_LOAD_PRIORITY.PRELOAD);
-                  return (
-                    <PageImage
-                      key={pageUrl}
-                      pageUrl={pageUrl}
-                      pageIndex={index}
-                      isImmersive={false}
-                      cacheOnly={assetCacheOnly}
-                      priority={priority}
-                      onLoadStart={distance === 0 ? handlePageVisualLoadStart : undefined}
-                      onReady={distance === 0 ? handlePageVisualReady : undefined}
-                      onError={distance === 0 ? handlePageVisualError : undefined}
-                      style={{ width: '100%', height: 'auto', maxWidth: '100%', objectFit: 'contain', borderRadius: 0 }}
-                    />
-                  );
-                })}
-              </div> : <div style={{ width: '100%', height: '100%', display: 'flex', justifyContent: 'center', alignItems: settings.scaleMode === 'original' ? 'flex-start' : 'center', gap: settings.doublePageGap, overflow: settings.scaleMode === 'original' ? 'auto' : 'hidden' }}><PageImage
-                pageUrl={pages[normalDisplayIndex]}
-                pageIndex={normalDisplayIndex}
-                isImmersive={false}
-                cacheOnly={assetCacheOnly}
-                priority={IMAGE_LOAD_PRIORITY.CRITICAL}
-                style={{ ...scaleStyle, ...transformStyle, maxWidth: settings.scaleMode === 'original' ? 'none' : '100%', maxHeight: settings.scaleMode === 'original' ? 'none' : '100%', borderRadius: '8px' }} splitWide={settings.splitWidePagesEnabled} cropBorders={settings.cropBordersEnabled}
-                loadingLabel={`正在加载第 ${normalTargetIndex + 1} 页`}
-                loadingHint="正在请求图像"
-                errorLabel={`第 ${normalTargetIndex + 1} 页加载失败`}
-                onLoadStart={handlePageVisualLoadStart}
-                onReady={handlePageVisualReady}
-                onError={handlePageVisualError}
-              />{settings.doublePageEnabled && pages[normalDisplayIndex + 1] && <PageImage pageUrl={pages[normalDisplayIndex + 1]} pageIndex={normalDisplayIndex + 1} isImmersive={false} cacheOnly={assetCacheOnly} priority={IMAGE_LOAD_PRIORITY.CRITICAL} style={{ ...scaleStyle, maxWidth: '50%', maxHeight: '100%', borderRadius: 8 }} />}</div>) : (
+              {canRenderPage ? (webtoonActive ? (
+                <div
+                  ref={webtoonContainerRef}
+                  className="reader-webtoon-flow"
+                  onScroll={handleWebtoonScroll}
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: settings.webtoonGap,
+                    overflowX: 'hidden',
+                    overflowY: 'auto',
+                    overscrollBehavior: 'contain',
+                    WebkitOverflowScrolling: 'touch',
+                  }}
+                >
+                  {pages.map((pageUrl, index) => {
+                    const distance = Math.abs(index - currentIndex);
+                    const priority = distance === 0
+                      ? IMAGE_LOAD_PRIORITY.CRITICAL
+                      : (distance === 1 ? IMAGE_LOAD_PRIORITY.ADJACENT : IMAGE_LOAD_PRIORITY.PRELOAD);
+                    return (
+                      <div key={pageUrl} data-webtoon-page={index} style={{ width: '100%', flex: '0 0 auto' }}>
+                        <PageImage
+                          pageUrl={pageUrl}
+                          pageIndex={index}
+                          isImmersive={false}
+                          cacheOnly={assetCacheOnly}
+                          priority={priority}
+                          onNaturalSize={handlePageNaturalSize}
+                          onLoadStart={distance === 0 ? handlePageVisualLoadStart : undefined}
+                          onReady={distance === 0 ? handlePageVisualReady : undefined}
+                          onError={distance === 0 ? handlePageVisualError : undefined}
+                          style={{ width: '100%', height: 'auto', maxWidth: '100%', objectFit: 'contain', borderRadius: 0 }}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div style={{ width: '100%', height: '100%', display: 'flex', justifyContent: 'center', alignItems: settings.scaleMode === 'original' ? 'flex-start' : 'center', gap: settings.doublePageGap, overflow: settings.scaleMode === 'original' ? 'auto' : 'hidden' }}>
+                  {currentSpread.map((unit) => (
+                    <div key={`${unit.pageIndex}:${unit.splitPart}`} style={{ flex: '1 1 0', minWidth: 0, height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' }}>
+                      <PageImage
+                        pageUrl={pages[unit.pageIndex]}
+                        pageIndex={unit.pageIndex}
+                        isImmersive={false}
+                        cacheOnly={assetCacheOnly}
+                        priority={IMAGE_LOAD_PRIORITY.CRITICAL}
+                        style={{ ...scaleStyle, width: '100%', height: '100%', maxWidth: '100%', maxHeight: '100%', borderRadius: '8px' }}
+                        cropSide={unit.cropSide}
+                        rotateWide={settings.rotateWidePagesEnabled}
+                        cropBorders={settings.cropBordersEnabled}
+                        onNaturalSize={handlePageNaturalSize}
+                        loadingLabel={`正在加载第 ${unit.pageIndex + 1} 页`}
+                        loadingHint="正在请求图像"
+                        errorLabel={`第 ${unit.pageIndex + 1} 页加载失败`}
+                        onLoadStart={unit.pageIndex === currentIndex ? handlePageVisualLoadStart : undefined}
+                        onReady={unit.pageIndex === currentIndex ? handlePageVisualReady : undefined}
+                        onError={unit.pageIndex === currentIndex ? handlePageVisualError : undefined}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )) : (
                 <ReaderStageSlot
                   status={renderState.manifest.status === 'error' ? 'error' : (renderState.manifest.status === 'ready' ? 'empty' : 'loading')}
                   onRetry={() => setBootstrapRetryToken((token) => token + 1)}
@@ -3187,7 +3657,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
               )}
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '24px', padding: '20px 8px', flexShrink: 0 }}>
+            {!webtoonActive && <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '24px', padding: '20px 8px', flexShrink: 0 }}>
               <button
                 className="reader-page-nav-button"
                 onClick={leftAction}
@@ -3197,7 +3667,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                 ‹
               </button>
               <span style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-sub)', userSelect: 'none', minWidth: '60px', textAlign: 'center' }}>
-                  {canShowPageCount ? `${normalTargetIndex + 1} / ${pages.length}` : '— / —'}
+                  {canShowPageCount ? normalPageLabel : '— / —'}
               </span>
               <button
                 className="reader-page-nav-button"
@@ -3207,35 +3677,119 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
               >
                 ›
               </button>
-            </div>
+            </div>}
           </div>
         ) : (
           // ===== Immersive Mode =====
           <div
             data-reader-immersive-stage="true"
+            data-webtoon={webtoonActive ? 'true' : 'false'}
             style={{
               flex: 1,
               position: 'relative',
               width: '100%',
               height: '100%',
-              overflow: zoomScale === 1.0 ? 'hidden' : 'visible',
+              overflow: webtoonActive ? 'hidden' : (zoomScale === 1.0 ? 'hidden' : 'visible'),
               background: '#000',
               userSelect: 'none',
               WebkitUserSelect: 'none',
               WebkitTouchCallout: 'none',
-              touchAction: zoomScale === 1.0 ? 'none' : 'none',
+              touchAction: webtoonActive ? 'pan-y' : 'none',
               cursor: 'default',
             }}
-            onMouseDown={handlePointerDown}
-            onMouseMove={handlePointerMove}
-            onMouseUp={handlePointerUp}
-            onMouseLeave={handlePointerUp}
-            onTouchStart={handlePointerDown}
-            onTouchMove={handlePointerMove}
-            onTouchEnd={handlePointerUp}
-            onClick={handleScreenClick}
+            onMouseDown={webtoonActive ? undefined : handlePointerDown}
+            onMouseMove={webtoonActive ? undefined : handlePointerMove}
+            onMouseUp={webtoonActive ? undefined : handlePointerUp}
+            onMouseLeave={webtoonActive ? undefined : handlePointerUp}
+            onTouchStart={webtoonActive ? undefined : handlePointerDown}
+            onTouchMove={webtoonActive ? undefined : handlePointerMove}
+            onTouchEnd={webtoonActive ? undefined : handlePointerUp}
+            onClick={webtoonActive ? hideImmersiveControls : handleScreenClick}
           >
-            {settings.autoTurnActive && (
+            <button
+              type="button"
+              className="reader-immersive-trigger reader-immersive-trigger-left"
+              aria-label="显示左侧阅读控制"
+              onPointerEnter={() => revealImmersiveControls('left')}
+              onMouseDown={(event) => event.stopPropagation()}
+              onTouchStart={(event) => event.stopPropagation()}
+              onClick={(event) => { event.stopPropagation(); revealImmersiveControls('left'); }}
+            />
+            <button
+              type="button"
+              className="reader-immersive-trigger reader-immersive-trigger-right"
+              aria-label="显示右侧阅读控制"
+              onPointerEnter={() => revealImmersiveControls('right')}
+              onMouseDown={(event) => event.stopPropagation()}
+              onTouchStart={(event) => event.stopPropagation()}
+              onClick={(event) => { event.stopPropagation(); revealImmersiveControls('right'); }}
+            />
+            {['left', 'right'].map((side) => (
+              <div
+                key={side}
+                className="reader-immersive-controls"
+                data-side={side}
+                data-visible={immersiveControlsSide === side ? 'true' : 'false'}
+                aria-hidden={immersiveControlsSide === side ? 'false' : 'true'}
+                onPointerEnter={() => holdImmersiveControls(side)}
+                onPointerLeave={() => revealImmersiveControls(side)}
+                onFocus={() => holdImmersiveControls(side)}
+                onBlur={() => revealImmersiveControls(side)}
+                onMouseDown={(event) => event.stopPropagation()}
+                onTouchStart={(event) => event.stopPropagation()}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <button type="button" className="reader-immersive-control-button" tabIndex={immersiveControlsSide === side ? 0 : -1} onClick={() => { setViewMode('normal'); hideImmersiveControls(); }} title="退出沉浸模式" aria-label="退出沉浸模式">
+                  <ToolbarGlyph name="close" size={20} />
+                </button>
+                {!webtoonActive && (
+                  <button type="button" className="reader-immersive-control-button" tabIndex={immersiveControlsSide === side ? 0 : -1} onClick={() => { updateSettings((state) => ({ ...state, autoTurnActive: !state.autoTurnActive })); revealImmersiveControls(side); }} title={settings.autoTurnActive ? '停止翻页' : '自动翻页'} aria-label={settings.autoTurnActive ? '停止翻页' : '自动翻页'}>
+                    <ToolbarGlyph name={settings.autoTurnActive ? 'pause' : 'play'} size={20} />
+                  </button>
+                )}
+                <button type="button" className="reader-immersive-control-button" tabIndex={immersiveControlsSide === side ? 0 : -1} disabled={!canNavigate || coverSetting} onClick={() => { if (canNavigate && !coverSetting) handleSetCover(); revealImmersiveControls(side); }} title="设为封面" aria-label="设为封面">
+                  <ToolbarGlyph name="cover" size={20} />
+                </button>
+                <button type="button" className="reader-immersive-control-button" tabIndex={immersiveControlsSide === side ? 0 : -1} disabled={!canNavigate} onClick={() => { if (canNavigate) setShowDrawer(true); hideImmersiveControls(); }} title="缩略面板" aria-label="缩略面板">
+                  <ToolbarGlyph name="grid" size={20} />
+                </button>
+              </div>
+            ))}
+
+            {webtoonActive && (
+              <div
+                ref={webtoonContainerRef}
+                className="reader-webtoon-flow reader-webtoon-flow-immersive"
+                onScroll={handleWebtoonScroll}
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  zIndex: 4,
+                  overflowX: 'hidden',
+                  overflowY: 'auto',
+                  overscrollBehavior: 'contain',
+                  WebkitOverflowScrolling: 'touch',
+                  touchAction: 'pan-y',
+                  background: '#000',
+                }}
+              >
+                {pages.map((pageUrl, index) => (
+                  <div key={pageUrl} data-webtoon-page={index} style={{ width: '100%' }}>
+                    <PageImage
+                      pageUrl={pageUrl}
+                      pageIndex={index}
+                      isImmersive
+                      cacheOnly={assetCacheOnly}
+                      priority={Math.abs(index - currentIndex) <= 1 ? IMAGE_LOAD_PRIORITY.ADJACENT : IMAGE_LOAD_PRIORITY.PRELOAD}
+                      onNaturalSize={handlePageNaturalSize}
+                      style={{ width: '100%', height: 'auto', maxWidth: '100%', objectFit: 'contain', borderRadius: 0 }}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!webtoonActive && settings.autoTurnActive && (
               <div
                 ref={progressBarRef}
                 style={{ position: 'absolute', top: 0, left: 0, height: '2px', background: '#4caf50', width: '0%', zIndex: 120 }}
@@ -3246,34 +3800,31 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
               ref={leftDivRef}
               style={{
                 position: 'absolute', inset: 0,
-                display: 'flex', justifyContent: 'center', alignItems: 'center',
+                display: webtoonActive ? 'none' : 'flex', justifyContent: 'center', alignItems: 'center',
                 background: '#000', zIndex: 1,
                 transform: 'translateX(-100%)',
               }}
             >
-              <img
-                ref={imgLeftRef}
-                alt=""
-                style={{
-                  width: '100%', height: '100%', maxWidth: '100vw', maxHeight: '100vh', objectFit: 'contain',
-                  display: 'none',
-                  userSelect: 'none', WebkitUserSelect: 'none',
-                  pointerEvents: 'none',
-                }}
-                draggable={false}
-              />
+              <div style={getImmersiveSpreadGroupStyle(immersiveLeftSpread)}>
+                <div style={getImmersiveSpreadSlotStyle(immersiveLeftSpread, 0)}>
+                  <img ref={imgLeftRef} alt="" style={{ display: 'none', userSelect: 'none', WebkitUserSelect: 'none', pointerEvents: 'none' }} draggable={false} />
+                </div>
+                <div style={{ ...getImmersiveSpreadSlotStyle(immersiveLeftSpread, 1), display: immersiveLeftSpread[1] ? 'flex' : 'none' }}>
+                  <img ref={imgLeftSecondRef} alt="" style={{ display: 'none', userSelect: 'none', WebkitUserSelect: 'none', pointerEvents: 'none' }} draggable={false} />
+                </div>
+              </div>
             </div>
 
             <div
               ref={rightDivRef}
               style={{
                 position: 'absolute', inset: 0,
-                display: 'flex', justifyContent: 'center', alignItems: 'center',
+                display: webtoonActive ? 'none' : 'flex', justifyContent: 'center', alignItems: 'center',
                 background: '#000', zIndex: 1,
                 transform: 'translateX(100%)',
               }}
             >
-              {currentIndex >= pages.length - 1 ? (
+              {immersiveRightSpread.length === 0 ? (
                 <div style={{
                   display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px',
                   color: 'rgba(255,255,255,0.6)', userSelect: 'none', pointerEvents: 'none',
@@ -3282,17 +3833,14 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                   <span style={{ fontSize: '16px', letterSpacing: '2px' }}>继续滑动退出沉浸模式</span>
                 </div>
               ) : (
-                <img
-                  ref={imgRightRef}
-                  alt=""
-                  style={{
-                    width: '100%', height: '100%', maxWidth: '100vw', maxHeight: '100vh', objectFit: 'contain',
-                    display: 'none',
-                    userSelect: 'none', WebkitUserSelect: 'none',
-                    pointerEvents: 'none',
-                  }}
-                  draggable={false}
-                />
+                <div style={getImmersiveSpreadGroupStyle(immersiveRightSpread)}>
+                  <div style={getImmersiveSpreadSlotStyle(immersiveRightSpread, 0)}>
+                    <img ref={imgRightRef} alt="" style={{ display: 'none', userSelect: 'none', WebkitUserSelect: 'none', pointerEvents: 'none' }} draggable={false} />
+                  </div>
+                  <div style={{ ...getImmersiveSpreadSlotStyle(immersiveRightSpread, 1), display: immersiveRightSpread[1] ? 'flex' : 'none' }}>
+                    <img ref={imgRightSecondRef} alt="" style={{ display: 'none', userSelect: 'none', WebkitUserSelect: 'none', pointerEvents: 'none' }} draggable={false} />
+                  </div>
+                </div>
               )}
             </div>
 
@@ -3300,7 +3848,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
               ref={swipeContainerRef}
               style={{
                 position: 'absolute', inset: 0,
-                display: 'flex', justifyContent: 'center', alignItems: 'center',
+                display: webtoonActive ? 'none' : 'flex', justifyContent: 'center', alignItems: 'center',
                 zIndex: 2,
                 transform: 'translateX(0px)',
                 willChange: 'transform',
@@ -3336,7 +3884,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
               <div
                 ref={zoomWrapperRef}
                 style={{
-                  width: '100%', height: '100%',
+                  ...getImmersiveSpreadGroupStyle(currentSpread),
                   display: 'flex', justifyContent: 'center', alignItems: 'center',
                   transform: `translate3d(${panX}px, ${panY}px, 0) scale(${zoomScale})`,
                   transformOrigin: 'center center',
@@ -3344,22 +3892,28 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                   willChange: zoomScale > 1 ? 'transform' : 'auto',
                 }}
               >
-                <img
-                  ref={imgCurrRef}
-                  alt=""
-                  style={{
-                    width: '100%', height: '100%', maxWidth: '100vw', maxHeight: '100vh', objectFit: 'contain',
-                    display: 'none',
-                    userSelect: 'none', WebkitUserSelect: 'none',
-                    pointerEvents: 'none',
-                  }}
-                  draggable={false}
-                  onContextMenu={(e) => e.preventDefault()}
-                />
+                <div style={getImmersiveSpreadSlotStyle(currentSpread, 0)}>
+                  <img
+                    ref={imgCurrRef}
+                    alt=""
+                    style={{ display: 'none', userSelect: 'none', WebkitUserSelect: 'none', pointerEvents: 'none' }}
+                    draggable={false}
+                    onContextMenu={(e) => e.preventDefault()}
+                  />
+                </div>
+                <div style={{ ...getImmersiveSpreadSlotStyle(currentSpread, 1), display: currentSpread[1] ? 'flex' : 'none' }}>
+                  <img
+                    ref={imgCurrSecondRef}
+                    alt=""
+                    style={{ display: 'none', userSelect: 'none', WebkitUserSelect: 'none', pointerEvents: 'none' }}
+                    draggable={false}
+                    onContextMenu={(e) => e.preventDefault()}
+                  />
+                </div>
               </div>
             </div>
 
-            {pageIndicatorShouldRender && (
+            {!webtoonActive && pageIndicatorShouldRender && (
               <div
                 ref={indicatorRef}
                 style={{
@@ -3386,7 +3940,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                   transition: 'opacity 0.28s ease, transform 0.32s cubic-bezier(0.22,1,0.36,1), bottom 0.28s cubic-bezier(0.22,1,0.36,1)',
                 }}
               >
-                {displayedIndex + 1} / {pages.length}
+                {normalPageLabel}
               </div>
             )}
           </div>
@@ -3424,6 +3978,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
           transition: 'background 0.25s ease, backdrop-filter 0.25s ease, -webkit-backdrop-filter 0.25s ease',
         }}
         onClick={() => setShowDrawer(false)}
+        onWheel={(event) => event.stopPropagation()}
       >
         <div
           className="reader-panel-surface"
@@ -3434,12 +3989,18 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             transition: 'transform 0.3s cubic-bezier(0.4,0,0.2,1)',
           }}
           onClick={(e) => e.stopPropagation()}
+          onWheel={(event) => event.stopPropagation()}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid var(--reader-control-border)', paddingBottom: '12px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0 }}>
               <h3 style={{ margin: 0, fontSize: '18px' }}>归档信息</h3>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              {hasArchiveReadingProgress(archive, historyEntries.find((item) => item.id === archiveId)?.page) && (
+                <button className="reader-drawer-icon-button" disabled={progressClearing} onClick={handleClearCurrentProgress} title="清除阅读进度" aria-label="清除阅读进度">
+                  <ToolbarGlyph name="resetProgress" size={18} />
+                </button>
+              )}
               <button className="reader-drawer-icon-button" onClick={() => navigateToMetadata(archiveId)} title="编辑元数据" aria-label="编辑元数据">
                 <ToolbarGlyph name="metadata" size={18} />
               </button>
@@ -3449,9 +4010,11 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             </div>
           </div>
 
+          {progressNotice && <div role="status" aria-live="polite" style={{ margin: '-10px 0 12px', color: progressNotice.startsWith('清除阅读进度失败') ? 'var(--danger)' : 'var(--text-sub)', fontSize: '12px', textAlign: 'center' }}>{progressNotice}</div>}
+
           <div style={{ marginBottom: '20px', background: 'var(--surface-2)', borderRadius: '8px', display: 'flex', flexDirection: 'column', maxHeight: '35%', flexShrink: 0 }}>
             <div style={{ padding: '14px 14px 0 14px' }}>
-              <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-main)', marginBottom: '14px', lineHeight: 1.4, wordBreak: 'break-word' }}>
+              <div lang={getContentLanguage(archive?.title)} style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-main)', marginBottom: '14px', lineHeight: 1.4, wordBreak: 'break-word' }}>
                 {archive?.title}
               </div>
             </div>
@@ -3516,14 +4079,11 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                 </div>
               ));
             })()}
-            <div className="reader-archive-summary" style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--reader-control-border)', color: 'var(--text-sub)', fontSize: '11px', fontVariantNumeric: 'tabular-nums' }}>
-              {[archiveSizeLabel, archivePageCount > 0 ? `${archivePageCount.toLocaleString()} 页` : ''].filter(Boolean).join(' · ')}
-            </div>
             </div>
           </div>
 
           <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--text-sub)' }}>
-            页面总览 · 共{pages.length}页
+            页面总览 · 共{pages.length}页{archiveSizeLabel ? ` · ${archiveSizeLabel}` : ''}
           </h4>
           <div style={{ flex: 1, minHeight: 0 }}>
             <div
@@ -3536,6 +4096,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                 paddingRight: isMobile ? '14px' : '12px',
                 WebkitOverflowScrolling: 'touch',
                 overscrollBehavior: 'contain',
+                overflowAnchor: 'none',
                 touchAction: 'pan-y',
                 scrollbarGutter: 'stable',
               }}

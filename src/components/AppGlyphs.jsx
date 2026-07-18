@@ -201,8 +201,17 @@ function renderToolbarGlyph(name) {
   switch (name) {
     case 'back':
       return <path d="M19 12H5M12 19l-7-7 7-7" />;
+    case 'close':
+      return <path d="M6 6l12 12M18 6 6 18" />;
     case 'history':
       return <path d="M12 8v4l3 3M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />;
+    case 'resetProgress':
+      return (
+        <>
+          <path d="M5 8V4.5L2.75 6.75A8.25 8.25 0 1 0 5.1 17.9" />
+          <path d="M5 4.5H1.5M8.5 9.25l7 5.5M15.5 9.25l-7 5.5" />
+        </>
+      );
     case 'quickJump':
       return (
         <>

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
+import { hasArchiveReadingProgress } from '../lib/archiveProgress';
 
 function clampMenuPosition(x, y, height = 178) {
   const width = 150;
@@ -23,11 +24,12 @@ function MenuButton({ children, danger = false, onClick }) {
   );
 }
 
-export default function ArchiveContextMenu({ menu, onClose, onRead, onEditMetadata, onDownload, onDelete, onCopyLink, onRemoveHistory, onAddWatchlist, onRemoveWatchlist }) {
+export default function ArchiveContextMenu({ menu, onClose, onRead, onClearProgress, onEditMetadata, onDownload, onDelete, onCopyLink, onRemoveHistory, onAddWatchlist, onRemoveWatchlist }) {
   const showRemoveHistory = !!menu?.showRemoveHistory && !!onRemoveHistory;
   const showRemoveWatchlist = !!menu?.showRemoveWatchlist && !!onRemoveWatchlist;
   const showAddWatchlist = !showRemoveWatchlist && !!onAddWatchlist;
-  const extraRows = (showRemoveHistory ? 1 : 0) + (showRemoveWatchlist || showAddWatchlist ? 1 : 0) + (onDelete ? 1 : 0) + (onEditMetadata ? 1 : 0);
+  const showClearProgress = !!onClearProgress && hasArchiveReadingProgress(menu?.archive);
+  const extraRows = (showRemoveHistory ? 1 : 0) + (showRemoveWatchlist || showAddWatchlist ? 1 : 0) + (onDelete ? 1 : 0) + (onEditMetadata ? 1 : 0) + (showClearProgress ? 1 : 0);
   const menuHeight = 142 + extraRows * 36;
   const pos = useMemo(() => clampMenuPosition(menu?.x || 0, menu?.y || 0, menuHeight), [menu?.x, menu?.y, menuHeight]);
 
@@ -56,6 +58,17 @@ export default function ArchiveContextMenu({ menu, onClose, onRead, onEditMetada
     action?.(menu.archive);
     onClose?.();
   };
+  const runClearProgress = async (event) => {
+    event.stopPropagation();
+    try {
+      const result = await onClearProgress(menu.archive);
+      if (result?.fallback) window.alert('服务器不支持清零，已回退到第一页。');
+    } catch (error) {
+      window.alert(`清除阅读进度失败：${error?.message || '未知错误'}`);
+    } finally {
+      onClose?.();
+    }
+  };
 
   return createPortal(
     <div
@@ -69,6 +82,7 @@ export default function ArchiveContextMenu({ menu, onClose, onRead, onEditMetada
       }}
     >
       <MenuButton onClick={run(onRead)}>阅读</MenuButton>
+      {showClearProgress && <MenuButton onClick={runClearProgress}>清除阅读进度</MenuButton>}
       {onEditMetadata && <MenuButton onClick={run(onEditMetadata)}>编辑元数据</MenuButton>}
       <MenuButton onClick={run(onDownload)}>下载</MenuButton>
       <MenuButton onClick={run(onCopyLink)}>复制链接</MenuButton>

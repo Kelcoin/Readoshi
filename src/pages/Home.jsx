@@ -32,6 +32,9 @@ import { navigateDeduplicate, navigateHistory, navigateHome, navigateToMetadata,
 import { ARCHIVE_BROWSE_MODES, ARCHIVE_PAGE_SIZE, clampArchivePage, getArchivePageAfterResize, getArchivePageCount, getArchivePageStart, getSmartArchivePageSize } from '../lib/archivePagination';
 import { reduceArchiveRefreshPhase } from '../lib/archiveRefreshMotion';
 import { ARCHIVE_PROGRESS_VISIBILITY, normalizeArchiveProgressVisibility, shouldShowArchiveProgress } from '../lib/archiveProgress';
+import { clearConfiguredArchiveReadingProgress } from '../lib/archiveProgressActions';
+import { subscribeReadingProgressChanged } from '../lib/readingProgress';
+import { migrateLegacyStorageKey } from '../lib/configScope';
 
 const FILTER_KEY = 'lrr_filter';
 const RANDOMS_RECENT_KEY = 'lrr_random_recent_v1';
@@ -119,7 +122,7 @@ function replaceCurrentFilterToken(query, token) {
 
 function readRecentRandomIds() {
   try {
-    const parsed = JSON.parse(localStorage.getItem(RANDOMS_RECENT_KEY));
+    const parsed = JSON.parse(localStorage.getItem(migrateLegacyStorageKey(RANDOMS_RECENT_KEY)));
     return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
   } catch {
     return [];
@@ -128,7 +131,7 @@ function readRecentRandomIds() {
 
 function writeRecentRandomIds(ids) {
   try {
-    localStorage.setItem(RANDOMS_RECENT_KEY, JSON.stringify(ids.slice(0, RANDOMS_RECENT_LIMIT)));
+    localStorage.setItem(migrateLegacyStorageKey(RANDOMS_RECENT_KEY), JSON.stringify(ids.slice(0, RANDOMS_RECENT_LIMIT)));
   } catch {}
 }
 
@@ -323,6 +326,7 @@ const DEFAULT_READER_EH_SETTINGS = {
   ehSortMethod: 'score',
   ehSortOrder: 'desc',
   progressBarVisibility: ARCHIVE_PROGRESS_VISIBILITY.HISTORY,
+  allowProgressRegression: true,
 };
 
 function readReaderSettings() {
@@ -568,7 +572,6 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
   const saveCurrentHomeForNavigation = useCallback(() => {
     const snapshot = buildHomeStateSnapshot();
     saveHomeNavigationSnapshot(snapshot);
-    saveHomeSnapshot(snapshot);
   }, [buildHomeStateSnapshot]);
 
   const handleSelectArchive = useCallback((archiveId) => {
@@ -672,6 +675,29 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
       prompt('复制归档链接:', url);
     }
   }, []);
+
+  const handleClearArchiveProgress = useCallback(async (archive) => {
+    const result = await clearConfiguredArchiveReadingProgress(archive);
+    const archiveId = archive.arcid || archive.id;
+    const update = (items) => items.map((item) => (
+      (item.arcid || item.id) === archiveId ? { ...item, progress: result.page, page: result.page } : item
+    ));
+    setArchives(update);
+    setRandoms(update);
+    setWatchlist(update);
+    setHistory(getHistory());
+    return result;
+  }, []);
+
+  useEffect(() => subscribeReadingProgressChanged(({ archiveId, page }) => {
+    const update = (items) => items.map((item) => (
+      String(item?.arcid || item?.id || '') === archiveId ? { ...item, progress: page, page } : item
+    ));
+    setArchives(update);
+    setRandoms(update);
+    setWatchlist(update);
+    setHistory(getHistory());
+  }), []);
 
   const removeDeletedArchiveIds = useCallback((ids) => {
     const idSet = ids instanceof Set ? ids : new Set(ids);
@@ -2429,16 +2455,22 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
 
           <div className="settings-panel-scroll">
 
-          <CacheSettings />
-
+          <div className="settings-section">
+            <div className="settings-section-title">通用设置</div>
+            <div className="settings-subgroup">
+              <div className="settings-subgroup-title">缓存</div>
+              <CacheSettings />
+            </div>
+            <div className="settings-subgroup">
+              <div className="settings-subgroup-title">归档显示</div>
           <div className="settings-row">
             <SettingHint text={'作用：将横版或方形封面裁成统一的竖向比例。\n影响：只改变书库缩略图，不修改归档原图。'}>裁剪封面</SettingHint>
-            <ToggleSwitch checked={cropCover} onChange={handleToggleCropCover} label="裁剪封面" />
+            <div className="settings-control settings-toggle-control"><ToggleSwitch checked={cropCover} onChange={handleToggleCropCover} label="裁剪封面" /></div>
           </div>
 
           <label className="settings-row">
             <SettingHint text={'禁止：所有归档卡片都不显示阅读进度。\n仅历史记录：保持历史与待看组件中的进度提示。\n全局：有阅读进度的归档卡片均会显示。'}>显示进度条</SettingHint>
-            <div style={{ width: 128 }}>
+            <div className="settings-control">
               <CustomSelect
                 ariaLabel="显示进度条"
                 value={readerSettings.progressBarVisibility}
@@ -2452,10 +2484,13 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
               />
             </div>
           </label>
+            </div>
+            <div className="settings-subgroup">
+              <div className="settings-subgroup-title">浏览与记录</div>
 
           <label className="settings-row">
             <SettingHint text={'滚动模式：到达列表底部时自动加载更多。\n分页模式：每次显示一页归档，使用页码切换。'}>档案浏览模式</SettingHint>
-            <div style={{ width: 128 }}>
+            <div className="settings-control">
               <CustomSelect
                 value={archiveBrowseMode}
                 onChange={handleArchiveBrowseModeChange}
@@ -2466,8 +2501,19 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           </label>
 
           <div className="settings-row">
+            <SettingHint text={'开启：阅读进度可随跳转回退到较早页面。\n关闭：只保留已到达的最高页码。'}>允许阅读进度回溯</SettingHint>
+            <div className="settings-control settings-toggle-control"><ToggleSwitch
+              checked={readerSettings.allowProgressRegression}
+              onChange={(checked) => updateReaderSettings((settings) => ({ ...settings, allowProgressRegression: checked }))}
+              label="允许阅读进度回溯"
+            /></div>
+          </div>
+
+          <div className="settings-row">
             <SettingHint text={'作用：隐藏已读至最后一页的归档。\n影响：只精简阅读历史列表，不会删除阅读记录。'}>历史记录中隐藏已读完</SettingHint>
-            <ToggleSwitch checked={hideRead} onChange={handleToggleHideRead} label="历史记录中隐藏已读完" />
+            <div className="settings-control settings-toggle-control"><ToggleSwitch checked={hideRead} onChange={handleToggleHideRead} label="历史记录中隐藏已读完" /></div>
+          </div>
+            </div>
           </div>
 
           <div className="settings-section">
@@ -2622,6 +2668,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
       menu={archiveMenu}
       onClose={() => setArchiveMenu(null)}
       onRead={(archive) => handleSelectArchive(archive.arcid || archive.id)}
+      onClearProgress={handleClearArchiveProgress}
       onEditMetadata={(archive) => { saveCurrentHomeForNavigation(); navigateToMetadata(archive.arcid || archive.id); }}
       onDownload={handleArchiveDownload}
       onCopyLink={handleArchiveCopyLink}

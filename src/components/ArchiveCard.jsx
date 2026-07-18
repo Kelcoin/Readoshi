@@ -8,16 +8,17 @@ import { useViewportWidth } from '../lib/viewport';
 import { getArchiveProgressPercent } from '../lib/archiveProgress';
 import { encodeApiKey } from '../lib/api';
 import { scopedCacheKey } from '../lib/configScope';
+import { isOutsideHorizontalViewport } from '../lib/horizontalScroller';
+import { getContentLanguage } from '../lib/readerUiState';
 
 const NAMESPACE_COLORS = NAMESPACE_COLORS_MAP;
 const archiveAspectRatioCache = new Map();
 const ARCHIVE_TITLE_LAYOUTS = [
-  { gap: 12, lineHeight: 1.45 },
-  { gap: 8, lineHeight: 1.32 },
-  { gap: 4, lineHeight: 1.18 },
+  { gap: 12, fontSize: 13, lineHeight: 1.5 },
+  { gap: 8, fontSize: 12.5, lineHeight: 1.5 },
+  { gap: 4, fontSize: 12, lineHeight: 1.5 },
 ];
 const ARCHIVE_TITLE_VERTICAL_BUDGET = 51.7;
-const ARCHIVE_TITLE_SAFETY_PX = 3;
 
 function calculatePanelPosition(cardRect, panelHeight, pointerY = null) {
   const panelWidth = 320;
@@ -118,6 +119,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   const pointerStartRef = useRef(null);
   const hoverPointerYRef = useRef(null);
   const [titleLayoutIndex, setTitleLayoutIndex] = useState(0);
+  const [fontRevision, setFontRevision] = useState(0);
 
   useEffect(() => {
     if (!cacheOnly) {
@@ -127,6 +129,18 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
 
   const tags = archive.tags?.split(',').map((tag) => tag.trim()).filter(Boolean) || [];
   const categorizedTags = categorizeTags(tags);
+  const archiveLanguage = getContentLanguage(archive.title);
+
+  useEffect(() => {
+    if (!document.fonts?.ready) return undefined;
+    let active = true;
+    document.fonts.ready.then(() => {
+      if (active) setFontRevision((revision) => revision + 1);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const totalPages = archive.pagecount || archive.total || 0;
   const current = currentPage || archive.progress || archive.page || 0;
@@ -186,7 +200,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
     const element = titleRef.current;
     if (!element) return;
 
-    const measurementKey = `${archive.title}\u0000${element.clientWidth}`;
+    const measurementKey = `${archive.title}\u0000${element.clientWidth}\u0000${fontRevision}`;
     if (titleMeasurementKeyRef.current !== measurementKey) {
       titleMeasurementKeyRef.current = measurementKey;
       if (titleLayoutIndex !== 0) {
@@ -207,10 +221,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
     range.detach?.();
     lines.sort((a, b) => a.top - b.top);
 
-    if (lines.length < 2) {
-      if (titleLayoutIndex !== 0) setTitleLayoutIndex(0);
-      return;
-    }
+    if (lines.length < 2) return;
 
     // Android WebView can paint below the geometry reported by Range.
     if (lines.length >= 2 && titleLayoutIndex === 0) {
@@ -221,12 +232,12 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
     const titleBox = element.getBoundingClientRect();
     const lastVisibleLineBottom = lines[1].bottom;
     if (
-      lastVisibleLineBottom + ARCHIVE_TITLE_SAFETY_PX > titleBox.bottom
+      lastVisibleLineBottom > titleBox.bottom
       && titleLayoutIndex < ARCHIVE_TITLE_LAYOUTS.length - 1
     ) {
       setTitleLayoutIndex((index) => index + 1);
     }
-  }, [archive.title, isWide, titleLayoutIndex]);
+  }, [archive.title, fontRevision, isWide, titleLayoutIndex]);
 
   const rememberAspectRatio = useCallback((next) => {
     if (!Number.isFinite(next) || next <= 0) return;
@@ -421,20 +432,32 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
 
   useEffect(() => {
     if (!isPanelVisible) return;
-    const handleScroll = () => {
+    const handleScroll = (event) => {
       if (!cardRef.current) return;
       const rect = cardRef.current.getBoundingClientRect();
       if (rect.bottom < 0 || rect.top > window.innerHeight) {
         setHovered(false);
         setMobilePanelOpen(false);
+        setClosing(false);
         return;
       }
-      const panelHeight = panelRef.current?.getBoundingClientRect().height;
-      setPanelPos(calculatePanelPosition(rect, panelHeight, hoverPointerYRef.current));
+      const scrollTarget = event.target;
+      if (
+        scrollTarget instanceof Element
+        && scrollTarget.contains(cardRef.current)
+        && scrollTarget.scrollWidth > scrollTarget.clientWidth + 1
+        && isOutsideHorizontalViewport(rect, scrollTarget.getBoundingClientRect())
+      ) {
+        setHovered(false);
+        setMobilePanelOpen(false);
+        setClosing(false);
+        return;
+      }
+      updatePanelPosition();
     };
     window.addEventListener('scroll', handleScroll, true);
     return () => window.removeEventListener('scroll', handleScroll, true);
-  }, [isPanelVisible]);
+  }, [isPanelVisible, updatePanelPosition]);
 
   useEffect(() => {
     if (!isPanelVisible) return;
@@ -708,15 +731,16 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
         >
           <div
             ref={titleRef}
+            lang={archiveLanguage}
             className="archive-title"
             style={{
-              fontSize: '13px',
+              fontSize: `${titleLayout.fontSize}px`,
               overflow: 'hidden',
               display: '-webkit-box',
               WebkitLineClamp: 2,
               WebkitBoxOrient: 'vertical',
               lineHeight: titleLayout.lineHeight,
-              height: `${13 * titleLayout.lineHeight * 2 + ARCHIVE_TITLE_SAFETY_PX}px`,
+              height: `${titleLayout.fontSize * titleLayout.lineHeight * 2}px`,
             }}
           >
             {archive.title}
@@ -796,6 +820,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
         >
           <div className="no-scrollbar">
             <div
+              lang={archiveLanguage}
               style={{
                 fontSize: '14px', fontWeight: 700, lineHeight: 1.3,
                 marginBottom: '14px', color: 'var(--text-main)',

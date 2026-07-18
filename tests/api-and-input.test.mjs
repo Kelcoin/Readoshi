@@ -21,6 +21,8 @@ test('reader settings reject unsafe automatic turn intervals', () => {
   assert.equal(readerSettings.normalizeReaderSettings({ autoTurnInterval: -8 }).autoTurnInterval, 5);
   assert.equal(readerSettings.normalizeReaderSettings({ autoTurnInterval: 9999 }).autoTurnInterval, 3600);
   assert.equal(readerSettings.normalizeReaderSettings({ autoTurnInterval: 12 }).autoTurnInterval, 12);
+  assert.equal(readerSettings.normalizeReaderSettings({}).allowProgressRegression, true);
+  assert.equal(readerSettings.normalizeReaderSettings({ allowProgressRegression: false }).allowProgressRegression, false);
 });
 
 test('drag and drop keeps only supported archive files', () => {

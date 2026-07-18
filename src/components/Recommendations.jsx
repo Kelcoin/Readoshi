@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { lrrApi } from '../lib/api';
-import { getCropCover } from '../lib/history';
+import { getCropCover, getHistory } from '../lib/history';
 import { useHorizontalScroller } from '../lib/horizontalScroller';
 import { navigateToArchive, navigateToMetadata } from '../lib/navigation';
 import ArchiveCard from './ArchiveCard';
@@ -8,6 +8,9 @@ import ArchiveContextMenu from './ArchiveContextMenu';
 import ConfirmDialog from './ConfirmDialog';
 import { useViewportWidth } from '../lib/viewport';
 import { ARCHIVE_PROGRESS_VISIBILITY, readArchiveProgressVisibility, shouldShowArchiveProgress } from '../lib/archiveProgress';
+import { clearConfiguredArchiveReadingProgress } from '../lib/archiveProgressActions';
+import { subscribeReadingProgressChanged } from '../lib/readingProgress';
+import { scopedStorageKey } from '../lib/configScope';
 
 const CUSTOM_WEIGHT_TAGS = {
   'female:ahegao': 1.5, 'female:anal intercourse': 2, 'female:anal': 2,
@@ -39,6 +42,23 @@ const CUSTOM_WEIGHT_TAGS = {
   'other:ai 超分': 0, 'other:mosaic censorship': 0, 'other:uncensored': 0,
   'language:': 0, 'uploader:': 0, 'timestamp:': 0, 'source:': 0, 'dateadded:': 0,
 };
+
+function stripRecommendationProgress(items = []) {
+  return items.map((item) => {
+    const sanitized = { ...item };
+    delete sanitized.page;
+    delete sanitized.progress;
+    return sanitized;
+  });
+}
+
+function applyCanonicalHistoryProgress(items = []) {
+  const progressById = new Map(getHistory().map((item) => [String(item.id || item.arcid), Number(item.page) || 0]));
+  return stripRecommendationProgress(items).map((item) => {
+    const page = progressById.get(String(item.arcid || item.id));
+    return page === undefined ? item : { ...item, page, progress: page };
+  });
+}
 
 const LIKE_NAMESPACES = ['female', 'male', 'others'];
 const LIKE_FALLBACK_NS = ['character', 'parody'];
@@ -109,6 +129,14 @@ export default function Recommendations({ currentArchive }) {
 
   const noCrop = useMemo(() => !getCropCover(), [currentArchive?.arcid]);
 
+  useEffect(() => subscribeReadingProgressChanged(({ archiveId, page }) => {
+    const update = (items) => items.map((item) => (
+      String(item?.arcid || item?.id || '') === archiveId ? { ...item, progress: page, page } : item
+    ));
+    setSimData(update);
+    setArtistData(update);
+  }), []);
+
   const archiveTags = useMemo(() => {
     if (!currentArchive?.tags) return [];
     return currentArchive.tags.split(',').map(t => t.trim()).filter(Boolean);
@@ -136,7 +164,7 @@ export default function Recommendations({ currentArchive }) {
 
   useEffect(() => {
     if (!currentArchive?.arcid || !currentArchive?.tags) return;
-    const cacheKey = `lrr_rec_cache_v3_${sameCreatorType}_${currentArchive.arcid}`;
+    const cacheKey = scopedStorageKey(`lrr_rec_cache_v3_${sameCreatorType}_${currentArchive.arcid}`);
     let cancelled = false;
 
     const fetchAll = async () => {
@@ -148,8 +176,8 @@ export default function Recommendations({ currentArchive }) {
             const parsed = JSON.parse(cached);
             if (Date.now() - parsed.t < 86400000) {
               if (cancelled) return;
-              setSimData(parsed.sim || []);
-              setArtistData(parsed.artist || []);
+              setSimData(applyCanonicalHistoryProgress(parsed.sim || []));
+              setArtistData(applyCanonicalHistoryProgress(parsed.artist || []));
               setLoading(false);
               return;
             }
@@ -162,10 +190,10 @@ export default function Recommendations({ currentArchive }) {
         ]);
 
         if (cancelled) return;
-        setSimData(sim);
-        setArtistData(artist);
+        setSimData(applyCanonicalHistoryProgress(sim));
+        setArtistData(applyCanonicalHistoryProgress(artist));
         if (sim.length || artist.length) {
-          try { localStorage.setItem(cacheKey, JSON.stringify({ t: Date.now(), sim, artist })); } catch {}
+          try { localStorage.setItem(cacheKey, JSON.stringify({ t: Date.now(), sim: stripRecommendationProgress(sim), artist: stripRecommendationProgress(artist) })); } catch {}
         }
       } catch {}
       if (!cancelled) setLoading(false);
@@ -259,16 +287,16 @@ export default function Recommendations({ currentArchive }) {
   };
 
   const refreshCache = useCallback(async () => {
-    const cacheKey = `lrr_rec_cache_v3_${sameCreatorType}_${currentArchive.arcid}`;
+    const cacheKey = scopedStorageKey(`lrr_rec_cache_v3_${sameCreatorType}_${currentArchive.arcid}`);
     try { localStorage.removeItem(cacheKey); } catch {}
     retryCountRef.current = 0;
     setLoading(true);
     try {
       const [sim, artist] = await Promise.all([buildYouMayLike(), buildSameCreator()]);
-      setSimData(sim);
-      setArtistData(artist);
+      setSimData(applyCanonicalHistoryProgress(sim));
+      setArtistData(applyCanonicalHistoryProgress(artist));
       if (sim.length || artist.length) {
-        try { localStorage.setItem(cacheKey, JSON.stringify({ t: Date.now(), sim, artist })); } catch {}
+        try { localStorage.setItem(cacheKey, JSON.stringify({ t: Date.now(), sim: stripRecommendationProgress(sim), artist: stripRecommendationProgress(artist) })); } catch {}
       }
     } catch {}
     setLoading(false);
@@ -334,6 +362,17 @@ export default function Recommendations({ currentArchive }) {
     } catch {
       prompt('复制归档链接:', url);
     }
+  }, []);
+
+  const handleClearArchiveProgress = useCallback(async (archive) => {
+    const result = await clearConfiguredArchiveReadingProgress(archive);
+    const archiveId = archive.arcid || archive.id;
+    const update = (items) => items.map((item) => (
+      (item.arcid || item.id) === archiveId ? { ...item, progress: result.page, page: result.page } : item
+    ));
+    setSimData(update);
+    setArtistData(update);
+    return result;
   }, []);
 
   const handleArchiveDelete = useCallback(async () => {
@@ -466,6 +505,7 @@ export default function Recommendations({ currentArchive }) {
       menu={archiveMenu}
       onClose={() => setArchiveMenu(null)}
       onRead={(archive) => handleCardClick(archive)}
+      onClearProgress={handleClearArchiveProgress}
       onEditMetadata={(archive) => navigateToMetadata(archive.arcid || archive.id)}
       onDownload={handleArchiveDownload}
       onCopyLink={handleArchiveCopyLink}

@@ -3,7 +3,8 @@ import ReactDOM from 'react-dom/client';
 import App from './App.jsx';
 import { installDiagnostics } from './lib/diagnostics';
 import { markPwaUpdateReload } from './lib/sessionState';
-import { claimPwaReload, getServiceWorkerVersion } from './lib/pwaReloadGuard';
+import '@fontsource-variable/noto-sans-sc/wght.css';
+import '@fontsource-variable/noto-sans-jp/wght.css';
 import './index.css';
 
 installDiagnostics();
@@ -25,8 +26,6 @@ if ('serviceWorker' in navigator) {
         return;
       }
       if (refreshing) return;
-      const version = getServiceWorkerVersion(navigator.serviceWorker.controller?.scriptURL);
-      if (!claimPwaReload(sessionStorage, version)) return;
       refreshing = true;
       markPwaUpdateReload();
       window.location.reload();

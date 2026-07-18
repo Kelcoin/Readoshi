@@ -16,6 +16,7 @@ import { getEhFavoriteDeleteSync } from '../lib/ehFavoriteSync';
 import { navigateToMetadata } from '../lib/navigation';
 import { removeWatchlistItem } from '../lib/watchlist';
 import { ARCHIVE_PROGRESS_VISIBILITY, readArchiveProgressVisibility, shouldShowArchiveProgress } from '../lib/archiveProgress';
+import { clearConfiguredArchiveReadingProgress } from '../lib/archiveProgressActions';
 
 function HeaderGlyph() {
   return <HomeSectionGlyph name="continue" size={24} color={getSectionGlyphColor('continue')} />;
@@ -261,6 +262,12 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
     }
   }, []);
 
+  const handleClearArchiveProgress = useCallback(async (archive) => {
+    const result = await clearConfiguredArchiveReadingProgress(archive);
+    setHistoryState(getHistory());
+    return result;
+  }, []);
+
   const requestArchiveDelete = useCallback((archive) => {
     setArchiveDeleteSyncConfirmed(true);
     setArchiveDeleteTarget(archive);
@@ -476,6 +483,7 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
         menu={menu}
         onClose={() => setMenu(null)}
         onRead={(archive) => onSelectArchive(archive.arcid || archive.id)}
+        onClearProgress={handleClearArchiveProgress}
         onEditMetadata={(archive) => navigateToMetadata(archive.arcid || archive.id)}
         onDownload={handleDownload}
         onCopyLink={handleCopyLink}

@@ -12,6 +12,7 @@ import { archiveMatchesSearch } from '../lib/archiveSearch';
 import { getSyncToken, getWorkerUrl } from '../lib/worker-config';
 import { getWatchlist, getWatchlistAutoRemoveIds, loadWatchlistState, mergeWatchlistProgress, removeWatchlistItems } from '../lib/watchlist';
 import { ARCHIVE_PROGRESS_VISIBILITY, readArchiveProgressVisibility, shouldShowArchiveProgress } from '../lib/archiveProgress';
+import { clearConfiguredArchiveReadingProgress } from '../lib/archiveProgressActions';
 
 function HeaderGlyph() {
   return <HomeSectionGlyph name="watchlist" size={24} color={getSectionGlyphColor('watchlist')} />;
@@ -179,6 +180,16 @@ export default function WatchlistPage({ onSelectArchive, onBack }) {
     }
   }, []);
 
+  const handleClearArchiveProgress = useCallback(async (archive) => {
+    const result = await clearConfiguredArchiveReadingProgress(archive);
+    const archiveId = archive.arcid || archive.id;
+    setItems((previous) => previous.map((item) => (
+      (item.arcid || item.id) === archiveId ? { ...item, progress: result.page, page: result.page } : item
+    )));
+    setHistory(getHistory());
+    return result;
+  }, []);
+
   return (
     <>
       <div style={{ padding: isNarrow ? '16px 10px' : '24px 20px', maxWidth: '1680px', margin: '0 auto' }}>
@@ -313,6 +324,7 @@ export default function WatchlistPage({ onSelectArchive, onBack }) {
         menu={menu}
         onClose={() => setMenu(null)}
         onRead={(archive) => onSelectArchive(archive.arcid || archive.id)}
+        onClearProgress={handleClearArchiveProgress}
         onEditMetadata={(archive) => navigateToMetadata(archive.arcid || archive.id)}
         onDownload={handleDownload}
         onCopyLink={handleCopyLink}

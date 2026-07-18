@@ -1,14 +1,16 @@
 import { getSyncToken, getWorkerUrl } from './worker-config';
 import { decorateArchiveRecord, hydrateArchiveRecords, rememberArchiveMetadata } from './archiveMetadataCache';
 import { loadServerInfo } from './serverInfoCache';
-import { clampProgressPage, mergeCachedHistoryProgress, mergeHistoryProgressCache, mergeMonotonicHistoryItems } from './historyProgressCache';
+import { clampProgressPage, mergeLatestHistoryItems, mergeMonotonicHistoryItems } from './historyProgressCache';
 import { getConfigScopeId, getServerScopeId, migrateLegacyStorageKey } from './configScope';
+import { dispatchReadingProgressChanged } from './readingProgress';
+import { getAllowProgressRegression } from './readerSettings';
+import { updateArchiveProgressInSessionSnapshots } from './sessionState';
 
 const LOCAL_HISTORY_KEY = 'lrr_history';
 const LOCAL_HIDE_READ_KEY = 'lrr_hide_read';
 const REMOTE_HISTORY_CACHE_KEY = 'lrr_history_remote_cache';
 const REMOTE_HIDE_READ_CACHE_KEY = 'lrr_hide_read_remote_cache';
-const HISTORY_PROGRESS_CACHE_KEY = 'lrr_history_progress_cache';
 const HISTORY_PENDING_DELETES_KEY = 'lrr_history_pending_deletes';
 const CROP_COVER_KEY = 'lrr_crop_cover';
 const ARCHIVE_BROWSE_MODE_KEY = 'lrr_archive_browse_mode';
@@ -77,10 +79,6 @@ function activeHideReadKey() {
   return migrateLegacyStorageKey(hasRemoteHistory() ? REMOTE_HIDE_READ_CACHE_KEY : LOCAL_HIDE_READ_KEY);
 }
 
-function historyProgressCacheKey() {
-  return migrateLegacyStorageKey(HISTORY_PROGRESS_CACHE_KEY);
-}
-
 function pendingHistoryDeleteKey() {
   return migrateLegacyStorageKey(HISTORY_PENDING_DELETES_KEY);
 }
@@ -119,34 +117,15 @@ export async function flushHistoryDeleteQueue() {
 function writeHistoryCache(list, { notify = true } = {}) {
   const histories = sortHistoryByTime(list);
   localStorage.setItem(activeHistoryKey(), JSON.stringify(histories));
-  writeHistoryProgressCache(histories);
   if (notify) emitHistoryChanged();
 }
 
-function readHistoryProgressCache() {
-  return safeReadJson(historyProgressCacheKey(), {});
-}
-
-function writeHistoryProgressCache(items) {
-  const merged = mergeHistoryProgressCache(readHistoryProgressCache(), items);
-  const entries = Object.entries(merged)
-    .sort(([, a], [, b]) => (b.time || 0) - (a.time || 0))
-    .slice(0, 500);
-  localStorage.setItem(historyProgressCacheKey(), JSON.stringify(Object.fromEntries(entries)));
-}
-
-function clampHistoryProgressForArchive(id, total) {
-  const pageCap = Math.max(0, Number.parseInt(total, 10) || 0);
-  if (!id || pageCap <= 0) return;
-  const cache = readHistoryProgressCache();
-  const current = cache[id];
-  if (!current) return;
-  const page = clampProgressPage(current.page, pageCap);
-  if (page === current.page && current.total === pageCap) return;
-  localStorage.setItem(historyProgressCacheKey(), JSON.stringify({
-    ...cache,
-    [id]: { ...current, page, total: pageCap },
-  }));
+function discardPendingHistorySync(archiveIds) {
+  const ids = (Array.isArray(archiveIds) ? archiveIds : [archiveIds]).map(String).filter(Boolean);
+  for (const id of ids) {
+    pendingHistorySync.delete(id);
+    pendingHistoryPageCaps.delete(id);
+  }
 }
 
 function writeHideReadCache(v) {
@@ -195,7 +174,7 @@ function queueHistorySync(item, pageCap = 0, immediateRemote = false) {
   const boundedQueued = queued
     ? { ...queued, page: clampProgressPage(queued.page, pageCap) }
     : null;
-  pendingHistorySync.set(item.id, mergeMonotonicHistoryItems(boundedQueued ? [boundedQueued] : [], [item])[0]);
+  pendingHistorySync.set(item.id, mergeLatestHistoryItems(boundedQueued ? [boundedQueued] : [], [item])[0]);
   pendingHistoryUrgent = pendingHistoryUrgent || immediateRemote;
   if (immediateRemote && historyFlushTimer) {
     clearTimeout(historyFlushTimer);
@@ -235,7 +214,7 @@ export async function flushHistorySync({ keepalive = false } = {}) {
         const pageCap = pendingHistoryPageCaps.get(item.id) || 0;
         const boundedQueued = queued ? { ...queued, page: clampProgressPage(queued.page, pageCap) } : null;
         const boundedItem = { ...item, page: clampProgressPage(item.page, pageCap) };
-        pendingHistorySync.set(item.id, mergeMonotonicHistoryItems(boundedQueued ? [boundedQueued] : [], [boundedItem])[0]);
+        pendingHistorySync.set(item.id, mergeLatestHistoryItems(boundedQueued ? [boundedQueued] : [], [boundedItem])[0]);
       });
       pendingHistoryUrgent = pendingHistoryUrgent || batchWasUrgent;
       scheduleHistoryFlush(HISTORY_SYNC_RETRY_MS);
@@ -265,8 +244,7 @@ function archiveToHistoryItem(archive, page) {
 }
 
 function getStoredHistory() {
-  const histories = sortHistoryByTime(safeReadJson(activeHistoryKey(), []));
-  return mergeCachedHistoryProgress(histories, readHistoryProgressCache());
+  return sortHistoryByTime(safeReadJson(activeHistoryKey(), []));
 }
 
 export const getHistory = () => getStoredHistory().map(decorateArchiveRecord).filter(Boolean);
@@ -290,10 +268,10 @@ async function loadHistoryStateNow({ force = false } = {}) {
     if (currentScope !== scope) return loadHistoryStateNow({ force: true });
     const pendingDeletes = new Set(getPendingHistoryDeletes());
     const remoteHistories = sortHistoryByTime(data?.histories || []).filter((item) => !pendingDeletes.has(item.id));
-    histories = mergeCachedHistoryProgress(
-      mergeMonotonicHistoryItems(remoteHistories, getStoredHistory()),
-      readHistoryProgressCache(),
-    );
+    const allowRegression = getAllowProgressRegression();
+    histories = allowRegression
+      ? mergeLatestHistoryItems(remoteHistories, getStoredHistory())
+      : mergeMonotonicHistoryItems(remoteHistories, getStoredHistory());
     hideRead = !!data?.hideRead;
     retentionDays = data?.retentionDays || 0;
     localStorage.setItem(historyStorageKey, JSON.stringify(histories));
@@ -320,8 +298,9 @@ async function loadHistoryStateNow({ force = false } = {}) {
         const lrrProgress = clampProgressPage(item.progress, pageCap);
         const stored = storedById.get(item.id);
         const storedPage = clampProgressPage(stored?.page, pageCap);
-        const nextPage = Math.max(storedPage, lrrProgress);
-        clampHistoryProgressForArchive(item.id, pageCap);
+        const nextPage = getAllowProgressRegression()
+          ? (stored ? storedPage : lrrProgress)
+          : Math.max(storedPage, lrrProgress);
         if (!stored || stored.page === nextPage) return { ...item, page: nextPage };
         const next = { id: item.id, page: nextPage, time: stored.time };
         changed.push(next);
@@ -335,7 +314,6 @@ async function loadHistoryStateNow({ force = false } = {}) {
       }
     }
   } catch {}
-  writeHistoryProgressCache(resultItems);
   emitHistoryChanged();
   return { histories: resultItems, hideRead, remote, retentionDays };
 }
@@ -357,17 +335,26 @@ export function loadHistoryState(options = {}) {
   return trackedPromise;
 }
 
-export const saveHistory = async (archive, page, { immediateRemote = false } = {}) => {
+export const saveHistory = async (archive, page, { immediateRemote = false, allowRegression = getAllowProgressRegression() } = {}) => {
   if (!archive?.arcid) return false;
   const item = archiveToHistoryItem(archive, page);
-  clampHistoryProgressForArchive(item.id, archive.pagecount);
   const storedHistory = getStoredHistory().map((entry) => (
     entry.id === item.id
       ? { ...entry, page: clampProgressPage(entry.page, archive.pagecount) }
       : entry
   ));
-  const history = mergeMonotonicHistoryItems(storedHistory, [item]);
+  const history = allowRegression
+    ? mergeLatestHistoryItems(storedHistory, [item])
+    : mergeMonotonicHistoryItems(storedHistory, [item]);
   writeHistoryCache(history);
+  updateArchiveProgressInSessionSnapshots(item.id, item.page);
+  rememberArchiveMetadata({ ...archive, id: item.id, arcid: item.id, page: item.page, progress: item.page });
+  dispatchReadingProgressChanged({
+    archiveId: item.id,
+    page: item.page,
+    total: archive.pagecount,
+    timestamp: item.time,
+  });
 
   if (!hasRemoteHistory()) return true;
   queueHistorySync(history.find((entry) => entry.id === item.id), archive.pagecount, immediateRemote);
@@ -405,8 +392,7 @@ export const removeHistoryItems = async (archiveIds) => {
   const before = getStoredHistory();
   const next = before.filter((item) => !removeSet.has(item.id));
   const removed = before.length - next.length;
-  if (removed === 0) return 0;
-
+  discardPendingHistorySync(Array.from(removeSet));
   writeHistoryCache(next);
   if (!hasRemoteHistory()) return removed;
   try {

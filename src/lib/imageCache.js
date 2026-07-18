@@ -44,7 +44,13 @@ async function fetchForScope(fetcher, scope) {
 }
 
 function getDiskCache() {
-  if (!diskCachePromise) diskCachePromise = caches.open(DISK_CACHE);
+  if (typeof caches === 'undefined') return Promise.resolve(null);
+  if (!diskCachePromise) {
+    diskCachePromise = caches.open(DISK_CACHE).catch((error) => {
+      diskCachePromise = null;
+      throw error;
+    });
+  }
   return diskCachePromise;
 }
 
@@ -54,24 +60,42 @@ function cacheKeyToUrl(key) {
 }
 
 async function diskGet(key) {
+  let blob = null;
   try {
     const cache = await getDiskCache();
-    const r = await cache.match(new Request(cacheKeyToUrl(key)));
-    if (!r) return null;
-    const blob = await r.blob();
-    const now = Date.now();
-    if (now - (lastIndexTouch.get(key) || 0) >= INDEX_TOUCH_INTERVAL_MS) {
-      lastIndexTouch.set(key, now);
-      imageCacheIndex.put({ key, size: blob.size, lastAccessedAt: now }).catch(() => {});
-    }
-    return blob;
-  } catch { return null; }
+    const response = await cache?.match(new Request(cacheKeyToUrl(key)));
+    if (response) blob = await response.blob();
+  } catch {}
+  if (!blob) {
+    try { blob = await imageCacheIndex.getBlob(key); } catch {}
+  }
+  if (!blob) return null;
+  const now = Date.now();
+  if (now - (lastIndexTouch.get(key) || 0) >= INDEX_TOUCH_INTERVAL_MS) {
+    lastIndexTouch.set(key, now);
+    imageCacheIndex.put({ key, size: blob.size, lastAccessedAt: now }).catch(() => {});
+  }
+  return blob;
 }
 
 async function diskPut(key, blob) {
+  let stored = false;
   try {
     const cache = await getDiskCache();
-    await cache.put(new Request(cacheKeyToUrl(key)), new Response(blob));
+    if (cache) {
+      await cache.put(new Request(cacheKeyToUrl(key)), new Response(blob));
+      stored = true;
+      imageCacheIndex.deleteBlob(key).catch(() => {});
+    }
+  } catch {}
+  if (!stored) {
+    try {
+      await imageCacheIndex.putBlob(key, blob);
+      stored = true;
+    } catch {}
+  }
+  if (!stored) return;
+  try {
     await imageCacheIndex.put({ key, size: blob.size, createdAt: Date.now(), lastAccessedAt: Date.now() });
     if (cleanupTimer) clearTimeout(cleanupTimer);
     cleanupTimer = setTimeout(() => {
@@ -79,6 +103,14 @@ async function diskPut(key, blob) {
       enforceImageCacheLimit().catch(() => {});
     }, 2000);
   } catch {}
+}
+
+async function deleteDiskEntry(key) {
+  try {
+    const cache = await getDiskCache();
+    if (cache) await cache.delete(new Request(cacheKeyToUrl(key)));
+  } catch {}
+  await imageCacheIndex.delete(key);
 }
 
 function rememberBlob(key, blob) {
@@ -161,7 +193,10 @@ export async function clearImageCache({ disk = false } = {}) {
   lastIndexTouch.clear();
   if (cleanupTimer) { clearTimeout(cleanupTimer); cleanupTimer = null; }
   if (disk) {
-    await Promise.all([caches.delete(DISK_CACHE), imageCacheIndex.clear()]);
+    const cacheDelete = typeof caches === 'undefined'
+      ? Promise.resolve(false)
+      : caches.delete(DISK_CACHE).catch(() => false);
+    await Promise.all([cacheDelete, imageCacheIndex.clear()]);
     diskCachePromise = null;
   }
 }
@@ -171,16 +206,12 @@ export async function deleteImageKeys(keys) {
     .filter(Boolean)
     .map((key) => scopedCacheKey(key))));
   if (scopedKeys.length === 0) return 0;
-  const cache = await getDiskCache();
   await Promise.all(scopedKeys.map(async (key) => {
     const entry = MEM_CACHE.get(key);
     if (entry?.objectUrl) URL.revokeObjectURL(entry.objectUrl);
     MEM_CACHE.delete(key);
     lastIndexTouch.delete(key);
-    await Promise.all([
-      cache.delete(new Request(cacheKeyToUrl(key))),
-      imageCacheIndex.delete(key),
-    ]);
+    await deleteDiskEntry(key);
   }));
   return scopedKeys.length;
 }
@@ -205,10 +236,8 @@ export async function enforceImageCacheLimit(protectedKeys = new Set()) {
   const scopedProtectedKeys = new Set(Array.from(protectedKeys, (key) => scopedCacheKey(key)));
   const victims = selectCacheEvictions(entries, stats.limit, scopedProtectedKeys);
   if (!victims.length) return { ...stats, removed: 0 };
-  const cache = await getDiskCache();
   for (const entry of victims) {
-    await cache.delete(new Request(cacheKeyToUrl(entry.key)));
-    await imageCacheIndex.delete(entry.key);
+    await deleteDiskEntry(entry.key);
   }
   return { ...stats, removed: victims.length };
 }

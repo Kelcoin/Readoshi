@@ -37,7 +37,7 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') {
-    self.skipWaiting();
+    event.waitUntil(self.skipWaiting());
   }
   if (event.data?.type === 'GET_VERSION') {
     event.source?.postMessage?.({ type: 'SW_VERSION', cache: CACHE });

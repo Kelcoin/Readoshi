@@ -1,6 +1,7 @@
 import { getSyncToken, getWorkerUrl } from './worker-config';
 import { decorateArchiveRecord, hydrateArchiveRecords, rememberArchiveMetadata } from './archiveMetadataCache';
 import { getConfigScopeId, getServerScopeId, migrateLegacyStorageKey } from './configScope';
+import { mergeWatchlistReadingProgress } from './readingProgress';
 
 const LOCAL_WATCHLIST_KEY = 'lrr_watchlist';
 const REMOTE_WATCHLIST_CACHE_KEY = 'lrr_watchlist_remote_cache';
@@ -94,16 +95,7 @@ function sortWatchlist(list) {
 }
 
 export function mergeWatchlistProgress(items, histories) {
-  const historyById = new Map((Array.isArray(histories) ? histories : []).map((item) => [
-    String(item?.id || item?.arcid || ''),
-    item,
-  ]));
-  return (Array.isArray(items) ? items : []).map((item) => {
-    const history = historyById.get(String(item?.id || item?.arcid || ''));
-    const page = Math.max(Number(item?.page) || 0, Number(history?.page) || 0);
-    const total = Number(item?.total || item?.pagecount || history?.total || history?.pagecount) || 0;
-    return { ...item, page, total };
-  });
+  return mergeWatchlistReadingProgress(items, histories);
 }
 
 export function getWatchlistAutoRemoveIds(items, threshold = 0.8) {

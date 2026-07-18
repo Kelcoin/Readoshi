@@ -71,8 +71,9 @@ function rememberArchiveMetadataForScope(archive, scope) {
 export function decorateArchiveRecord(record) {
   const id = archiveId(record);
   if (!id) return null;
+  const progress = Number(record.page) || 0;
   const metadata = metadataCache.get(scopedArchiveKey(id));
-  if (!metadata) return { ...record, id, arcid: id, title: id, tags: '' };
+  if (!metadata) return { ...record, id, arcid: id, title: id, tags: '', progress };
   return {
     ...metadata,
     ...record,
@@ -81,6 +82,7 @@ export function decorateArchiveRecord(record) {
     title: metadata.title || id,
     tags: metadata.tags || '',
     total: Number(metadata.pagecount) || 0,
+    progress: Number(record.page) || 0,
   };
 }
 
