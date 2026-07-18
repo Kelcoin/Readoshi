@@ -156,6 +156,25 @@ jobs:
 
           npx --no-install cap add android
           npx --no-install cap sync android
+
+          node <<'NODE'
+          const fs = require('node:fs');
+          const mainActivityPath = 'android/app/src/main/java/com/kelcoin/readoshi/MainActivity.java';
+          fs.writeFileSync(mainActivityPath, `package com.kelcoin.readoshi;
+
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  getBridge().getWebView().getSettings().setTextZoom(100);
+              }
+          }
+          `);
+          NODE
+
           npx --no-install capacitor-assets generate --android \
             --iconBackgroundColor '#1C1E24' \
             --iconBackgroundColorDark '#1C1E24' \
@@ -232,6 +251,8 @@ jobs:
           if (!indexHtml.includes('viewport-fit=cover')) throw new Error('viewport patch failed');
           const manifest = fs.readFileSync('android/app/src/main/AndroidManifest.xml', 'utf8');
           if (!manifest.includes('android.permission.INTERNET')) throw new Error('INTERNET permission missing');
+          const mainActivity = fs.readFileSync('android/app/src/main/java/com/kelcoin/readoshi/MainActivity.java', 'utf8');
+          if (!mainActivity.includes('getWebView().getSettings().setTextZoom(100)')) throw new Error('Android text zoom guard missing');
           const gradle = fs.readFileSync('android/app/build.gradle', 'utf8');
           if (!gradle.includes(`versionName "${process.env.APP_VERSION_NAME}"`)) throw new Error('versionName missing');
           if (!gradle.includes(`versionCode ${process.env.APP_VERSION_CODE}`)) throw new Error('versionCode missing');

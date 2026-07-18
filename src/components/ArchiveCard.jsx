@@ -13,11 +13,10 @@ import { getContentLanguage } from '../lib/readerUiState';
 
 const NAMESPACE_COLORS = NAMESPACE_COLORS_MAP;
 const archiveAspectRatioCache = new Map();
-const ARCHIVE_TITLE_LAYOUTS = [
-  { gap: 12, fontSize: 13, lineHeight: 1.5 },
-  { gap: 8, fontSize: 12.5, lineHeight: 1.5 },
-  { gap: 4, fontSize: 12, lineHeight: 1.5 },
-];
+const ARCHIVE_TITLE_GAP = 8;
+const ARCHIVE_TITLE_FONT_SIZE = 13;
+const ARCHIVE_TITLE_LINE_HEIGHT = 1.5;
+const ARCHIVE_TITLE_GLYPH_SAFETY_PX = 3;
 const ARCHIVE_TITLE_VERTICAL_BUDGET = 51.7;
 
 function calculatePanelPosition(cardRect, panelHeight, pointerY = null) {
@@ -106,8 +105,6 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   const aspectCacheKey = scopedCacheKey(`aspect:${id}`);
   const [aspectRatio, setAspectRatio] = useState(() => archiveAspectRatioCache.get(aspectCacheKey) ?? null);
   const cardRef = useRef(null);
-  const titleRef = useRef(null);
-  const titleMeasurementKeyRef = useRef('');
   const panelRef = useRef(null);
   const imgRef = useRef(null);
   const leaveTimerRef = useRef(null);
@@ -118,8 +115,6 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   const longPressTriggeredRef = useRef(false);
   const pointerStartRef = useRef(null);
   const hoverPointerYRef = useRef(null);
-  const [titleLayoutIndex, setTitleLayoutIndex] = useState(0);
-  const [fontRevision, setFontRevision] = useState(0);
 
   useEffect(() => {
     if (!cacheOnly) {
@@ -130,17 +125,6 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   const tags = archive.tags?.split(',').map((tag) => tag.trim()).filter(Boolean) || [];
   const categorizedTags = categorizeTags(tags);
   const archiveLanguage = getContentLanguage(archive.title);
-
-  useEffect(() => {
-    if (!document.fonts?.ready) return undefined;
-    let active = true;
-    document.fonts.ready.then(() => {
-      if (active) setFontRevision((revision) => revision + 1);
-    });
-    return () => {
-      active = false;
-    };
-  }, []);
 
   const totalPages = archive.pagecount || archive.total || 0;
   const current = currentPage || archive.progress || archive.page || 0;
@@ -194,50 +178,6 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
 
   const isWide = noCrop && aspectRatio != null && aspectRatio > 1.0;
   const baseMetaFontSize = isMobile ? 10.5 : 11;
-  const titleLayout = ARCHIVE_TITLE_LAYOUTS[titleLayoutIndex];
-
-  useLayoutEffect(() => {
-    const element = titleRef.current;
-    if (!element) return;
-
-    const measurementKey = `${archive.title}\u0000${element.clientWidth}\u0000${fontRevision}`;
-    if (titleMeasurementKeyRef.current !== measurementKey) {
-      titleMeasurementKeyRef.current = measurementKey;
-      if (titleLayoutIndex !== 0) {
-        setTitleLayoutIndex(0);
-        return;
-      }
-    }
-
-    const range = document.createRange();
-    range.selectNodeContents(element);
-    const lines = [];
-    for (const rect of range.getClientRects()) {
-      if (rect.width <= 0 || rect.height <= 0) continue;
-      const line = lines.find((item) => Math.abs(item.top - rect.top) < 1);
-      if (line) line.bottom = Math.max(line.bottom, rect.bottom);
-      else lines.push({ top: rect.top, bottom: rect.bottom });
-    }
-    range.detach?.();
-    lines.sort((a, b) => a.top - b.top);
-
-    if (lines.length < 2) return;
-
-    // Android WebView can paint below the geometry reported by Range.
-    if (lines.length >= 2 && titleLayoutIndex === 0) {
-      setTitleLayoutIndex(1);
-      return;
-    }
-
-    const titleBox = element.getBoundingClientRect();
-    const lastVisibleLineBottom = lines[1].bottom;
-    if (
-      lastVisibleLineBottom > titleBox.bottom
-      && titleLayoutIndex < ARCHIVE_TITLE_LAYOUTS.length - 1
-    ) {
-      setTitleLayoutIndex((index) => index + 1);
-    }
-  }, [archive.title, fontRevision, isWide, titleLayoutIndex]);
 
   const rememberAspectRatio = useCallback((next) => {
     if (!Number.isFinite(next) || next <= 0) return;
@@ -722,25 +662,26 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
             handleTitleClick(e);
           }}
           style={{
-            marginTop: `${titleLayout.gap + (reserveEmptyProgressSpace && !(pageInfo || dateAddedStr) ? 5 : 0)}px`,
+            marginTop: `${ARCHIVE_TITLE_GAP + (reserveEmptyProgressSpace && !(pageInfo || dateAddedStr) ? 5 : 0)}px`,
             overflow: 'hidden',
-            height: `${ARCHIVE_TITLE_VERTICAL_BUDGET - titleLayout.gap}px`,
+            height: `${ARCHIVE_TITLE_VERTICAL_BUDGET - ARCHIVE_TITLE_GAP}px`,
             ...(isMobile ? { cursor: 'pointer' } : {}),
           }}
           className="archive-title-slot"
         >
           <div
-            ref={titleRef}
             lang={archiveLanguage}
             className="archive-title"
             style={{
-              fontSize: `${titleLayout.fontSize}px`,
+              fontSize: `${ARCHIVE_TITLE_FONT_SIZE}px`,
               overflow: 'hidden',
               display: '-webkit-box',
               WebkitLineClamp: 2,
               WebkitBoxOrient: 'vertical',
-              lineHeight: titleLayout.lineHeight,
-              height: '100%',
+              lineHeight: ARCHIVE_TITLE_LINE_HEIGHT,
+              height: '3em',
+              paddingBottom: `${ARCHIVE_TITLE_GLYPH_SAFETY_PX}px`,
+              boxSizing: 'content-box',
             }}
           >
             {archive.title}

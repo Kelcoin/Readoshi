@@ -193,19 +193,22 @@ test('archive grids combine dense backfill with shared row centering', () => {
   assert.match(watchlist, /<ArchiveGrid/);
 });
 
-test('archive title keeps exactly two non-overlapping lines inside a fixed vertical budget', () => {
+test('archive title uses one cross-platform two-line geometry contract', () => {
   const card = read('src/components/ArchiveCard.jsx');
-  assert.match(card, /const ARCHIVE_TITLE_LAYOUTS = \[\s*\{ gap: 12, fontSize: 13, lineHeight: 1\.5 \},\s*\{ gap: 8, fontSize: 12\.5, lineHeight: 1\.5 \},\s*\{ gap: 4, fontSize: 12, lineHeight: 1\.5 \},\s*\];/s);
+  const workflow = read('.github/workflows/mobile-build.yml');
+  assert.match(card, /const ARCHIVE_TITLE_GAP = 8;/);
+  assert.match(card, /const ARCHIVE_TITLE_FONT_SIZE = 13;/);
+  assert.match(card, /const ARCHIVE_TITLE_LINE_HEIGHT = 1\.5;/);
+  assert.match(card, /const ARCHIVE_TITLE_GLYPH_SAFETY_PX = 3;/);
   assert.match(card, /const ARCHIVE_TITLE_VERTICAL_BUDGET = 51\.7;/);
-  assert.match(card, /height:\s*`\$\{ARCHIVE_TITLE_VERTICAL_BUDGET - titleLayout\.gap\}px`/);
-  assert.match(card, /className="archive-title-slot"/);
-  assert.match(card, /fontSize:\s*`\$\{titleLayout\.fontSize\}px`/);
-  assert.match(card, /className="archive-title"[\s\S]*height:\s*'100%'/);
-  assert.doesNotMatch(card, /height:\s*`\$\{titleLayout\.fontSize \* titleLayout\.lineHeight \* 2\}px`/);
+  assert.match(card, /height:\s*`\$\{ARCHIVE_TITLE_VERTICAL_BUDGET - ARCHIVE_TITLE_GAP\}px`/);
   assert.match(card, /WebkitLineClamp:\s*2/);
-  assert.match(card, /if \(lines\.length < 2\) return;/);
-  assert.match(card, /if \(lines\.length >= 2 && titleLayoutIndex === 0\)/);
-  assert.match(card, /lastVisibleLineBottom > titleBox\.bottom/);
+  assert.match(card, /height:\s*'3em'/);
+  assert.match(card, /paddingBottom:\s*`\$\{ARCHIVE_TITLE_GLYPH_SAFETY_PX\}px`/);
+  assert.match(card, /boxSizing:\s*'content-box'/);
+  assert.doesNotMatch(card, /document\.createRange\(\)/);
+  assert.doesNotMatch(card, /titleLayoutIndex|titleMeasurementKeyRef|fontRevision/);
+  assert.match(workflow, /getWebView\(\)\.getSettings\(\)\.setTextZoom\(100\)/);
 });
 
 test('mobile settings respect safe areas and reveal animations release compositor layers', () => {
@@ -320,7 +323,7 @@ test('archive tag panel follows cards inside horizontal scrollers and closes off
   assert.match(card, /updatePanelPosition\(\)/);
 });
 
-test('bundled variable CJK fonts use swap and remeasure archive titles after loading', () => {
+test('bundled variable CJK fonts use swap and language-aware title selection', () => {
   const pkg = JSON.parse(read('package.json'));
   const main = read('src/main.jsx');
   const css = read('src/index.css');
@@ -333,7 +336,6 @@ test('bundled variable CJK fonts use swap and remeasure archive titles after loa
   assert.match(main, /@fontsource-variable\/noto-sans-jp\/wght\.css/);
   assert.match(css, /font-family:\s*'Noto Sans SC Variable'/);
   assert.match(css, /:lang\(ja\)[\s\S]*'Noto Sans JP Variable'/);
-  assert.match(card, /document\.fonts\.ready/);
   assert.match(card, /lang=\{archiveLanguage\}/);
   assert.match(reader, /lang=\{getContentLanguage\(archive\?\.title\)\}/);
 });
