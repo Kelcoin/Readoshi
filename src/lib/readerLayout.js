@@ -1,5 +1,9 @@
 export const WIDE_PAGE_RATIO = 1.2;
 
+export function hasWebtoonTag(tags) {
+  return String(tags || '').split(',').some(tag => tag.trim().toLowerCase() === 'other:webtoon');
+}
+
 export function classifyMangaPageSizes(sizes, {
   minRatio = 0.5,
   maxRatio = 0.65,

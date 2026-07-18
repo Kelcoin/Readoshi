@@ -52,6 +52,7 @@ import {
   getAdjacentSpreadLocation,
   getSpreadProgressPage,
   getImmersiveSpreadGeometry,
+  hasWebtoonTag,
   isWidePageSize,
   resolveAutoReadingLayout,
 } from '../lib/readerLayout';
@@ -1469,7 +1470,17 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   }, []);
 
   useEffect(() => {
-    if (!secondaryContentReady || settings.readingLayout !== 'auto' || pages.length < 2) {
+    if (!secondaryContentReady || settings.readingLayout !== 'auto') {
+      setAutoWebtoon(false);
+      setAutoMangaEligible(false);
+      return undefined;
+    }
+    if (hasWebtoonTag(archive?.tags)) {
+      setAutoWebtoon(true);
+      setAutoMangaEligible(false);
+      return undefined;
+    }
+    if (pages.length < 2) {
       setAutoWebtoon(false);
       setAutoMangaEligible(false);
       return undefined;
@@ -1526,7 +1537,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       });
       detectorImages.clear();
     };
-  }, [pages, secondaryContentReady, settings.readingLayout]);
+  }, [archive?.tags, pages, secondaryContentReady, settings.readingLayout]);
 
   useEffect(() => {
     if (!archive || pages.length === 0) return;
@@ -3607,7 +3618,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                       ? IMAGE_LOAD_PRIORITY.CRITICAL
                       : (distance === 1 ? IMAGE_LOAD_PRIORITY.ADJACENT : IMAGE_LOAD_PRIORITY.PRELOAD);
                     return (
-                      <div key={pageUrl} data-webtoon-page={index} style={{ width: '100%', flex: '0 0 auto' }}>
+                      <div key={pageUrl} data-webtoon-page={index} className="reader-webtoon-page" style={{ flex: '0 0 auto' }}>
                         <PageImage
                           pageUrl={pageUrl}
                           pageIndex={index}
@@ -3774,7 +3785,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                 }}
               >
                 {pages.map((pageUrl, index) => (
-                  <div key={pageUrl} data-webtoon-page={index} style={{ width: '100%' }}>
+                  <div key={pageUrl} data-webtoon-page={index} className="reader-webtoon-page">
                     <PageImage
                       pageUrl={pageUrl}
                       pageIndex={index}

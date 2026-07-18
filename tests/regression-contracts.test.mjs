@@ -79,12 +79,20 @@ test('Reader toolbar has three measured states and page commits preserve transie
 
 test('Reader auto layout prioritizes scrolling and dynamically measures the reader container', () => {
   const reader = read('src/pages/Reader.jsx');
+  const css = read('src/index.css');
   assert.match(reader, /resolveAutoReadingLayout/);
   assert.match(reader, /effectiveReadingLayout/);
   assert.match(reader, /new ResizeObserver\(updateReaderContainerSize\)/);
   assert.match(reader, /doublePage: effectiveReadingLayout === 'double'/);
   assert.match(reader, /label: '滚动', value: 'webtoon'/);
   assert.doesNotMatch(reader, /label: 'Webtoon'/);
+  const autoGuard = reader.indexOf("if (!secondaryContentReady || settings.readingLayout !== 'auto')");
+  const tagCheck = reader.indexOf('hasWebtoonTag(archive?.tags)', autoGuard);
+  const seamCheck = reader.indexOf('classifyWebtoonSeams(seams', tagCheck);
+  assert.ok(autoGuard >= 0 && autoGuard < tagCheck && tagCheck < seamCheck);
+  assert.match(reader, /\[archive\?\.tags, pages, secondaryContentReady, settings\.readingLayout\]/);
+  assert.equal((reader.match(/className="reader-webtoon-page"/g) || []).length, 2);
+  assert.match(css, /\.reader-webtoon-page\s*\{[^}]*width:\s*min\(100%,\s*80dvh,\s*960px\);[^}]*margin-inline:\s*auto;/s);
 });
 
 test('reading progress can be cleared from archive menus and the Reader drawer', () => {
@@ -192,11 +200,28 @@ test('archive title keeps exactly two non-overlapping lines inside a fixed verti
   assert.match(card, /height:\s*`\$\{ARCHIVE_TITLE_VERTICAL_BUDGET - titleLayout\.gap\}px`/);
   assert.match(card, /className="archive-title-slot"/);
   assert.match(card, /fontSize:\s*`\$\{titleLayout\.fontSize\}px`/);
-  assert.match(card, /height:\s*`\$\{titleLayout\.fontSize \* titleLayout\.lineHeight \* 2\}px`/);
+  assert.match(card, /className="archive-title"[\s\S]*height:\s*'100%'/);
+  assert.doesNotMatch(card, /height:\s*`\$\{titleLayout\.fontSize \* titleLayout\.lineHeight \* 2\}px`/);
   assert.match(card, /WebkitLineClamp:\s*2/);
   assert.match(card, /if \(lines\.length < 2\) return;/);
   assert.match(card, /if \(lines\.length >= 2 && titleLayoutIndex === 0\)/);
   assert.match(card, /lastVisibleLineBottom > titleBox\.bottom/);
+});
+
+test('mobile settings respect safe areas and reveal animations release compositor layers', () => {
+  const home = read('src/pages/Home.jsx');
+  const css = read('src/index.css');
+  const customSelect = read('src/components/CustomSelect.jsx');
+
+  assert.match(home, /className="settings-overlay"/);
+  assert.match(home, /className="glass-panel settings-panel"/);
+  assert.match(css, /\.settings-panel\s*\{[^}]*max-height:\s*100%;/s);
+  assert.match(css, /@media \(max-width:\s*560px\)[\s\S]*\.settings-overlay\s*\{[\s\S]*padding-top:\s*max\(24px,\s*calc\(var\(--lrr-android-safe-top,\s*env\(safe-area-inset-top,\s*0px\)\) \+ 16px\)\);/s);
+  assert.match(css, /\.settings-overlay\s*\{[\s\S]*padding-bottom:\s*max\(24px,\s*calc\(env\(safe-area-inset-bottom,\s*0px\) \+ 16px\)\);/s);
+  assert.match(css, /\.settings-control\s*\{[^}]*flex:\s*0 0 148px;[^}]*width:\s*148px;/s);
+  assert.match(customSelect, /display:\s*'flex'[^}]*gap:\s*'8px'/s);
+  assert.match(customSelect, /<span style=\{\{[^}]*flex:\s*1[^}]*minWidth:\s*0[^}]*textOverflow:\s*'ellipsis'/s);
+  assert.match(css, /@keyframes sectionReveal\s*\{[\s\S]*to\s*\{[^}]*transform:\s*none;/s);
 });
 
 test('configuration transfer warning and settings layers stay concise and isolated', () => {
@@ -226,7 +251,7 @@ test('progress regression is configured only from the general settings section',
   assert.match(home, /allowProgressRegression: checked/);
   assert.match(home, /className="settings-control"/);
   assert.match(home, /className="settings-control settings-toggle-control"/);
-  assert.match(css, /\.settings-control\s*\{[^}]*width:\s*128px/s);
+  assert.match(css, /\.settings-control\s*\{[^}]*width:\s*148px/s);
   assert.match(css, /\.settings-toggle-control\s*\{[^}]*justify-content:\s*flex-end/s);
   assert.doesNotMatch(reader, />允许阅读进度回溯</);
 });

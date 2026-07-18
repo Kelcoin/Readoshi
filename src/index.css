@@ -392,7 +392,7 @@ textarea:focus-visible,
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: none;
   }
 }
 
@@ -1041,8 +1041,8 @@ textarea:focus-visible,
 }
 
 .settings-control {
-  flex: 0 0 128px;
-  width: 128px;
+  flex: 0 0 148px;
+  width: 148px;
   min-width: 0;
 }
 
@@ -1991,6 +1991,10 @@ textarea:focus-visible,
 
 .reader-root { color: var(--text-main); }
 .reader-stage-frame { background: var(--reader-stage-bg) !important; border-color: var(--reader-stage-border) !important; }
+.reader-webtoon-page {
+  width: min(100%, 80dvh, 960px);
+  margin-inline: auto;
+}
 .reader-page-nav-button { background: var(--reader-control-bg) !important; border-color: var(--reader-control-border) !important; color: var(--reader-control-text) !important; }
 .reader-page-nav-button:not(:disabled):hover { background: var(--reader-control-hover-bg) !important; }
 .reader-panel-surface { background: var(--reader-panel-bg) !important; color: var(--text-main) !important; border-color: var(--reader-control-border) !important; }
@@ -2317,6 +2321,17 @@ textarea:focus-visible,
   padding: 0;
 }
 
+.settings-overlay {
+  box-sizing: border-box;
+  padding: 16px;
+}
+
+.settings-panel {
+  width: 100%;
+  max-width: 640px;
+  max-height: 100%;
+}
+
 .settings-panel-scroll {
   display: flex;
   min-height: 0;
@@ -2479,6 +2494,13 @@ textarea:focus-visible,
 
 @media (max-width: 560px) {
   .home-carousel-header { padding-inline: 14px; }
+
+  .settings-overlay {
+    padding-top: max(24px, calc(var(--lrr-android-safe-top, env(safe-area-inset-top, 0px)) + 16px));
+    padding-right: max(24px, calc(env(safe-area-inset-right, 0px) + 16px));
+    padding-bottom: max(24px, calc(env(safe-area-inset-bottom, 0px) + 16px));
+    padding-left: max(24px, calc(env(safe-area-inset-left, 0px) + 16px));
+  }
 
   .metadata-page {
     padding: 16px 10px 32px;
