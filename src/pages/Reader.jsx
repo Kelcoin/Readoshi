@@ -9,6 +9,7 @@ import { isArchiveMissingError } from '../lib/historyMaintenance';
 import { translateTag, categorizeTags } from '../lib/tags';
 import { getCachedImage, getImage, primeImage, deleteImageKeys, IMAGE_LOAD_PRIORITY } from '../lib/imageCache';
 import { createImageDecodeQueue } from '../lib/imageLoadQueue';
+import { decodeImageSource, getReaderPreviewSource } from '../lib/readerPreviewDecode';
 import { DEFAULT_READER_SETTINGS, READER_SETTINGS_KEY, normalizeReaderSettings, prepareReaderSettingsForArchiveChange } from '../lib/readerSettings';
 import {
   clearArchiveProgressMarker,
@@ -62,43 +63,6 @@ import {
 } from '../lib/readerLayout';
 
 const readerImageDecodeQueue = createImageDecodeQueue();
-
-async function waitForImageTask(promise, image, src, signal) {
-  let abortHandler;
-  const abortPromise = new Promise((_, reject) => {
-    abortHandler = () => {
-      if ((image.currentSrc || image.src) === src) image.removeAttribute('src');
-      reject(new DOMException('Image decode cancelled', 'AbortError'));
-    };
-    signal?.addEventListener('abort', abortHandler, { once: true });
-  });
-  try {
-    await Promise.race([promise, abortPromise]);
-  } finally {
-    if (abortHandler) signal?.removeEventListener('abort', abortHandler);
-  }
-}
-
-async function decodeImageElement(image, src, signal) {
-  if (signal?.aborted) throw new DOMException('Image decode cancelled', 'AbortError');
-  image.src = src;
-  if (typeof image.decode === 'function') {
-    try {
-      await waitForImageTask(image.decode(), image, src, signal);
-    } catch (error) {
-      if (error?.name === 'AbortError') throw error;
-    }
-  }
-  if (!image.complete || !image.naturalWidth) {
-    const loadPromise = new Promise((resolve, reject) => {
-      image.addEventListener('load', resolve, { once: true });
-      image.addEventListener('error', reject, { once: true });
-    });
-    await waitForImageTask(loadPromise, image, src, signal);
-  }
-  if (signal?.aborted) throw new DOMException('Image decode cancelled', 'AbortError');
-  if (!image.naturalWidth || !image.naturalHeight) throw new Error('Image decode failed');
-}
 
 // ===== Authenticated Image Component =====
 const getConfiguredServerUrl = () => {
@@ -192,6 +156,9 @@ const PageImage = React.forwardRef(({
   cropBorders = false,
   priority = IMAGE_LOAD_PRIORITY.NORMAL,
   serializedDecode = false,
+  previewDecodeEnabled = false,
+  fullPrecision = false,
+  sourceSize,
 }, fwdRef) => {
   const [imgSrc, setImgSrc] = useState(null);
   const [loadState, setLoadState] = useState(() => (pageUrl ? 'loading' : 'idle'));
@@ -200,6 +167,8 @@ const PageImage = React.forwardRef(({
   const [allowNetworkFallback, setAllowNetworkFallback] = useState(() => !cacheOnly);
   const requestSeqRef = useRef(0);
   const readyPageUrlRef = useRef(null);
+  const readyPrecisionRef = useRef(null);
+  const visibleSourceRef = useRef(null);
   const imgRef = useRef(null);
   const shellRef = useRef(null);
   const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
@@ -239,7 +208,8 @@ const PageImage = React.forwardRef(({
   }, []);
 
   useLayoutEffect(() => {
-    const preserveReadySource = readyPageUrlRef.current === pageUrl;
+    const precisionKey = previewDecodeEnabled && !fullPrecision ? 'optimized' : 'full';
+    const preserveReadySource = readyPageUrlRef.current === pageUrl && readyPrecisionRef.current === precisionKey;
     if (preserveReadySource) {
       setShowLoadingStatus(false);
       setNetworkPending(false);
@@ -249,14 +219,25 @@ const PageImage = React.forwardRef(({
     let isMounted = true;
     let decodeTicket = null;
     const requestSeq = ++requestSeqRef.current;
-    readyPageUrlRef.current = null;
     setShowLoadingStatus(false);
     setNetworkPending(false);
-    setLoadState(pageUrl ? 'loading' : 'idle');
-    setImgSrc(null);
+    if (!pageUrl) {
+      readyPageUrlRef.current = null;
+      readyPrecisionRef.current = null;
+      visibleSourceRef.current = null;
+      setLoadState('idle');
+      setImgSrc(null);
+      return undefined;
+    }
+    if (!serializedDecode || !visibleSourceRef.current) {
+      readyPageUrlRef.current = null;
+      readyPrecisionRef.current = null;
+      visibleSourceRef.current = null;
+      setLoadState('loading');
+      setImgSrc(null);
+    }
 
     (async () => {
-      if (!pageUrl) return;
       onLoadStart?.(pageIndex);
 
       try {
@@ -274,17 +255,29 @@ const PageImage = React.forwardRef(({
           if (serializedDecode) {
             decodeTicket = readerImageDecodeQueue.schedule(`page:${pageUrl}:${requestSeq}`, async (signal) => {
               if (!isMounted || requestSeq !== requestSeqRef.current) return;
-              setImgSrc(src);
-              const image = imgRef.current;
-              if (!image) return;
-              await decodeImageElement(image, src, signal);
-              if (!isMounted || requestSeq !== requestSeqRef.current || image !== imgRef.current) return;
+              const resolved = await getReaderPreviewSource(src, {
+                enabled: previewDecodeEnabled,
+                fullPrecision,
+                sourceSize,
+                signal,
+              });
+              const decoded = await decodeImageSource(resolved.src, { signal });
+              if (!isMounted || requestSeq !== requestSeqRef.current || !imgRef.current) return;
               readyPageUrlRef.current = pageUrl;
-              setNaturalSize({ width: image.naturalWidth, height: image.naturalHeight });
-              onNaturalSize?.(pageIndex, { width: image.naturalWidth, height: image.naturalHeight });
+              readyPrecisionRef.current = precisionKey;
+              visibleSourceRef.current = resolved.src;
+              const resolvedNaturalSize = {
+                width: resolved.width || decoded.width,
+                height: resolved.height || decoded.height,
+              };
+              let nextCropInsets = { top: 0, right: 0, bottom: 0, left: 0 };
               if (cropBorders) {
-                try { setCropInsets(detectImageBorderInsets(image)); } catch {}
+                try { nextCropInsets = detectImageBorderInsets(decoded.image); } catch {}
               }
+              setNaturalSize(resolvedNaturalSize);
+              onNaturalSize?.(pageIndex, resolvedNaturalSize);
+              setCropInsets(nextCropInsets);
+              setImgSrc(resolved.src);
               setLoadState('ready');
               onReady?.(pageIndex);
             }, priority);
@@ -298,7 +291,7 @@ const PageImage = React.forwardRef(({
           setAllowNetworkFallback(true);
           return;
         }
-        setLoadState('error');
+        if (!visibleSourceRef.current) setLoadState('error');
         onError?.(pageIndex);
       } catch (error) {
         if (!isMounted || requestSeq !== requestSeqRef.current) return;
@@ -308,7 +301,7 @@ const PageImage = React.forwardRef(({
           setAllowNetworkFallback(true);
           return;
         }
-        setLoadState('error');
+        if (!visibleSourceRef.current) setLoadState('error');
         onError?.(pageIndex);
       }
     })();
@@ -317,7 +310,7 @@ const PageImage = React.forwardRef(({
       isMounted = false;
       decodeTicket?.cancel();
     };
-  }, [allowNetworkFallback, cacheOnly, cropBorders, onError, onLoadStart, onNaturalSize, onReady, pageIndex, pageUrl, priority, serializedDecode]);
+  }, [allowNetworkFallback, cacheOnly, cropBorders, fullPrecision, onError, onLoadStart, onNaturalSize, onReady, pageIndex, pageUrl, previewDecodeEnabled, priority, serializedDecode, sourceSize]);
 
   useEffect(() => {
     if (!networkPending) {
@@ -333,6 +326,8 @@ const PageImage = React.forwardRef(({
     const image = event.currentTarget;
     if (image !== imgRef.current || image.src !== imgSrc) return;
     readyPageUrlRef.current = pageUrl;
+    readyPrecisionRef.current = 'full';
+    visibleSourceRef.current = imgSrc;
     if (typeof image.decode === 'function') {
       try { await image.decode(); } catch {}
     }
@@ -389,7 +384,7 @@ const PageImage = React.forwardRef(({
       <img
         ref={setRefs}
         src={imgSrc || undefined}
-        className={isReady ? 'reader-content-fade-in' : undefined}
+        className={isReady && !serializedDecode ? 'reader-content-fade-in' : undefined}
         alt="Comic Content"
         draggable={false}
         loading="eager"
@@ -1106,6 +1101,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     readerSnapshot?.splitPart === 1 ? 1 : 0
   ));
   const [pageSizes, setPageSizes] = useState({});
+  const pageSizesRef = useRef(pageSizes);
+  pageSizesRef.current = pageSizes;
   const [displayedIndex, setDisplayedIndex] = useState(() => {
     const next = readerSnapshot?.displayedIndex;
     return typeof next === 'number' && next >= 0 ? next : 0;
@@ -1196,6 +1193,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
 
   // ===== Zoom =====
   const [zoomScale, setZoomScale] = useState(() => readerSnapshot?.zoomScale || 1.0);
+  const fullPrecisionDecode = zoomScale > 1.0;
 
   // ===== Pan (drag-to-scroll when zoomed) =====
   const [panX, setPanX] = useState(() => readerSnapshot?.panX || 0);
@@ -1844,13 +1842,17 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     const key = localStorage.getItem('lrr_api_key') || '';
 
     const applyUnitStyle = (image, unit) => {
-      const wide = isWidePageSize({ width: image.naturalWidth, height: image.naturalHeight });
+      const sourceSize = {
+        width: Number(image.dataset.sourceWidth) || image.naturalWidth,
+        height: Number(image.dataset.sourceHeight) || image.naturalHeight,
+      };
+      const wide = isWidePageSize(sourceSize);
       const cropped = wide && !!unit?.cropSide;
       const slot = image.parentElement;
       const slotSize = { width: slot?.clientWidth || 0, height: slot?.clientHeight || 0 };
       const cropFrame = cropped
         ? getContainedHalfFrame(
-          { width: image.naturalWidth, height: image.naturalHeight },
+          sourceSize,
           slotSize,
           unit.cropSide,
         )
@@ -1871,14 +1873,14 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       image.style.transformOrigin = 'center center';
     };
 
-    const loadImg = async (imgRef, unit, priority, trackNetwork = false) => {
+    const loadImg = async (imgRef, unit, priority, trackNetwork = false, preserveVisible = false) => {
       const pageUrl = unit ? pages[unit.pageIndex] : null;
       const pageIndex = unit?.pageIndex;
       if (!pageUrl || !imgRef.current) return false;
       try {
         const initialImage = imgRef.current;
         const unitKey = `${pageIndex}:${unit.splitPart}`;
-        if (initialImage.dataset.readerUnit !== unitKey) {
+        if (!preserveVisible && initialImage.dataset.readerUnit !== unitKey) {
           initialImage.style.display = 'none';
           delete initialImage.dataset.pageIndex;
           delete initialImage.dataset.readerUnit;
@@ -1907,43 +1909,59 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         if (!alive || loadSeq !== immersiveLoadSeqRef.current || !imgRef.current) return false;
         if (src) {
           const image = imgRef.current;
+          const precisionKey = settings.optimizedImageDecodeEnabled && !fullPrecisionDecode ? 'optimized' : 'full';
           const imageAlreadyReady = image.dataset.pageIndex === String(pageIndex)
-            && (image.currentSrc || image.src) === src
+            && image.dataset.decodePrecision === precisionKey
             && image.complete
             && image.naturalWidth > 0;
           if (imageAlreadyReady) {
-            image.dataset.readerUnit = unitKey;
-            applyUnitStyle(image, unit);
-            image.style.display = '';
-            return true;
+            return () => {
+              image.dataset.readerUnit = unitKey;
+              applyUnitStyle(image, unit);
+              image.style.display = '';
+              return true;
+            };
           }
-          image.style.display = 'none';
-          delete image.dataset.pageIndex;
           const decodeTicket = readerImageDecodeQueue.schedule(
             `immersive:${loadSeq}:${unitKey}:${decodeSequence++}`,
-            (signal) => decodeImageElement(image, src, signal),
+            async (signal) => {
+              const resolved = await getReaderPreviewSource(src, {
+                enabled: settings.optimizedImageDecodeEnabled,
+                fullPrecision: fullPrecisionDecode,
+                sourceSize: pageSizesRef.current[pageIndex],
+                signal,
+              });
+              const decoded = await decodeImageSource(resolved.src, { signal });
+              return {
+                src: resolved.src,
+                width: resolved.width || decoded.width,
+                height: resolved.height || decoded.height,
+              };
+            },
             priority,
           );
           decodeTickets.push(decodeTicket);
-          await decodeTicket.promise;
+          const decoded = await decodeTicket.promise;
           if (!alive || loadSeq !== immersiveLoadSeqRef.current || image !== imgRef.current) return false;
-          if (!image.naturalWidth || !image.naturalHeight) throw new Error('Image decode failed');
-          image.dataset.pageIndex = String(pageIndex);
-          image.dataset.readerUnit = unitKey;
-          setPageSizes((previous) => {
-            const current = previous[pageIndex];
-            if (current?.width === image.naturalWidth && current?.height === image.naturalHeight) return previous;
-            return { ...previous, [pageIndex]: { width: image.naturalWidth, height: image.naturalHeight } };
-          });
-          applyUnitStyle(image, unit);
-          image.style.display = '';
-        } else {
-          imgRef.current.src = '';
-          imgRef.current.style.display = 'none';
-          delete imgRef.current.dataset.pageIndex;
-          delete imgRef.current.dataset.readerUnit;
+          return () => {
+            if (!alive || loadSeq !== immersiveLoadSeqRef.current || image !== imgRef.current) return false;
+            image.src = decoded.src;
+            image.dataset.sourceWidth = String(decoded.width);
+            image.dataset.sourceHeight = String(decoded.height);
+            image.dataset.decodePrecision = precisionKey;
+            image.dataset.pageIndex = String(pageIndex);
+            image.dataset.readerUnit = unitKey;
+            setPageSizes((previous) => {
+              const current = previous[pageIndex];
+              if (current?.width === decoded.width && current?.height === decoded.height) return previous;
+              return { ...previous, [pageIndex]: { width: decoded.width, height: decoded.height } };
+            });
+            applyUnitStyle(image, unit);
+            image.style.display = '';
+            return true;
+          };
         }
-        return !!src;
+        return false;
       } catch {
         return false;
       }
@@ -1954,6 +1972,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         imgRef.current.style.display = 'none';
         delete imgRef.current.dataset.pageIndex;
         delete imgRef.current.dataset.readerUnit;
+        delete imgRef.current.dataset.decodePrecision;
       }
     };
 
@@ -1983,15 +2002,22 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         if (ref.current?.parentElement) resizeObserver.observe(ref.current.parentElement);
       }
     }
-    const loadSpread = async (refs, spread, priority, trackNetwork = false) => {
-      const first = spread[0] ? loadImg(refs[0], spread[0], priority, trackNetwork) : (unloadImg(refs[0]), Promise.resolve(false));
-      const second = spread[1] ? loadImg(refs[1], spread[1], priority) : (unloadImg(refs[1]), Promise.resolve(true));
-      const [firstReady, secondReady] = await Promise.all([first, second]);
-      return firstReady && secondReady;
+    const loadSpread = async (refs, spread, priority, trackNetwork = false, preserveVisible = false) => {
+      const first = spread[0]
+        ? loadImg(refs[0], spread[0], priority, trackNetwork, preserveVisible)
+        : Promise.resolve(false);
+      const second = spread[1]
+        ? loadImg(refs[1], spread[1], priority, false, preserveVisible)
+        : Promise.resolve(() => { unloadImg(refs[1]); return true; });
+      const commits = await Promise.all([first, second]);
+      if (commits.some((commit) => typeof commit !== 'function')) return false;
+      let committed = true;
+      commits.forEach((commit) => { committed = commit() && committed; });
+      return committed;
     };
 
     setImmersiveNetworkPending(false);
-    loadSpread([imgCurrRef, imgCurrSecondRef], activeSpread, IMAGE_LOAD_PRIORITY.CRITICAL, true).then((ok) => {
+    loadSpread([imgCurrRef, imgCurrSecondRef], activeSpread, IMAGE_LOAD_PRIORITY.CRITICAL, true, true).then((ok) => {
       if (!alive || loadSeq !== immersiveLoadSeqRef.current) return;
       if (currentIndexRef.current !== idx || currentSpreadIndexRef.current !== activeSpreadIndex) return;
       if (ok) {
@@ -2017,7 +2043,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       decodeTickets.forEach((ticket) => ticket.cancel());
       resizeObserver?.disconnect();
     };
-  }, [assetCacheOnly, currentIndex, currentSpreadIndex, pages, readerSpreads, settings.direction, settings.rotateWidePagesEnabled, viewMode, webtoonActive]);
+  }, [assetCacheOnly, currentIndex, currentSpreadIndex, fullPrecisionDecode, pages, readerSpreads, settings.direction, settings.optimizedImageDecodeEnabled, settings.rotateWidePagesEnabled, viewMode, webtoonActive]);
 
   // ===== Immersive corner controls =====
   useEffect(() => {
@@ -2613,50 +2639,12 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       const dir = deltaX > 0 ? 1 : -1;
       animOut(dir * window.innerWidth);
       scheduleReaderCleanupTimer(() => {
-        const previewImg = deltaX > 0 ? imgLeftRef.current : imgRightRef.current;
-        const currImg = imgCurrRef.current;
-        const previewSrc = previewImg?.currentSrc || previewImg?.src || '';
         const targetIndex = nextIdx;
         const targetSplitPart = targetLocation?.splitPart ?? 0;
-        const targetSpread = readerSpreadsRef.current[curIdx + spreadDelta] || [];
-        const canPromotePreview = !!(
-          targetSpread.length === 1 &&
-          !targetSpread[0]?.cropSide &&
-          currImg &&
-          previewImg &&
-          previewSrc &&
-          previewImg.dataset.pageIndex === String(targetIndex) &&
-          previewImg.dataset.readerUnit === `${targetIndex}:${targetSplitPart}` &&
-          previewImg.style.display !== 'none' &&
-          previewImg.complete &&
-          previewImg.naturalWidth > 0
-        );
-        if (currImg) {
-          if (canPromotePreview) {
-            currImg.style.display = '';
-            currImg.src = previewSrc;
-            currImg.dataset.pageIndex = String(targetIndex);
-          } else {
-            // If target image is not ready yet, hide the previous page so it
-            // doesn't flash back into view when the swipe container recenters.
-            currImg.src = '';
-            currImg.style.display = 'none';
-            delete currImg.dataset.pageIndex;
-            delete currImg.dataset.readerUnit;
-          }
-        }
-        const currSecondImg = imgCurrSecondRef.current;
-        if (currSecondImg) {
-          currSecondImg.src = '';
-          currSecondImg.style.display = 'none';
-          delete currSecondImg.dataset.pageIndex;
-          delete currSecondImg.dataset.readerUnit;
-        }
         flushSync(() => {
           commitPageTargetRef.current?.(targetIndex, {
             targetSplitPart,
             showIndicator: true,
-            assumeVisible: canPromotePreview,
             preserveSwipePosition: true,
           });
         });
@@ -2721,9 +2709,64 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     };
   }, [applyZoomAtPoint, commitZoomTransform, showDrawer, viewMode, webtoonActive]);
 
+  const promoteImmersiveTarget = useCallback((targetIndex, targetSplitPart) => {
+    if (viewMode !== 'immersive' || webtoonActive || currentSpreadIndex < 0) return false;
+    const targetSpreadIndex = findSpreadIndex(readerSpreads, {
+      pageIndex: targetIndex,
+      splitPart: targetSplitPart,
+    });
+    if (targetSpreadIndex < 0 || Math.abs(targetSpreadIndex - currentSpreadIndex) !== 1) return false;
+
+    const l2r = settings.direction === 'ltr';
+    const leftSpreadIndex = currentSpreadIndex + (l2r ? -1 : 1);
+    const sourceRefs = targetSpreadIndex === leftSpreadIndex
+      ? [imgLeftRef, imgLeftSecondRef]
+      : [imgRightRef, imgRightSecondRef];
+    const targetRefs = [imgCurrRef, imgCurrSecondRef];
+    const targetSpread = readerSpreads[targetSpreadIndex] || [];
+    const sourcesReady = targetSpread.length > 0 && targetSpread.every((unit, index) => {
+      const source = sourceRefs[index]?.current;
+      return source
+        && (source.currentSrc || source.src)
+        && source.dataset.pageIndex === String(unit.pageIndex)
+        && source.dataset.readerUnit === `${unit.pageIndex}:${unit.splitPart}`
+        && source.style.display !== 'none'
+        && source.complete
+        && source.naturalWidth > 0;
+    });
+    if (!sourcesReady) return false;
+
+    targetRefs.forEach((targetRef, index) => {
+      const target = targetRef.current;
+      const source = sourceRefs[index]?.current;
+      const unit = targetSpread[index];
+      if (!target) return;
+      if (!source || !unit) {
+        target.src = '';
+        target.style.display = 'none';
+        delete target.dataset.pageIndex;
+        delete target.dataset.readerUnit;
+        delete target.dataset.decodePrecision;
+        delete target.dataset.sourceWidth;
+        delete target.dataset.sourceHeight;
+        return;
+      }
+      target.src = source.currentSrc || source.src;
+      target.style.display = '';
+      target.dataset.pageIndex = String(unit.pageIndex);
+      target.dataset.readerUnit = source.dataset.readerUnit;
+      target.dataset.decodePrecision = source.dataset.decodePrecision;
+      target.dataset.sourceWidth = source.dataset.sourceWidth;
+      target.dataset.sourceHeight = source.dataset.sourceHeight;
+    });
+    return true;
+  }, [currentSpreadIndex, readerSpreads, settings.direction, viewMode, webtoonActive]);
+
   const commitPageTarget = useCallback((targetIndex, { targetSplitPart = 0, resetZoom = true, showIndicator = false, assumeVisible = false, preserveSwipePosition = false } = {}) => {
     if (pages.length === 0) return;
     const bounded = Math.max(0, Math.min(targetIndex, pages.length - 1));
+    const promoted = promoteImmersiveTarget(bounded, targetSplitPart);
+    const visibleImmediately = assumeVisible || promoted;
     void exitColdRestoreMode();
     setLoadingUiArmed(false);
     if (resetZoom) {
@@ -2738,19 +2781,19 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       showTransientPageIndicator();
       requestAnimationFrame(() => checkIndicatorOverlap(true));
     }
-    if (assumeVisible) {
+    if (visibleImmediately) {
       setDisplayedIndex(bounded);
     }
     setSplitPart(targetSplitPart === 1 ? 1 : 0);
     setCurrentIndex(bounded);
     setPageLoadPhase((prev) => ({
-      status: assumeVisible || bounded === prev.visibleIndex ? 'ready' : 'loading',
-      visibleIndex: assumeVisible ? bounded : prev.visibleIndex,
+      status: visibleImmediately || bounded === prev.visibleIndex ? 'ready' : 'loading',
+      visibleIndex: visibleImmediately ? bounded : prev.visibleIndex,
       targetIndex: bounded,
-      shownAt: assumeVisible || bounded === prev.visibleIndex ? prev.shownAt : Date.now(),
+      shownAt: visibleImmediately || bounded === prev.visibleIndex ? prev.shownAt : Date.now(),
     }));
     if (!preserveSwipePosition && swipeContainerRef.current) swipeContainerRef.current.style.transform = 'translateX(0px)';
-  }, [checkIndicatorOverlap, exitColdRestoreMode, pages.length, scheduleZoomTransform, showTransientPageIndicator, viewMode]);
+  }, [checkIndicatorOverlap, exitColdRestoreMode, pages.length, promoteImmersiveTarget, scheduleZoomTransform, showTransientPageIndicator, viewMode]);
   commitPageTargetRef.current = commitPageTarget;
 
   // ===== 3. Auto turn timer =====
@@ -3487,6 +3530,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                   {[
                     ['cropBordersEnabled', '自动裁白边'],
                     ['splitWidePagesEnabled', '拆分宽页'], ['rotateWidePagesEnabled', '旋转宽页'],
+                    ['optimizedImageDecodeEnabled', '优化超大图片解码'],
                   ].map(([key, label]) => (
                     <label key={key} style={{ fontSize: '12px', color: 'var(--text-sub)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       {label}<ToggleSwitch label={label} checked={settings[key]} onChange={(checked) => updateSettings((s) => ({ ...s, [key]: checked }))} />
@@ -3573,6 +3617,9 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                           isImmersive={false}
                           cacheOnly={assetCacheOnly}
                           priority={priority}
+                          serializedDecode
+                          previewDecodeEnabled={settings.optimizedImageDecodeEnabled}
+                          sourceSize={pageSizes[index]}
                           onNaturalSize={handlePageNaturalSize}
                           onLoadStart={distance === 0 ? handlePageVisualLoadStart : undefined}
                           onReady={distance === 0 ? handlePageVisualReady : undefined}
@@ -3585,8 +3632,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                 </div>
               ) : (
                 <div style={{ width: '100%', height: '100%', display: 'flex', justifyContent: 'center', alignItems: settings.scaleMode === 'original' ? 'flex-start' : 'center', gap: settings.doublePageGap, overflow: settings.scaleMode === 'original' ? 'auto' : 'hidden' }}>
-                  {currentSpread.map((unit) => (
-                    <div key={`${unit.pageIndex}:${unit.splitPart}`} style={{ flex: '1 1 0', minWidth: 0, height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' }}>
+                  {currentSpread.map((unit, slotIndex) => (
+                    <div key={`spread-slot:${slotIndex}`} style={{ flex: '1 1 0', minWidth: 0, height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' }}>
                       <PageImage
                         pageUrl={pages[unit.pageIndex]}
                         pageIndex={unit.pageIndex}
@@ -3598,6 +3645,9 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                         rotateWide={settings.rotateWidePagesEnabled}
                         cropBorders={settings.cropBordersEnabled}
                         serializedDecode
+                        previewDecodeEnabled={settings.optimizedImageDecodeEnabled}
+                        fullPrecision={fullPrecisionDecode}
+                        sourceSize={pageSizes[unit.pageIndex]}
                         onNaturalSize={handlePageNaturalSize}
                         loadingLabel={`正在加载第 ${unit.pageIndex + 1} 页`}
                         loadingHint="正在请求图像"
@@ -3629,6 +3679,9 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                       cacheOnly={assetCacheOnly}
                       priority={IMAGE_LOAD_PRIORITY.ADJACENT}
                       serializedDecode
+                      previewDecodeEnabled={settings.optimizedImageDecodeEnabled}
+                      fullPrecision={fullPrecisionDecode}
+                      sourceSize={pageSizes[pageIndex]}
                       onNaturalSize={handlePageNaturalSize}
                       style={{ width: '1px', height: '1px' }}
                     />
@@ -3761,6 +3814,9 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                       isImmersive
                       cacheOnly={assetCacheOnly}
                       priority={Math.abs(index - currentIndex) <= 1 ? IMAGE_LOAD_PRIORITY.ADJACENT : IMAGE_LOAD_PRIORITY.PRELOAD}
+                      serializedDecode
+                      previewDecodeEnabled={settings.optimizedImageDecodeEnabled}
+                      sourceSize={pageSizes[index]}
                       onNaturalSize={handlePageNaturalSize}
                       style={{ width: '100%', height: 'auto', maxWidth: '100%', objectFit: 'contain', borderRadius: 0 }}
                     />

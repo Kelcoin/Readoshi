@@ -42,3 +42,36 @@ export function selectMemoryImageCacheEvictions(entries, incomingSize, budget, m
   }
   return victims;
 }
+
+const READER_PREVIEW_MIN_PIXELS = 16_000_000;
+const READER_PREVIEW_OVERSAMPLE = 1.35;
+const READER_PREVIEW_MIN_LONG_EDGE = 2400;
+const READER_PREVIEW_MAX_LONG_EDGE = 4096;
+const READER_PREVIEW_MIN_REDUCTION = 1.6;
+
+export function resolveReaderPreviewDecodeSize({
+  width,
+  height,
+  viewportWidth,
+  viewportHeight,
+  devicePixelRatio = 1,
+} = {}) {
+  const sourceWidth = Math.max(0, Math.floor(Number(width) || 0));
+  const sourceHeight = Math.max(0, Math.floor(Number(height) || 0));
+  if (!sourceWidth || !sourceHeight || sourceWidth * sourceHeight < READER_PREVIEW_MIN_PIXELS) return null;
+
+  const viewportLongEdge = Math.max(Number(viewportWidth) || 0, Number(viewportHeight) || 0);
+  const dpr = Math.max(1, Math.min(4, Number(devicePixelRatio) || 1));
+  const targetLongEdge = Math.round(Math.max(
+    READER_PREVIEW_MIN_LONG_EDGE,
+    Math.min(READER_PREVIEW_MAX_LONG_EDGE, viewportLongEdge * dpr * READER_PREVIEW_OVERSAMPLE),
+  ));
+  const sourceLongEdge = Math.max(sourceWidth, sourceHeight);
+  if (sourceLongEdge < targetLongEdge * READER_PREVIEW_MIN_REDUCTION) return null;
+
+  const scale = targetLongEdge / sourceLongEdge;
+  return {
+    width: Math.max(1, Math.round(sourceWidth * scale)),
+    height: Math.max(1, Math.round(sourceHeight * scale)),
+  };
+}
