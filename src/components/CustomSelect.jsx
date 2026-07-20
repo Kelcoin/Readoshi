@@ -83,6 +83,7 @@ export default function CustomSelect({ value, options, onChange, style, compact,
         <div ref={dropdownRef} className="glass-panel dropdown-animate" data-select-dropdown="true" style={{
           position: 'fixed', top: pos.top, left: pos.left, width: pos.width || 'auto',
           zIndex: 100100, padding: '8px 0', maxHeight: pos.maxHeight, overflowY: 'auto',
+          overscrollBehavior: 'contain', touchAction: 'pan-y',
           boxShadow: '0 18px 52px rgba(0,0,0,0.46)',
           background: 'var(--dropdown-bg)'
         }}>

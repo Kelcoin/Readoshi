@@ -413,6 +413,7 @@ test('immersive touch trigger consumes synthetic follow-up clicks', () => {
 
 test('reader overlays do not mutate background geometry and settings use remaining viewport', () => {
   const reader = read('src/pages/Reader.jsx');
+  const select = read('src/components/CustomSelect.jsx');
 
   assert.doesNotMatch(reader, /if \(showDrawer\)\s*\{\s*return acquireBodyScrollLock\(\);/s);
   assert.match(reader, /className="reader-thumbnail-drawer-overlay"[\s\S]*overscrollBehavior:\s*'contain'/s);
@@ -421,6 +422,11 @@ test('reader overlays do not mutate background geometry and settings use remaini
   assert.match(reader, /const settingsPanelTop = Math\.ceil\(toolbarRef\.current\?\.getBoundingClientRect\(\)\.bottom \|\| 0\)/);
   assert.match(reader, /data-panel="settings"[\s\S]*position:\s*'fixed'[\s\S]*top:\s*`\$\{settingsPanelTop \+ 8\}px`[\s\S]*maxHeight:\s*`calc\(100dvh - \$\{settingsPanelTop \+ 8\}px - max\(12px, calc\(var\(--app-safe-area-bottom\) \+ 8px\)\)\)`/s);
   assert.doesNotMatch(reader, /data-panel="settings"[\s\S]{0,500}bottom:\s*'max\(12px, calc\(var\(--app-safe-area-bottom\) \+ 8px\)\)'/s);
+  assert.match(reader, /READER_OVERLAY_SCROLL_SELECTOR\s*=\s*'\[data-reader-overlay-scroll\], \[data-select-dropdown="true"\]'/);
+  assert.match(reader, /document\.addEventListener\('wheel', containReaderOverlayScroll, \{ capture: true, passive: false \}\)/);
+  assert.match(reader, /document\.addEventListener\('touchmove', containReaderOverlayScroll, \{ capture: true, passive: false \}\)/);
+  assert.ok((reader.match(/data-reader-overlay-scroll/g) || []).length >= 4);
+  assert.match(select, /data-select-dropdown="true"[\s\S]*overscrollBehavior:\s*'contain'[\s\S]*touchAction:\s*'pan-y'/s);
 });
 
 test('configuration transfer warning and settings layers stay concise and isolated', () => {

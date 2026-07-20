@@ -138,6 +138,7 @@ const DRAWER_COLUMNS = 3;
 const DRAWER_GAP = 12;
 const DRAWER_OVERSCAN_ROWS = 4;
 const DRAWER_TRANSITION_MS = 300;
+const READER_OVERLAY_SCROLL_SELECTOR = '[data-reader-overlay-scroll], [data-select-dropdown="true"]';
 const PageImage = React.forwardRef(({
   pageUrl,
   pageIndex,
@@ -553,6 +554,7 @@ function ReaderArchiveListPanel({ type, title, items, emptyMessage, cacheOnly, o
     <div
       ref={panelRef}
       data-panel={type}
+      data-reader-overlay-scroll
       className="reader-archive-panel reader-panel-surface glass-panel dropdown-animate no-scrollbar"
       style={{
         position: 'absolute',
@@ -1501,6 +1503,21 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     }
     return undefined;
   }, [viewMode]);
+
+  useEffect(() => {
+    if (!showSettingsPanel && !showDrawer) return undefined;
+    const containReaderOverlayScroll = (event) => {
+      if (event.target?.closest?.(READER_OVERLAY_SCROLL_SELECTOR)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    document.addEventListener('wheel', containReaderOverlayScroll, { capture: true, passive: false });
+    document.addEventListener('touchmove', containReaderOverlayScroll, { capture: true, passive: false });
+    return () => {
+      document.removeEventListener('wheel', containReaderOverlayScroll, true);
+      document.removeEventListener('touchmove', containReaderOverlayScroll, true);
+    };
+  }, [showDrawer, showSettingsPanel]);
 
   // ── bfcache / visibility / keep-alive guard ──
   const lastFetchedRef = useRef(0);
@@ -3514,7 +3531,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
               display: 'flex', flexDirection: 'column',
             }}
           >
-            <div className="no-scrollbar" style={{ overflowY: 'auto', flex: 1 }}>
+            <div data-reader-overlay-scroll className="no-scrollbar" style={{ overflowY: 'auto', overscrollBehavior: 'contain', touchAction: 'pan-y', flex: 1 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
               <div>
                 <div style={{ fontSize: '12px', color: 'var(--accent)', fontWeight: 600, marginBottom: '10px', borderBottom: '1px solid var(--reader-control-border)', paddingBottom: '6px' }}>翻页设定</div>
@@ -4082,7 +4099,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                 {archive?.title}
               </div>
             </div>
-            <div className="no-scrollbar" style={{ overflowY: 'auto', padding: '0 14px 14px 14px', flex: 1 }}>
+            <div data-reader-overlay-scroll className="no-scrollbar" style={{ overflowY: 'auto', overscrollBehavior: 'contain', touchAction: 'pan-y', padding: '0 14px 14px 14px', flex: 1 }}>
             {(() => {
               const grouped = groupedTags;
               if (grouped.length === 0) return <div style={{ color: 'var(--text-sub)', fontSize: '12px' }}>无标签</div>;
@@ -4152,6 +4169,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
           <div style={{ flex: 1, minHeight: 0 }}>
             <div
               ref={drawerGridRef}
+              data-reader-overlay-scroll
               className="reader-drawer-scroll"
               style={{
                 height: '100%',
