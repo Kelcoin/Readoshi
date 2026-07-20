@@ -411,6 +411,17 @@ test('immersive touch trigger consumes synthetic follow-up clicks', () => {
   assert.match(reader, /className="reader-immersive-trigger reader-immersive-trigger-right"[\s\S]*onTouchStart=\{\(event\) => \{[\s\S]*event\.preventDefault\(\)/s);
 });
 
+test('reader overlays do not mutate background geometry and settings use remaining viewport', () => {
+  const reader = read('src/pages/Reader.jsx');
+
+  assert.doesNotMatch(reader, /if \(showDrawer\)\s*\{\s*return acquireBodyScrollLock\(\);/s);
+  assert.match(reader, /className="reader-thumbnail-drawer-overlay"[\s\S]*overscrollBehavior:\s*'contain'/s);
+  assert.match(reader, /className="reader-thumbnail-drawer-backdrop"[\s\S]*touchAction:\s*'none'[\s\S]*onClick=\{closeThumbnailDrawer\}/s);
+  assert.match(reader, /showSettingsPanel\s*&&\s*createPortal\(/s);
+  assert.match(reader, /const settingsPanelTop = Math\.ceil\(toolbarRef\.current\?\.getBoundingClientRect\(\)\.bottom \|\| 0\)/);
+  assert.match(reader, /data-panel="settings"[\s\S]*position:\s*'fixed'[\s\S]*top:\s*`\$\{settingsPanelTop \+ 8\}px`[\s\S]*bottom:\s*'max\(12px, calc\(var\(--app-safe-area-bottom\) \+ 8px\)\)'/s);
+});
+
 test('configuration transfer warning and settings layers stay concise and isolated', () => {
   const dialog = read('src/components/ConfigTransferDialog.jsx');
   const home = read('src/pages/Home.jsx');

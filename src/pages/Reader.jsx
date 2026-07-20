@@ -1494,13 +1494,6 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     });
   }, [currentIndex, pages.length]);
 
-  useEffect(() => {
-    if (showDrawer) {
-      return acquireBodyScrollLock();
-    }
-    return undefined;
-  }, [showDrawer]);
-
   // Lock body scroll in immersive mode
   useEffect(() => {
     if (viewMode === 'immersive') {
@@ -3357,6 +3350,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   splitPartCurrentRef.current = splitPart;
   currentSpreadIndexRef.current = Math.max(0, currentSpreadIndex);
   readerSpreadsRef.current = readerSpreads;
+  const settingsPanelTop = Math.ceil(toolbarRef.current?.getBoundingClientRect().bottom || 0);
 
   return (
     <div
@@ -3503,18 +3497,18 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         )}
 
         {/* ===== Settings Panel ===== */}
-        {showSettingsPanel && (
+        {showSettingsPanel && createPortal(
           <div data-panel="settings"
             className="reader-panel-surface glass-panel dropdown-animate"
             style={{
-              position: 'absolute',
-              top: '62px',
-              right: '20px',
+              position: 'fixed',
+              top: `${settingsPanelTop + 8}px`,
+              right: 'max(20px, calc(var(--app-safe-area-right) + 12px))',
+              bottom: 'max(12px, calc(var(--app-safe-area-bottom) + 8px))',
               zIndex: 9999,
               padding: '22px',
               borderRadius: '14px',
               width: 'min(380px, calc(100vw - 40px))',
-              maxHeight: '80vh',
               boxShadow: '0 12px 40px rgba(0,0,0,0.55)',
               border: '1px solid var(--reader-control-border)',
               display: 'flex', flexDirection: 'column',
@@ -3581,7 +3575,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             </div>
             </div>
           </div>
-        )}
+        , document.body)}
 
         {viewMode !== 'immersive' && showArchivePanel && (
           <ReaderArchiveListPanel
@@ -4039,16 +4033,21 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
           backdropFilter: showDrawer ? 'blur(4px)' : 'blur(0px)',
           WebkitBackdropFilter: showDrawer ? 'blur(4px)' : 'blur(0px)',
           transition: 'background 0.25s ease, backdrop-filter 0.25s ease, -webkit-backdrop-filter 0.25s ease',
+          overscrollBehavior: 'contain',
         }}
-        onClick={closeThumbnailDrawer}
-        onWheel={(event) => event.stopPropagation()}
       >
+        <div
+          className="reader-thumbnail-drawer-backdrop"
+          style={{ position: 'absolute', inset: 0, touchAction: 'none' }}
+          onClick={closeThumbnailDrawer}
+          onWheel={(event) => { event.preventDefault(); event.stopPropagation(); }}
+        />
         <div
           className="reader-panel-surface reader-thumbnail-drawer-panel"
           data-side={drawerSide}
           style={{
             width: '100%', maxWidth: '420px', height: '100%', background: 'var(--reader-panel-bg)',
-            display: 'flex', flexDirection: 'column',
+            display: 'flex', flexDirection: 'column', position: 'relative', zIndex: 1,
             boxShadow: drawerSide === 'left' ? '8px 0 32px rgba(0,0,0,0.5)' : '-8px 0 32px rgba(0,0,0,0.5)',
             transform: showDrawer ? 'translateX(0)' : `translateX(${drawerSide === 'left' ? '-100%' : '100%'})`,
             transition: 'transform 0.3s cubic-bezier(0.4,0,0.2,1)',
