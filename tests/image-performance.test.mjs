@@ -31,22 +31,56 @@ test('normal paged reader keeps adjacent decode-window images mounted offscreen'
   assert.match(source, /adjacentDecodePageIndices\.map\([\s\S]*?<PageImage[\s\S]*?serializedDecode/);
 });
 
-test('image decode queue runs one task at a time', async () => {
+test('image decode queue reserves one of two slots for critical work', async () => {
   assert.equal(typeof imageLoadQueue.createImageDecodeQueue, 'function');
-  const queue = imageLoadQueue.createImageDecodeQueue();
+  const queue = imageLoadQueue.createImageDecodeQueue({ maxConcurrent: 2 });
   const events = [];
-  let releaseFirst;
-  const first = queue.schedule('first', async () => {
-    events.push('first:start');
-    await new Promise((resolve) => { releaseFirst = resolve; });
-    events.push('first:end');
-  });
-  const second = queue.schedule('second', async () => events.push('second:start'));
+  let releaseBackground;
+  const first = queue.schedule('background-1', async () => {
+    events.push('background-1:start');
+    await new Promise((resolve) => { releaseBackground = resolve; });
+    events.push('background-1:end');
+  }, imageLoadQueue.IMAGE_LOAD_PRIORITY.ADJACENT);
+  const second = queue.schedule('background-2', async () => {
+    events.push('background-2:start');
+  }, imageLoadQueue.IMAGE_LOAD_PRIORITY.ADJACENT);
+  const critical = queue.schedule('critical', async () => {
+    events.push('critical:start');
+  }, imageLoadQueue.IMAGE_LOAD_PRIORITY.CRITICAL);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(events, ['first:start']);
-  releaseFirst();
-  await Promise.all([first.promise, second.promise]);
-  assert.deepEqual(events, ['first:start', 'first:end', 'second:start']);
+  assert.deepEqual(events, ['background-1:start', 'critical:start']);
+  releaseBackground();
+  await Promise.all([first.promise, second.promise, critical.promise]);
+  assert.deepEqual(events, [
+    'background-1:start',
+    'critical:start',
+    'background-1:end',
+    'background-2:start',
+  ]);
+});
+
+test('image decode queue can start one adjacent decode beside active critical work', async () => {
+  const queue = imageLoadQueue.createImageDecodeQueue({ maxConcurrent: 2 });
+  const events = [];
+  let releaseCritical;
+  let releaseAdjacent;
+  const critical = queue.schedule('critical-first', async () => {
+    events.push('critical:start');
+    await new Promise((resolve) => { releaseCritical = resolve; });
+  }, imageLoadQueue.IMAGE_LOAD_PRIORITY.CRITICAL);
+  const adjacent = queue.schedule('adjacent', async () => {
+    events.push('adjacent:start');
+    await new Promise((resolve) => { releaseAdjacent = resolve; });
+  }, imageLoadQueue.IMAGE_LOAD_PRIORITY.ADJACENT);
+  const preload = queue.schedule('preload', async () => {
+    events.push('preload:start');
+  }, imageLoadQueue.IMAGE_LOAD_PRIORITY.PRELOAD);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ['critical:start', 'adjacent:start']);
+  releaseCritical();
+  releaseAdjacent();
+  await Promise.all([critical.promise, adjacent.promise, preload.promise]);
+  assert.deepEqual(events, ['critical:start', 'adjacent:start', 'preload:start']);
 });
 
 test('image decode queue cancels stale queued and active work', async () => {
@@ -168,7 +202,8 @@ test('image sources decode offscreen before replacing a visible bitmap', async (
 
 test('paged readers retain the visible frame until the replacement spread is decoded', () => {
   const reader = read('src/pages/Reader.jsx');
-  assert.match(reader, /currentSpread\.map\(\(unit, slotIndex\) =>/);
+  assert.match(reader, /normalSpreadRenderState\.units\.map\(\(unit, slotIndex\) =>/);
+  assert.match(reader, /getPendingSpreadRenderState\(currentSpread, displayedSpread, targetPending\)/);
   assert.match(reader, /key=\{`spread-slot:\$\{slotIndex\}`\}/);
   assert.match(reader, /const decoded = await decodeImageSource\(resolved\.src/);
   assert.match(reader, /loadSpread\(\[imgCurrRef, imgCurrSecondRef\], activeSpread, IMAGE_LOAD_PRIORITY\.CRITICAL, true, true\)/);

@@ -542,3 +542,24 @@ test('EH comments are persistent, timeout-safe, and reject stale requests', () =
   assert.doesNotMatch(comments, /cacheKey \+ '::api'/);
   assert.doesNotMatch(comments, /autoRetryTimerRef|autoRetryCountRef/);
 });
+
+test('Reader sticky flow owns secondary panels and keeps their requests mounted in immersive mode', () => {
+  const reader = read('src/pages/Reader.jsx');
+  assert.match(reader, /data-reader-normal-flow/);
+  assert.match(reader, /data-reader-normal-flow[\s\S]*data-reader-toolbar[\s\S]*data-reader-secondary-content[\s\S]*Thumbnail Drawer/);
+  assert.doesNotMatch(reader, /viewMode === 'normal' && secondaryContentReady && archive/);
+  assert.match(reader, /data-reader-secondary-content[\s\S]*display:\s*viewMode === 'normal' \? 'block' : 'none'/);
+});
+
+test('normal Reader holds old spread geometry until every target slot is decoded', () => {
+  const reader = read('src/pages/Reader.jsx');
+  assert.match(reader, /getPendingSpreadRenderState/);
+  assert.match(reader, /normalSpreadRenderState\.units\.map/);
+  assert.match(reader, /slotIndex < normalSpreadRenderState\.visibleSlotCount/);
+  assert.match(reader, /handleNormalSpreadUnitReady/);
+});
+
+test('touch surfaces suppress native WebKit tap highlight globally', () => {
+  const css = read('src/index.css');
+  assert.match(css, /\*\s*\{[^}]*-webkit-tap-highlight-color:\s*transparent;/s);
+});

@@ -75,37 +75,47 @@ function abortError() {
   return new DOMException('Image decode cancelled', 'AbortError');
 }
 
-export function createImageDecodeQueue() {
+export function createImageDecodeQueue({ maxConcurrent = 2 } = {}) {
+  const limit = Math.max(2, Number(maxConcurrent) || 2);
+  const backgroundLimit = Math.max(1, limit - 1);
   const queued = [];
-  let active = null;
+  const active = new Set();
   let sequence = 0;
 
+  const isCritical = (job) => job.priority >= IMAGE_LOAD_PRIORITY.CRITICAL;
+
   function pump() {
-    if (active || queued.length === 0) return;
-    queued.sort((a, b) => (b.priority - a.priority) || (a.sequence - b.sequence));
-    const job = queued.shift();
-    if (job.controller.signal.aborted) {
-      job.reject(abortError());
-      pump();
-      return;
+    while (queued.length > 0 && active.size < limit) {
+      queued.sort((a, b) => (b.priority - a.priority) || (a.sequence - b.sequence));
+      const criticalWaiting = queued.some(isCritical);
+      const candidateIndex = criticalWaiting ? queued.findIndex(isCritical) : 0;
+      const job = queued[candidateIndex];
+      const backgroundActive = [...active].filter((activeJob) => !isCritical(activeJob)).length;
+      if (!isCritical(job) && backgroundActive >= backgroundLimit) return;
+      queued.splice(candidateIndex, 1);
+      if (job.controller.signal.aborted) {
+        job.settled = true;
+        job.reject(abortError());
+        continue;
+      }
+      active.add(job);
+      Promise.resolve()
+        .then(() => job.task(job.controller.signal))
+        .then(
+          (value) => {
+            job.settled = true;
+            job.resolve(value);
+          },
+          (error) => {
+            job.settled = true;
+            job.reject(error);
+          },
+        )
+        .finally(() => {
+          active.delete(job);
+          pump();
+        });
     }
-    active = job;
-    Promise.resolve()
-      .then(() => job.task(job.controller.signal))
-      .then(
-        (value) => {
-          job.settled = true;
-          job.resolve(value);
-        },
-        (error) => {
-          job.settled = true;
-          job.reject(error);
-        },
-      )
-      .finally(() => {
-        if (active === job) active = null;
-        pump();
-      });
   }
 
   function schedule(key, task, priority = IMAGE_LOAD_PRIORITY.NORMAL) {
@@ -131,7 +141,7 @@ export function createImageDecodeQueue() {
   }
 
   function cancelAll() {
-    active?.cancel();
+    [...active].forEach((job) => job.cancel());
     [...queued].forEach((job) => job.cancel());
   }
 

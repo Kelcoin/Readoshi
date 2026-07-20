@@ -158,6 +158,18 @@ export function getReaderDecodeWindow(spreads, currentSpreadIndex) {
   return spreads.slice(Math.max(0, current - 1), Math.min(spreads.length, current + 2));
 }
 
+export function getPendingSpreadRenderState(currentSpread, displayedSpread, pending = false) {
+  const targetUnits = Array.isArray(currentSpread) ? currentSpread : [];
+  const visibleUnits = pending && Array.isArray(displayedSpread) && displayedSpread.length > 0
+    ? displayedSpread
+    : targetUnits;
+  const units = [...targetUnits];
+  if (pending && visibleUnits.length > units.length) {
+    units.push(...visibleUnits.slice(units.length));
+  }
+  return { units, visibleSlotCount: visibleUnits.length };
+}
+
 export function getAdjacentSpreadLocation(spreads, location, delta) {
   if (!Array.isArray(spreads) || spreads.length === 0) return null;
   const current = Math.max(0, findSpreadIndex(spreads, location));

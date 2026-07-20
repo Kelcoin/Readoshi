@@ -56,6 +56,7 @@ import {
   getAdjacentSpreadLocation,
   getSpreadProgressPage,
   getImmersiveSpreadGeometry,
+  getPendingSpreadRenderState,
   getReaderDecodeWindow,
   hasWebtoonTag,
   isWidePageSize,
@@ -2945,6 +2946,22 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     ));
   }, []);
 
+  const normalSpreadKey = currentSpread
+    .map((unit) => `${unit.pageIndex}:${unit.splitPart}`)
+    .join('|');
+  const normalSpreadReadyRef = useRef({ key: '', pages: new Set() });
+  if (normalSpreadReadyRef.current.key !== normalSpreadKey) {
+    normalSpreadReadyRef.current = { key: normalSpreadKey, pages: new Set() };
+  }
+  const handleNormalSpreadUnitReady = useCallback((pageIndex) => {
+    const readyState = normalSpreadReadyRef.current;
+    if (readyState.key !== normalSpreadKey) return;
+    readyState.pages.add(pageIndex);
+    if (currentSpread.every((unit) => readyState.pages.has(unit.pageIndex))) {
+      handlePageVisualReady(currentIndex);
+    }
+  }, [currentIndex, currentSpread, handlePageVisualReady, normalSpreadKey]);
+
   const handlePageVisualError = useCallback((pageIndex) => {
     if (typeof pageIndex !== 'number') return;
     setPageLoadPhase((prev) => (
@@ -3275,6 +3292,9 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         : { width: '100%', height: '100%', objectFit: 'contain' };
   const normalTargetIndex = Math.max(0, Math.min(currentIndex, Math.max(pages.length - 1, 0)));
   const targetPending = pages.length > 0 && currentIndex !== displayedIndex;
+  const displayedSpreadIndex = findSpreadIndex(readerSpreads, { pageIndex: displayedIndex, splitPart });
+  const displayedSpread = readerSpreads[Math.max(0, displayedSpreadIndex)] || [];
+  const normalSpreadRenderState = getPendingSpreadRenderState(currentSpread, displayedSpread, targetPending);
   const loadingUiVisible = targetPending && pageLoadPhase.status === 'loading' && loadingUiArmed;
   const immersivePagePending = viewMode === 'immersive' && loadingUiVisible;
   const spreadPageNumbers = [...new Set(currentSpread.map((unit) => unit.pageIndex + 1))].sort((a, b) => a - b);
@@ -3350,6 +3370,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       }}
     >
       <div
+        data-reader-normal-flow
         style={viewMode === 'normal'
           ? { display: 'flex', flexDirection: 'column', position: 'relative', touchAction: 'manipulation' }
           : { height: '100dvh', display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative', touchAction: webtoonActive ? 'pan-y' : 'none' }}
@@ -3632,8 +3653,10 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                 </div>
               ) : (
                 <div style={{ width: '100%', height: '100%', display: 'flex', justifyContent: 'center', alignItems: settings.scaleMode === 'original' ? 'flex-start' : 'center', gap: settings.doublePageGap, overflow: settings.scaleMode === 'original' ? 'auto' : 'hidden' }}>
-                  {currentSpread.map((unit, slotIndex) => (
-                    <div key={`spread-slot:${slotIndex}`} style={{ flex: '1 1 0', minWidth: 0, height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' }}>
+                  {normalSpreadRenderState.units.map((unit, slotIndex) => {
+                    const slotVisible = slotIndex < normalSpreadRenderState.visibleSlotCount;
+                    return (
+                    <div key={`spread-slot:${slotIndex}`} style={{ flex: slotVisible ? '1 1 0' : '0 0 0', width: slotVisible ? 'auto' : 0, minWidth: 0, height: '100%', display: 'flex', visibility: slotVisible ? 'visible' : 'hidden', pointerEvents: slotVisible ? 'auto' : 'none', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' }}>
                       <PageImage
                         pageUrl={pages[unit.pageIndex]}
                         pageIndex={unit.pageIndex}
@@ -3653,11 +3676,12 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                         loadingHint="正在请求图像"
                         errorLabel={`第 ${unit.pageIndex + 1} 页加载失败`}
                         onLoadStart={unit.pageIndex === currentIndex ? handlePageVisualLoadStart : undefined}
-                        onReady={unit.pageIndex === currentIndex ? handlePageVisualReady : undefined}
+                        onReady={handleNormalSpreadUnitReady}
                         onError={unit.pageIndex === currentIndex ? handlePageVisualError : undefined}
                       />
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )) : (
                 <ReaderStageSlot
@@ -3979,10 +4003,13 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             )}
           </div>
         )}
-      </div>
 
-      {viewMode === 'normal' && secondaryContentReady && archive && (
-        <div style={{ maxWidth: '1300px', width: '100%', margin: '0 auto', padding: '0 16px 24px 16px' }}>
+        {archive && (
+        <div
+          data-reader-secondary-content
+          aria-hidden={viewMode !== 'normal'}
+          style={{ display: viewMode === 'normal' ? 'block' : 'none', maxWidth: '1300px', width: '100%', margin: '0 auto', padding: '0 16px 24px 16px' }}
+        >
           <Recommendations currentArchive={archive} />
           {sourceUrl && (
             <EhComments
@@ -3998,7 +4025,8 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             />
           )}
         </div>
-      )}
+        )}
+      </div>
 
       {/* ===== Thumbnail Drawer ===== */}
       <div

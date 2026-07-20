@@ -7,10 +7,31 @@ import {
   getAdjacentSpreadLocation,
   getSpreadProgressPage,
   getImmersiveSpreadGeometry,
+  getPendingSpreadRenderState,
   hasWebtoonTag,
   isWidePageSize,
   resolveAutoReadingLayout,
 } from '../src/lib/readerLayout.js';
+
+test('pending spread keeps previous slot geometry while target pages decode', () => {
+  const cover = [{ pageIndex: 0, splitPart: 0, cropSide: null }];
+  const spread = [
+    { pageIndex: 1, splitPart: 0, cropSide: null },
+    { pageIndex: 2, splitPart: 0, cropSide: null },
+  ];
+  assert.deepEqual(getPendingSpreadRenderState(spread, cover, true), {
+    units: spread,
+    visibleSlotCount: 1,
+  });
+  assert.deepEqual(getPendingSpreadRenderState(cover, spread, true), {
+    units: [cover[0], spread[1]],
+    visibleSlotCount: 2,
+  });
+  assert.deepEqual(getPendingSpreadRenderState(spread, cover, false), {
+    units: spread,
+    visibleSlotCount: 2,
+  });
+});
 
 test('Webtoon metadata tag matching is exact and case insensitive', () => {
   assert.equal(hasWebtoonTag('artist:a, other:webtoon, language:english'), true);
