@@ -4030,6 +4030,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
 
       {/* ===== Thumbnail Drawer ===== */}
       <div
+        className="reader-thumbnail-drawer-overlay"
         style={{
           position: 'fixed', inset: 0, zIndex: 200,
           display: 'flex', justifyContent: drawerSide === 'left' ? 'flex-start' : 'flex-end',
@@ -4043,9 +4044,10 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         onWheel={(event) => event.stopPropagation()}
       >
         <div
-          className="reader-panel-surface"
+          className="reader-panel-surface reader-thumbnail-drawer-panel"
+          data-side={drawerSide}
           style={{
-            width: '100%', maxWidth: '420px', height: '100%', background: 'var(--reader-panel-bg)', padding: '24px',
+            width: '100%', maxWidth: '420px', height: '100%', background: 'var(--reader-panel-bg)',
             display: 'flex', flexDirection: 'column',
             boxShadow: drawerSide === 'left' ? '8px 0 32px rgba(0,0,0,0.5)' : '-8px 0 32px rgba(0,0,0,0.5)',
             transform: showDrawer ? 'translateX(0)' : `translateX(${drawerSide === 'left' ? '-100%' : '100%'})`,

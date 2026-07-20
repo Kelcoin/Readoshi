@@ -53,6 +53,10 @@
   --comment-negative: #f27474;
   --comment-uploader-bg: rgba(255,152,0,0.08);
   --comment-uploader-border: rgba(255,152,0,0.34);
+  --app-safe-area-top: var(--lrr-android-safe-top, env(safe-area-inset-top, 0px));
+  --app-safe-area-right: env(safe-area-inset-right, 0px);
+  --app-safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --app-safe-area-left: env(safe-area-inset-left, 0px);
   --radius-panel: 16px;
   --radius-control: 8px;
 }
@@ -1235,7 +1239,10 @@ textarea:focus-visible,
   display: grid;
   place-items: center;
   box-sizing: border-box;
-  padding: max(24px, env(safe-area-inset-top, 0px)) max(24px, env(safe-area-inset-right, 0px)) max(24px, env(safe-area-inset-bottom, 0px)) max(24px, env(safe-area-inset-left, 0px));
+  padding-top: max(24px, calc(var(--app-safe-area-top) + 24px));
+  padding-right: max(24px, calc(var(--app-safe-area-right) + 24px));
+  padding-bottom: max(24px, calc(var(--app-safe-area-bottom) + 24px));
+  padding-left: max(24px, calc(var(--app-safe-area-left) + 24px));
   text-align: center;
 }
 
@@ -1580,7 +1587,10 @@ textarea:focus-visible,
   inset: 0;
   z-index: 200000;
   overscroll-behavior: contain;
-  padding: 20px;
+  padding-top: max(20px, calc(var(--app-safe-area-top) + 20px));
+  padding-right: max(20px, calc(var(--app-safe-area-right) + 20px));
+  padding-bottom: max(20px, calc(var(--app-safe-area-bottom) + 20px));
+  padding-left: max(20px, calc(var(--app-safe-area-left) + 20px));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1770,10 +1780,10 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   justify-content: center;
-  padding-top: max(20px, calc(var(--lrr-android-safe-top, env(safe-area-inset-top, 0px)) + 16px));
-  padding-right: max(20px, calc(env(safe-area-inset-right, 0px) + 16px));
-  padding-bottom: max(20px, calc(env(safe-area-inset-bottom, 0px) + 16px));
-  padding-left: max(20px, calc(env(safe-area-inset-left, 0px) + 16px));
+  padding-top: max(20px, calc(var(--app-safe-area-top) + 16px));
+  padding-right: max(20px, calc(var(--app-safe-area-right) + 16px));
+  padding-bottom: max(20px, calc(var(--app-safe-area-bottom) + 16px));
+  padding-left: max(20px, calc(var(--app-safe-area-left) + 16px));
   background: rgba(0, 0, 0, 0.62);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -1948,10 +1958,10 @@ textarea:focus-visible,
 
 @media (max-width: 560px) {
   .archive-thumbnail-dialog-overlay {
-    padding-top: max(16px, calc(var(--lrr-android-safe-top, env(safe-area-inset-top, 0px)) + 12px));
-    padding-right: max(12px, calc(env(safe-area-inset-right, 0px) + 8px));
-    padding-bottom: max(16px, calc(env(safe-area-inset-bottom, 0px) + 12px));
-    padding-left: max(12px, calc(env(safe-area-inset-left, 0px) + 8px));
+    padding-top: max(16px, calc(var(--app-safe-area-top) + 12px));
+    padding-right: max(12px, calc(var(--app-safe-area-right) + 8px));
+    padding-bottom: max(16px, calc(var(--app-safe-area-bottom) + 12px));
+    padding-left: max(12px, calc(var(--app-safe-area-left) + 8px));
   }
 
   .archive-thumbnail-dialog-header { padding: 12px; }
@@ -2393,6 +2403,22 @@ textarea:focus-visible,
 .reader-immersive-trigger-left { left: 0; }
 .reader-immersive-trigger-right { right: 0; }
 
+.reader-thumbnail-drawer-panel {
+  box-sizing: border-box;
+  padding-top: calc(24px + var(--app-safe-area-top));
+  padding-right: 24px;
+  padding-bottom: calc(24px + var(--app-safe-area-bottom));
+  padding-left: 24px;
+}
+
+.reader-thumbnail-drawer-panel[data-side="left"] {
+  padding-left: calc(24px + var(--app-safe-area-left));
+}
+
+.reader-thumbnail-drawer-panel[data-side="right"] {
+  padding-right: calc(24px + var(--app-safe-area-right));
+}
+
 .reader-immersive-controls {
   position: absolute;
   bottom: calc(env(safe-area-inset-bottom, 0px) + 52px);
@@ -2758,7 +2784,10 @@ textarea:focus-visible,
 
 .settings-overlay {
   box-sizing: border-box;
-  padding: 16px;
+  padding-top: max(16px, calc(var(--app-safe-area-top) + 16px));
+  padding-right: max(16px, calc(var(--app-safe-area-right) + 16px));
+  padding-bottom: max(16px, calc(var(--app-safe-area-bottom) + 16px));
+  padding-left: max(16px, calc(var(--app-safe-area-left) + 16px));
 }
 
 .settings-panel {
@@ -2935,10 +2964,10 @@ textarea:focus-visible,
   .home-carousel-header { padding-inline: 14px; }
 
   .settings-overlay {
-    padding-top: max(24px, calc(var(--lrr-android-safe-top, env(safe-area-inset-top, 0px)) + 16px));
-    padding-right: max(24px, calc(env(safe-area-inset-right, 0px) + 16px));
-    padding-bottom: max(24px, calc(env(safe-area-inset-bottom, 0px) + 16px));
-    padding-left: max(24px, calc(env(safe-area-inset-left, 0px) + 16px));
+    padding-top: max(24px, calc(var(--app-safe-area-top) + 16px));
+    padding-right: max(24px, calc(var(--app-safe-area-right) + 16px));
+    padding-bottom: max(24px, calc(var(--app-safe-area-bottom) + 16px));
+    padding-left: max(24px, calc(var(--app-safe-area-left) + 16px));
   }
 
   .metadata-page {

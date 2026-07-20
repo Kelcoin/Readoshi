@@ -379,12 +379,28 @@ test('mobile settings respect safe areas and reveal animations release composito
   assert.match(home, /className="settings-overlay"/);
   assert.match(home, /className="glass-panel settings-panel"/);
   assert.match(css, /\.settings-panel\s*\{[^}]*max-height:\s*100%;/s);
-  assert.match(css, /@media \(max-width:\s*560px\)[\s\S]*\.settings-overlay\s*\{[\s\S]*padding-top:\s*max\(24px,\s*calc\(var\(--lrr-android-safe-top,\s*env\(safe-area-inset-top,\s*0px\)\) \+ 16px\)\);/s);
-  assert.match(css, /\.settings-overlay\s*\{[\s\S]*padding-bottom:\s*max\(24px,\s*calc\(env\(safe-area-inset-bottom,\s*0px\) \+ 16px\)\);/s);
+  assert.match(css, /@media \(max-width:\s*560px\)[\s\S]*\.settings-overlay\s*\{[\s\S]*padding-top:\s*max\(24px,\s*calc\(var\(--app-safe-area-top\) \+ 16px\)\);/s);
+  assert.match(css, /@media \(max-width:\s*560px\)[\s\S]*\.settings-overlay\s*\{[\s\S]*padding-bottom:\s*max\(24px,\s*calc\(var\(--app-safe-area-bottom\) \+ 16px\)\);/s);
   assert.match(css, /\.settings-control\s*\{[^}]*flex:\s*0 0 148px;[^}]*width:\s*148px;/s);
   assert.match(customSelect, /display:\s*'flex'[^}]*gap:\s*'8px'/s);
   assert.match(customSelect, /<span style=\{\{[^}]*flex:\s*1[^}]*minWidth:\s*0[^}]*textOverflow:\s*'ellipsis'/s);
   assert.match(css, /@keyframes sectionReveal\s*\{[\s\S]*to\s*\{[^}]*transform:\s*none;/s);
+});
+
+test('fullscreen application panels keep their controls outside system bars', () => {
+  const reader = read('src/pages/Reader.jsx');
+  const css = read('src/index.css');
+
+  assert.match(reader, /className="reader-thumbnail-drawer-overlay"/);
+  assert.match(reader, /className="reader-panel-surface reader-thumbnail-drawer-panel"/);
+  assert.match(reader, /data-side=\{drawerSide\}/);
+  assert.match(css, /--app-safe-area-top:\s*var\(--lrr-android-safe-top,\s*env\(safe-area-inset-top,\s*0px\)\);/);
+  assert.match(css, /\.reader-thumbnail-drawer-panel\s*\{[^}]*padding-top:\s*calc\(24px \+ var\(--app-safe-area-top\)\);[^}]*padding-bottom:\s*calc\(24px \+ var\(--app-safe-area-bottom\)\);/s);
+  assert.match(css, /\.reader-thumbnail-drawer-panel\[data-side="left"\]\s*\{[^}]*padding-left:\s*calc\(24px \+ var\(--app-safe-area-left\)\);/s);
+  assert.match(css, /\.reader-thumbnail-drawer-panel\[data-side="right"\]\s*\{[^}]*padding-right:\s*calc\(24px \+ var\(--app-safe-area-right\)\);/s);
+  assert.match(css, /\.settings-overlay\s*\{[^}]*padding-top:\s*max\(16px,\s*calc\(var\(--app-safe-area-top\) \+ 16px\)\);/s);
+  assert.match(css, /\.confirm-dialog-overlay\s*\{[^}]*padding-top:\s*max\(20px,\s*calc\(var\(--app-safe-area-top\) \+ 20px\)\);/s);
+  assert.match(css, /\.metadata-loading-state\s*\{[^}]*padding-top:\s*max\(24px,\s*calc\(var\(--app-safe-area-top\) \+ 24px\)\);/s);
 });
 
 test('configuration transfer warning and settings layers stay concise and isolated', () => {
