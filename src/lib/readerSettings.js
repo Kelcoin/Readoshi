@@ -4,8 +4,8 @@ export const READER_SETTINGS_KEY = 'lrr_reader_settings';
 
 export const DEFAULT_READER_SETTINGS = Object.freeze({
   direction: 'ltr', preloadCount: 3, autoTurnInterval: 5, autoTurnActive: false,
-  ehEnabled: false, ehCookie: '', ehMinScore: -100, ehMaxComments: 30,
-  ehSortMethod: 'posted', ehSortOrder: 'desc',
+  ehEnabled: false, ehCookie: '', ehMinScore: 0, ehMaxComments: 45,
+  ehSortMethod: 'score', ehSortOrder: 'desc',
   readingLayout: 'single', doublePageEnabled: false,
   scaleMode: 'fit-screen', cropBordersEnabled: false,
   splitWidePagesEnabled: false, rotateWidePagesEnabled: false,
@@ -25,6 +25,9 @@ const allowed = {
 export function normalizeReaderSettings(value = {}) {
   const next = { ...DEFAULT_READER_SETTINGS, ...(value && typeof value === 'object' ? value : {}) };
   if (value?.doublePageEnabled && (!value.readingLayout || value.readingLayout === 'single')) next.readingLayout = 'double';
+  if (next.ehSortMethod === 'posted') next.ehSortMethod = 'time';
+  if (!['score', 'time'].includes(next.ehSortMethod)) next.ehSortMethod = DEFAULT_READER_SETTINGS.ehSortMethod;
+  if (!['asc', 'desc'].includes(next.ehSortOrder)) next.ehSortOrder = DEFAULT_READER_SETTINGS.ehSortOrder;
   for (const [key, choices] of Object.entries(allowed)) {
     if (!choices.includes(next[key])) next[key] = DEFAULT_READER_SETTINGS[key];
   }

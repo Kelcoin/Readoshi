@@ -31,10 +31,11 @@ import { useHorizontalScroller } from '../lib/horizontalScroller';
 import { navigateDeduplicate, navigateHistory, navigateHome, navigateToMetadata, navigateUpload, navigateWatchlist } from '../lib/navigation';
 import { ARCHIVE_BROWSE_MODES, ARCHIVE_PAGE_SIZE, clampArchivePage, getArchivePageAfterResize, getArchivePageCount, getArchivePageStart, getSmartArchivePageSize } from '../lib/archivePagination';
 import { reduceArchiveRefreshPhase } from '../lib/archiveRefreshMotion';
-import { ARCHIVE_PROGRESS_VISIBILITY, normalizeArchiveProgressVisibility, shouldShowArchiveProgress } from '../lib/archiveProgress';
+import { ARCHIVE_PROGRESS_VISIBILITY, shouldShowArchiveProgress } from '../lib/archiveProgress';
 import { clearConfiguredArchiveReadingProgress } from '../lib/archiveProgressActions';
 import { subscribeReadingProgressChanged } from '../lib/readingProgress';
 import { migrateLegacyStorageKey } from '../lib/configScope';
+import { DEFAULT_READER_SETTINGS, READER_SETTINGS_KEY, normalizeReaderSettings } from '../lib/readerSettings';
 
 const FILTER_KEY = 'lrr_filter';
 const RANDOMS_RECENT_KEY = 'lrr_random_recent_v1';
@@ -317,33 +318,19 @@ const THEME_MODE_LABELS = {
   dark: '深色',
   light: '浅色',
 };
-const READER_SETTINGS_KEY = 'lrr_reader_settings';
-const DEFAULT_READER_EH_SETTINGS = {
-  ehEnabled: false,
-  ehCookie: '',
-  ehMinScore: 0,
-  ehMaxComments: 45,
-  ehSortMethod: 'score',
-  ehSortOrder: 'desc',
-  progressBarVisibility: ARCHIVE_PROGRESS_VISIBILITY.HISTORY,
-  allowProgressRegression: true,
-};
-
 function readReaderSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(READER_SETTINGS_KEY) || '{}');
     const standaloneCookie = (localStorage.getItem('lrr_eh_cookie') || '').trim();
     const settings = saved && typeof saved === 'object' ? saved : {};
-    return {
-      ...DEFAULT_READER_EH_SETTINGS,
+    return normalizeReaderSettings({
       ...settings,
-      progressBarVisibility: normalizeArchiveProgressVisibility(settings.progressBarVisibility),
       ehCookie: typeof settings.ehCookie === 'string' && settings.ehCookie.trim()
         ? settings.ehCookie
         : standaloneCookie,
-    };
+    });
   } catch {
-    return { ...DEFAULT_READER_EH_SETTINGS };
+    return { ...DEFAULT_READER_SETTINGS };
   }
 }
 
@@ -626,7 +613,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
 
   const updateReaderSettings = useCallback((updater) => {
     setReaderSettings((prev) => {
-      const next = typeof updater === 'function' ? updater(prev) : updater;
+      const next = normalizeReaderSettings(typeof updater === 'function' ? updater(prev) : updater);
       writeReaderSettings(next);
       return next;
     });

@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import * as api from '../src/lib/api.js';
 import * as upload from '../src/lib/upload.js';
 import * as workerConfig from '../src/lib/worker-config.js';
+
+const read = (path) => readFileSync(path, 'utf8');
 
 let readerSettings = {};
 try {
@@ -23,6 +26,19 @@ test('reader settings reject unsafe automatic turn intervals', () => {
   assert.equal(readerSettings.normalizeReaderSettings({ autoTurnInterval: 12 }).autoTurnInterval, 12);
   assert.equal(readerSettings.normalizeReaderSettings({}).allowProgressRegression, true);
   assert.equal(readerSettings.normalizeReaderSettings({ allowProgressRegression: false }).allowProgressRegression, false);
+});
+
+test('reader settings keep E-Hentai sorting valid across Home and Reader', () => {
+  const defaults = readerSettings.normalizeReaderSettings({});
+  assert.equal(defaults.ehMinScore, 0);
+  assert.equal(defaults.ehMaxComments, 45);
+  assert.equal(defaults.ehSortMethod, 'score');
+  assert.equal(readerSettings.normalizeReaderSettings({ ehSortMethod: 'posted' }).ehSortMethod, 'time');
+  assert.equal(readerSettings.normalizeReaderSettings({ ehSortMethod: 'invalid' }).ehSortMethod, 'score');
+
+  const home = read('src/pages/Home.jsx');
+  assert.match(home, /normalizeReaderSettings\(\{[\s\S]*ehCookie:/);
+  assert.doesNotMatch(home, /const DEFAULT_READER_EH_SETTINGS\s*=/);
 });
 
 test('drag and drop keeps only supported archive files', () => {
