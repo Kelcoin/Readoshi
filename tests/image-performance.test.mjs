@@ -159,6 +159,43 @@ test('reader preview decoder reads source geometry and falls back when resize de
   }), { src: 'blob:source', width: 8000, height: 12000, isPreview: false });
 });
 
+test('animated GIF, WebP, and APNG bypass preview canvas conversion', async () => {
+  const gifFrame = [0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 1, 0, 0];
+  const animatedGif = new Uint8Array([
+    ...Buffer.from('GIF89a'), 1, 0, 1, 0, 0, 0, 0,
+    ...gifFrame, ...gifFrame, 0x3b,
+  ]);
+  const staticGif = new Uint8Array([
+    ...Buffer.from('GIF89a'), 1, 0, 1, 0, 0, 0, 0,
+    ...gifFrame, 0x3b,
+  ]);
+
+  const animatedWebp = new Uint8Array(30);
+  animatedWebp.set(Buffer.from('RIFF'), 0);
+  animatedWebp.set(Buffer.from('WEBPVP8X'), 8);
+  animatedWebp[16] = 10;
+  animatedWebp[20] = 0x02;
+
+  const pngChunk = (type, payloadLength = 0) => {
+    const chunk = new Uint8Array(12 + payloadLength);
+    new DataView(chunk.buffer).setUint32(0, payloadLength);
+    chunk.set(Buffer.from(type), 4);
+    return chunk;
+  };
+  const pngSignature = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const animatedPng = new Blob([pngSignature, pngChunk('acTL', 8), pngChunk('IDAT')], { type: 'image/png' });
+  const staticPng = new Blob([pngSignature, pngChunk('IHDR', 13), pngChunk('IDAT')], { type: 'image/png' });
+
+  assert.equal(await readerPreviewDecode.isAnimatedImageBlob(new Blob([animatedGif])), true);
+  assert.equal(await readerPreviewDecode.isAnimatedImageBlob(new Blob([staticGif])), false);
+  assert.equal(await readerPreviewDecode.isAnimatedImageBlob(new Blob([animatedWebp])), true);
+  assert.equal(await readerPreviewDecode.isAnimatedImageBlob(animatedPng), true);
+  assert.equal(await readerPreviewDecode.isAnimatedImageBlob(staticPng), false);
+
+  const source = read('src/lib/readerPreviewDecode.js');
+  assert.match(source, /if \(await isAnimatedImageBlob\(blob, signal\)\) return \{ src: sourceUrl, \.\.\.dimensions, isPreview: false \};/);
+});
+
 test('decoded previews become visible atomically and immersive promotion keeps decode identity', () => {
   const reader = read('src/pages/Reader.jsx');
   assert.match(reader, /className=\{isReady && !serializedDecode \? 'reader-content-fade-in' : undefined\}/);

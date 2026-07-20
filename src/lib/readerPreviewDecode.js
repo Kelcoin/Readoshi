@@ -58,6 +58,107 @@ function readUint24LE(view, offset) {
   return view.getUint8(offset) | (view.getUint8(offset + 1) << 8) | (view.getUint8(offset + 2) << 16);
 }
 
+function readAscii(bytes, offset, length) {
+  return String.fromCharCode(...bytes.subarray(offset, offset + length));
+}
+
+function skipGifSubBlocks(bytes, offset) {
+  while (offset < bytes.length) {
+    const length = bytes[offset];
+    offset += 1;
+    if (length === 0) return offset;
+    offset += length;
+  }
+  return bytes.length + 1;
+}
+
+function gifHasMultipleFrames(bytes) {
+  if (bytes.length < 13) return false;
+  let offset = 13;
+  const globalColorTable = bytes[10];
+  if (globalColorTable & 0x80) offset += 3 * (1 << ((globalColorTable & 0x07) + 1));
+
+  let frames = 0;
+  while (offset < bytes.length) {
+    const marker = bytes[offset];
+    offset += 1;
+    if (marker === 0x2c) {
+      frames += 1;
+      if (frames > 1) return true;
+      if (offset + 9 > bytes.length) return false;
+      const localColorTable = bytes[offset + 8];
+      offset += 9;
+      if (localColorTable & 0x80) offset += 3 * (1 << ((localColorTable & 0x07) + 1));
+      if (offset >= bytes.length) return false;
+      offset = skipGifSubBlocks(bytes, offset + 1);
+    } else if (marker === 0x21) {
+      if (offset >= bytes.length) return false;
+      offset = skipGifSubBlocks(bytes, offset + 1);
+    } else if (marker === 0x3b) {
+      return false;
+    } else {
+      return false;
+    }
+  }
+  return false;
+}
+
+export async function isAnimatedImageBlob(blob, signal) {
+  abortIfNeeded(signal);
+  const header = new Uint8Array(await blob.slice(0, 32).arrayBuffer());
+  abortIfNeeded(signal);
+
+  if (readAscii(header, 0, 3) === 'GIF') {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    abortIfNeeded(signal);
+    return gifHasMultipleFrames(bytes);
+  }
+
+  const isPng = header.length >= 8
+    && header[0] === 0x89
+    && readAscii(header, 1, 3) === 'PNG'
+    && header[4] === 0x0d
+    && header[5] === 0x0a
+    && header[6] === 0x1a
+    && header[7] === 0x0a;
+  if (isPng) {
+    let offset = 8;
+    while (offset + 8 <= blob.size) {
+      const chunkHeader = new Uint8Array(await blob.slice(offset, offset + 8).arrayBuffer());
+      abortIfNeeded(signal);
+      if (chunkHeader.length < 8) return false;
+      const length = new DataView(chunkHeader.buffer, chunkHeader.byteOffset, chunkHeader.byteLength).getUint32(0);
+      const type = readAscii(chunkHeader, 4, 4);
+      if (type === 'acTL') return true;
+      if (type === 'IDAT' || type === 'IEND') return false;
+      const nextOffset = offset + length + 12;
+      if (nextOffset <= offset || nextOffset > blob.size) return false;
+      offset = nextOffset;
+    }
+    return false;
+  }
+
+  const isWebp = header.length >= 12
+    && readAscii(header, 0, 4) === 'RIFF'
+    && readAscii(header, 8, 4) === 'WEBP';
+  if (isWebp) {
+    if (header.length >= 21 && readAscii(header, 12, 4) === 'VP8X' && (header[20] & 0x02)) return true;
+    let offset = 12;
+    while (offset + 8 <= blob.size) {
+      const chunkHeader = new Uint8Array(await blob.slice(offset, offset + 8).arrayBuffer());
+      abortIfNeeded(signal);
+      if (chunkHeader.length < 8) return false;
+      const type = readAscii(chunkHeader, 0, 4);
+      if (type === 'ANIM' || type === 'ANMF') return true;
+      const length = new DataView(chunkHeader.buffer, chunkHeader.byteOffset, chunkHeader.byteLength).getUint32(4, true);
+      const nextOffset = offset + 8 + length + (length & 1);
+      if (nextOffset <= offset || nextOffset > blob.size) return false;
+      offset = nextOffset;
+    }
+  }
+  return false;
+}
+
 export function readImageDimensions(buffer) {
   const view = buffer instanceof DataView ? buffer : new DataView(buffer);
   if (view.byteLength >= 24 && view.getUint32(0) === 0x89504e47 && view.getUint32(4) === 0x0d0a1a0a) {
@@ -151,6 +252,7 @@ export async function getReaderPreviewSource(sourceUrl, {
     devicePixelRatio,
   });
   if (!target) return { src: sourceUrl, ...dimensions, isPreview: false };
+  if (await isAnimatedImageBlob(blob, signal)) return { src: sourceUrl, ...dimensions, isPreview: false };
 
   const cacheKey = `${sourceUrl}:${target.width}x${target.height}`;
   const cached = previewCache.get(cacheKey);

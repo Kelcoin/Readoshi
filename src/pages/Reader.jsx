@@ -3794,7 +3794,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
               aria-label="显示左侧阅读控制"
               onPointerEnter={() => revealImmersiveControls('left')}
               onMouseDown={(event) => event.stopPropagation()}
-              onTouchStart={(event) => { event.preventDefault(); event.stopPropagation(); armImmersiveTouchGuard(); revealImmersiveControls('left'); }}
+              onTouchStart={(event) => { event.stopPropagation(); armImmersiveTouchGuard(); revealImmersiveControls('left'); }}
               onClick={(event) => { event.stopPropagation(); revealImmersiveControls('left'); }}
             />
             <button
@@ -3803,7 +3803,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
               aria-label="显示右侧阅读控制"
               onPointerEnter={() => revealImmersiveControls('right')}
               onMouseDown={(event) => event.stopPropagation()}
-              onTouchStart={(event) => { event.preventDefault(); event.stopPropagation(); armImmersiveTouchGuard(); revealImmersiveControls('right'); }}
+              onTouchStart={(event) => { event.stopPropagation(); armImmersiveTouchGuard(); revealImmersiveControls('right'); }}
               onClick={(event) => { event.stopPropagation(); revealImmersiveControls('right'); }}
             />
             {['left', 'right'].map((side) => (
@@ -3812,7 +3812,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                 className="reader-immersive-controls"
                 data-side={side}
                 data-visible={immersiveControlsSide === side ? 'true' : 'false'}
-                aria-hidden={immersiveControlsSide === side ? 'false' : 'true'}
+                inert={immersiveControlsSide === side ? undefined : ''}
                 onPointerEnter={() => holdImmersiveControls(side)}
                 onPointerLeave={() => revealImmersiveControls(side)}
                 onFocus={() => holdImmersiveControls(side)}
