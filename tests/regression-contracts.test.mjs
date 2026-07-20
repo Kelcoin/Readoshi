@@ -391,6 +391,8 @@ test('fullscreen application panels keep their controls outside system bars', ()
   const reader = read('src/pages/Reader.jsx');
   const css = read('src/index.css');
 
+  assert.match(reader, /createPortal/);
+  assert.match(reader, /createPortal\([\s\S]*reader-thumbnail-drawer-overlay[\s\S]*document\.body\)/s);
   assert.match(reader, /className="reader-thumbnail-drawer-overlay"/);
   assert.match(reader, /className="reader-panel-surface reader-thumbnail-drawer-panel"/);
   assert.match(reader, /data-side=\{drawerSide\}/);
@@ -401,6 +403,12 @@ test('fullscreen application panels keep their controls outside system bars', ()
   assert.match(css, /\.settings-overlay\s*\{[^}]*padding-top:\s*max\(16px,\s*calc\(var\(--app-safe-area-top\) \+ 16px\)\);/s);
   assert.match(css, /\.confirm-dialog-overlay\s*\{[^}]*padding-top:\s*max\(20px,\s*calc\(var\(--app-safe-area-top\) \+ 20px\)\);/s);
   assert.match(css, /\.metadata-loading-state\s*\{[^}]*padding-top:\s*max\(24px,\s*calc\(var\(--app-safe-area-top\) \+ 24px\)\);/s);
+});
+
+test('immersive touch trigger consumes synthetic follow-up clicks', () => {
+  const reader = read('src/pages/Reader.jsx');
+  assert.match(reader, /className="reader-immersive-trigger reader-immersive-trigger-left"[\s\S]*onTouchStart=\{\(event\) => \{[\s\S]*event\.preventDefault\(\)/s);
+  assert.match(reader, /className="reader-immersive-trigger reader-immersive-trigger-right"[\s\S]*onTouchStart=\{\(event\) => \{[\s\S]*event\.preventDefault\(\)/s);
 });
 
 test('configuration transfer warning and settings layers stay concise and isolated', () => {

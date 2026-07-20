@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useReducer } from 'react';
-import { flushSync } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import { encodeApiKey, lrrApi } from '../lib/api';
 import { flushHistorySync, getHistory, saveHistory, getHideRead, removeHistoryItem, loadHistoryState } from '../lib/history';
 import { clampProgressPage } from '../lib/historyProgressCache';
@@ -3769,7 +3769,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
               aria-label="显示左侧阅读控制"
               onPointerEnter={() => revealImmersiveControls('left')}
               onMouseDown={(event) => event.stopPropagation()}
-              onTouchStart={(event) => event.stopPropagation()}
+              onTouchStart={(event) => { event.preventDefault(); event.stopPropagation(); revealImmersiveControls('left'); }}
               onClick={(event) => { event.stopPropagation(); revealImmersiveControls('left'); }}
             />
             <button
@@ -3778,7 +3778,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
               aria-label="显示右侧阅读控制"
               onPointerEnter={() => revealImmersiveControls('right')}
               onMouseDown={(event) => event.stopPropagation()}
-              onTouchStart={(event) => event.stopPropagation()}
+              onTouchStart={(event) => { event.preventDefault(); event.stopPropagation(); revealImmersiveControls('right'); }}
               onClick={(event) => { event.stopPropagation(); revealImmersiveControls('right'); }}
             />
             {['left', 'right'].map((side) => (
@@ -4029,7 +4029,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       </div>
 
       {/* ===== Thumbnail Drawer ===== */}
-      <div
+      {createPortal(<div
         className="reader-thumbnail-drawer-overlay"
         style={{
           position: 'fixed', inset: 0, zIndex: 200,
@@ -4205,7 +4205,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
             </div>
           </div>
           </div>
-        </div>
+        </div>, document.body)}
       <ConfirmDialog
         open={!!historyDeleteTarget}
         title="确认删除阅读历史"
