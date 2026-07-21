@@ -9,6 +9,7 @@ import MetadataTagChip from '../components/MetadataTagChip';
 import EhFavoriteDeleteSwitch from '../components/EhFavoriteDeleteSwitch';
 import { getEhFavoriteDeleteSync } from '../lib/ehFavoriteSync';
 import { deleteArchiveWithFavoriteSync } from '../lib/archiveDeletion';
+import { rememberArchiveInCatalog } from '../lib/archiveMetadataCache';
 import { loadTagDB, translateTag } from '../lib/tags';
 
 const field = { width: '100%', boxSizing: 'border-box' };
@@ -164,9 +165,11 @@ export default function MetadataPage({ archiveId }) {
     try {
       const latest = await lrrApi.getArchive(archiveId, { signal: controller.signal });
       if (metadataFingerprint(latest) !== baseline) throw new Error('服务器上的元数据已发生变化，请刷新后再编辑。');
-      await lrrApi.updateArchiveMetadata(archiveId, { ...form, tags: form.tags.join(',') }, { signal: controller.signal });
+      const updatedArchive = { ...latest, ...form, id: archiveId, arcid: archiveId, tags: form.tags.join(',') };
+      await lrrApi.updateArchiveMetadata(archiveId, updatedArchive, { signal: controller.signal });
+      rememberArchiveInCatalog(updatedArchive);
       await lrrApi.clearSearchCache().catch(() => {});
-      setBaseline(metadataFingerprint({ ...form, tags: form.tags.join(',') })); showStatus('已保存', 'success', { autoHide: true });
+      setBaseline(metadataFingerprint(updatedArchive)); showStatus('已保存', 'success', { autoHide: true });
     } catch (error) {
       if (error?.name !== 'AbortError') showStatus(error.status === 423 ? '档案正被其他任务占用，请稍后重试。' : error.message, 'error');
     } finally {

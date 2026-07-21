@@ -492,6 +492,21 @@ test('history list is the only persisted reading progress source', () => {
   assert.match(recommendations, /applyCanonicalHistoryProgress/);
 });
 
+test('archive mutations synchronize catalog and short search caches after success', () => {
+  const deletion = read('src/lib/archiveDeletion.js');
+  const metadataPage = read('src/pages/MetadataPage.jsx');
+  const uploadPage = read('src/pages/UploadPage.jsx');
+  const progressActions = read('src/lib/archiveProgressActions.js');
+  const reader = read('src/pages/Reader.jsx');
+
+  assert.match(deletion, /await lrrApi\.deleteArchive\(archiveId\);[\s\S]{0,300}removeArchivesFromCatalog\(archiveId\);[\s\S]{0,200}clearArchiveSearchResponseCache\(\);/);
+  assert.match(metadataPage, /await lrrApi\.updateArchiveMetadata[\s\S]{0,500}rememberArchiveInCatalog\(/);
+  assert.match(uploadPage, /const uploadResults = await runUploadTasks[\s\S]{0,300}uploadResults\.some[\s\S]{0,200}invalidateArchiveCatalog\(\)/);
+  assert.match(progressActions, /rememberArchiveProgressInCatalog\(id, result\.page/);
+  assert.match(reader, /await lrrApi\.updateProgress\(id, targetPage[\s\S]{0,300}rememberArchiveProgressInCatalog\(id, targetPage/);
+  assert.doesNotMatch(progressActions, /clearArchiveSearchResponseCache|clearSearchCache/);
+});
+
 test('server-derived recommendation caches are scoped and the retired sync module is gone', () => {
   const home = read('src/pages/Home.jsx');
   const recommendations = read('src/components/Recommendations.jsx');

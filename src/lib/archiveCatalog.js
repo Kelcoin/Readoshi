@@ -22,3 +22,17 @@ export function sliceArchiveCatalog(items, start, count) {
   const size = Math.max(0, Math.floor(Number(count) || 0));
   return (Array.isArray(items) ? items : []).slice(offset, offset + size);
 }
+
+export function mergeArchiveProgress(archive, id, page, lastreadtime = Math.floor(Date.now() / 1000)) {
+  const archiveId = String(id || archive?.arcid || archive?.id || '').trim();
+  const progress = Math.max(0, Math.floor(Number(page) || 0));
+  return {
+    ...archive,
+    id: archiveId,
+    arcid: archiveId,
+    page: progress,
+    progress,
+    isnew: progress > 0 ? false : archive?.isnew,
+    lastreadtime: Math.max(0, Math.floor(Number(lastreadtime) || 0)),
+  };
+}

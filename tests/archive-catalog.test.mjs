@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   getArchiveAddedAt,
+  mergeArchiveProgress,
   sliceArchiveCatalog,
   sortArchiveCatalog,
 } from '../src/lib/archiveCatalog.js';
@@ -23,4 +24,23 @@ test('archive catalog slices safely', () => {
   const items = [{ arcid: 'a' }, { arcid: 'b' }, { arcid: 'c' }];
   assert.deepEqual(sliceArchiveCatalog(items, 1, 1).map((item) => item.arcid), ['b']);
   assert.deepEqual(sliceArchiveCatalog(items, -5, 2).map((item) => item.arcid), ['a', 'b']);
+});
+
+test('archive catalog progress updates preserve metadata', () => {
+  const archive = {
+    arcid: 'progress-archive',
+    title: 'Progress title',
+    tags: 'artist:test',
+    isnew: true,
+    progress: 1,
+    lastreadtime: 10,
+  };
+
+  const updated = mergeArchiveProgress(archive, 'progress-archive', 5, 123);
+
+  assert.equal(updated.title, 'Progress title');
+  assert.equal(updated.tags, 'artist:test');
+  assert.equal(updated.progress, 5);
+  assert.equal(updated.lastreadtime, 123);
+  assert.equal(updated.isnew, false);
 });

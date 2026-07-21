@@ -1,4 +1,5 @@
 import { lrrApi } from './api';
+import { mergeArchiveProgress } from './archiveCatalog';
 import { getConfigScopeId, migrateLegacyStorageKey } from './configScope';
 
 const metadataCache = new Map();
@@ -115,8 +116,20 @@ export function rememberArchiveInCatalog(archive) {
   return metadata;
 }
 
+export function rememberArchiveProgressInCatalog(id, page, lastreadtime) {
+  const archiveIdValue = String(id || '').trim();
+  if (!archiveIdValue) return null;
+  const entry = getCatalogEntry();
+  const archive = entry.items?.find((item) => archiveId(item) === archiveIdValue)
+    || metadataCache.get(scopedArchiveKey(archiveIdValue))
+    || { id: archiveIdValue, arcid: archiveIdValue };
+  return rememberArchiveInCatalog(mergeArchiveProgress(archive, archiveIdValue, page, lastreadtime));
+}
+
 export function removeArchivesFromCatalog(ids) {
   const removed = new Set((Array.isArray(ids) ? ids : [ids]).map(String));
+  removed.forEach((id) => metadataCache.delete(scopedArchiveKey(id)));
+  scheduleMetadataPersist();
   const entry = getCatalogEntry();
   if (Array.isArray(entry.items)) {
     entry.items = entry.items.filter((archive) => !removed.has(archiveId(archive)));

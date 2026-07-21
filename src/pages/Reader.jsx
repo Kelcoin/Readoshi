@@ -20,6 +20,7 @@ import {
   shouldShowArchiveProgress,
 } from '../lib/archiveProgress';
 import { clearConfiguredArchiveReadingProgress } from '../lib/archiveProgressActions';
+import { rememberArchiveProgressInCatalog } from '../lib/archiveMetadataCache';
 import { getReaderSkeletonToolbarGroups } from '../lib/readerSkeletonLayout';
 import { createReaderRenderState, getReaderCapabilities, loadReaderBootstrapResource, readerRenderReducer } from '../lib/readerRenderPipeline';
 import {
@@ -1616,6 +1617,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         if (targetPage === latestSyncedPage) return;
         if (!allowProgressRegressionRef.current && targetPage < latestSyncedPage) return;
         await lrrApi.updateProgress(id, targetPage, { keepalive });
+        rememberArchiveProgressInCatalog(id, targetPage);
         highestLrrSyncedPageRef.current.set(id, targetPage);
       })
       .catch(() => {
@@ -2222,6 +2224,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         if (archiveHasNewMarker(restoredArchive) && !progressWasCleared) {
           try {
             await lrrApi.updateProgress(archiveId, 1);
+            rememberArchiveProgressInCatalog(archiveId, 1);
             highestLrrSyncedPageRef.current.set(archiveId, Math.max(1, highestLrrSyncedPageRef.current.get(archiveId) || 0));
             restoredArchive = clearArchiveNewMarker(restoredArchive);
           } catch {}
@@ -2290,6 +2293,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
           if (archiveHasNewMarker(meta) && !hasArchiveProgressMarker(archiveId)) {
             void lrrApi.updateProgress(archiveId, 1).then(() => {
               if (!isActive()) return;
+              rememberArchiveProgressInCatalog(archiveId, 1);
               highestLrrSyncedPageRef.current.set(archiveId, Math.max(1, highestLrrSyncedPageRef.current.get(archiveId) || 0));
               const updatedMeta = { ...clearArchiveNewMarker(meta), progress: Math.max(1, Number.parseInt(meta.progress, 10) || 0) };
               archiveRef.current = updatedMeta;
