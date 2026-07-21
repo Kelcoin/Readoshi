@@ -18,6 +18,77 @@ test('API keys are Base64 encoded from UTF-8 bytes', () => {
   assert.equal(api.encodeApiKey('密钥'), Buffer.from('密钥', 'utf8').toString('base64'));
 });
 
+test('archive search responses are reused briefly and can be cleared', async () => {
+  assert.equal(typeof api.clearArchiveSearchResponseCache, 'function');
+  const previousStorage = globalThis.localStorage;
+  const previousFetch = globalThis.fetch;
+  const previousNow = Date.now;
+  let now = 1000;
+  let calls = 0;
+  globalThis.localStorage = {
+    getItem: (key) => (key === 'lrr_server_url' ? 'https://example.test' : ''),
+  };
+  globalThis.fetch = async () => {
+    calls += 1;
+    return {
+      ok: true,
+      text: async () => JSON.stringify({ data: [{ arcid: String(calls) }] }),
+    };
+  };
+  Date.now = () => now;
+  try {
+    api.clearArchiveSearchResponseCache();
+    const first = await api.lrrApi.search('artist:test$', 0, 'date_added', 'desc');
+    const second = await api.lrrApi.search(' artist:test$ ', 0, 'date_added', 'desc');
+    assert.equal(calls, 1);
+    assert.deepEqual(second, first);
+
+    now += 60_001;
+    await api.lrrApi.search('artist:test$', 0, 'date_added', 'desc');
+    assert.equal(calls, 2);
+
+    api.clearArchiveSearchResponseCache();
+    await api.lrrApi.search('artist:test$', 0, 'date_added', 'desc');
+    assert.equal(calls, 3);
+  } finally {
+    api.clearArchiveSearchResponseCache?.();
+    Date.now = previousNow;
+    globalThis.fetch = previousFetch;
+    globalThis.localStorage = previousStorage;
+  }
+});
+
+test('archive search cache evicts the least recently used response', async () => {
+  const previousStorage = globalThis.localStorage;
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.localStorage = {
+    getItem: (key) => (key === 'lrr_server_url' ? 'https://example.test' : ''),
+  };
+  globalThis.fetch = async () => ({
+    ok: true,
+    text: async () => JSON.stringify({ data: [{ call: ++calls }] }),
+  });
+  try {
+    api.clearArchiveSearchResponseCache();
+    await api.lrrApi.search('q0');
+    await api.lrrApi.search('q1');
+    await api.lrrApi.search('q0');
+    for (let index = 2; index <= 30; index += 1) {
+      await api.lrrApi.search(`q${index}`);
+    }
+    assert.equal(calls, 31);
+    await api.lrrApi.search('q0');
+    assert.equal(calls, 31);
+    await api.lrrApi.search('q1');
+    assert.equal(calls, 32);
+  } finally {
+    api.clearArchiveSearchResponseCache();
+    globalThis.fetch = previousFetch;
+    globalThis.localStorage = previousStorage;
+  }
+});
+
 test('reader settings reject unsafe automatic turn intervals', () => {
   assert.equal(typeof readerSettings.normalizeReaderSettings, 'function', 'normalizeReaderSettings must load in Node');
   assert.equal(readerSettings.normalizeReaderSettings({ autoTurnInterval: 0 }).autoTurnInterval, 5);

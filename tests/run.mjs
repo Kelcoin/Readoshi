@@ -1,5 +1,6 @@
 import './scope-and-config.test.mjs';
 import './api-and-input.test.mjs';
+import './archive-catalog.test.mjs';
 import './minion.test.mjs';
 import './body-scroll-lock.test.mjs';
 import './worker-contract.test.mjs';
