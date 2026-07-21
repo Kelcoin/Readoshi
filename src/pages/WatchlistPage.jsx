@@ -192,24 +192,27 @@ export default function WatchlistPage({ onSelectArchive, onBack }) {
 
   return (
     <>
-      <div style={{ padding: isNarrow ? '16px 10px' : '24px 20px', maxWidth: '1680px', margin: '0 auto' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: '16px', marginBottom: '24px', flexWrap: 'wrap' }}>
-          <div>
-            <h1 style={{ fontWeight: 600, margin: '0 0 8px 0', fontSize: '28px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <HeaderGlyph />
-              待看档案
-            </h1>
-            <div style={{ color: 'var(--text-sub)', fontSize: '14px' }}>
-              共 {items.length} 个档案{query.trim() ? `，当前显示 ${filteredItems.length} 个` : ''}
+      <div className="history-page watchlist-page" style={{ padding: isNarrow ? '16px 10px' : '24px 20px' }}>
+        <div className="history-page-header">
+          <div className="history-page-title-block">
+            <div className="history-page-title-row">
+              <h1 className="history-page-title">
+                <HeaderGlyph />
+                待看档案
+              </h1>
+              <div className="history-page-summary">
+                <span className="history-summary-part">共 {items.length} 个档案</span>
+                {query.trim() && <span className="history-summary-part">当前显示 {filteredItems.length} 个</span>}
+              </div>
             </div>
           </div>
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            <button className="btn" onClick={onBack} style={{ fontSize: '13px' }}>返回</button>
+          <div className="history-page-actions">
+            <button className="btn" onClick={onBack}>返回</button>
             <button
               className="btn"
               onClick={handleSync}
               disabled={!getWorkerUrl() || !getSyncToken() || syncing}
-              style={{ fontSize: '13px', opacity: !getWorkerUrl() || !getSyncToken() ? 0.5 : 1 }}
+              style={{ opacity: !getWorkerUrl() || !getSyncToken() ? 0.5 : 1 }}
               title={!getWorkerUrl() || !getSyncToken() ? '配置 Worker 后可从远端读取待看档案' : '从 Worker 刷新待看档案'}
             >
               {syncing ? '刷新中' : '刷新'}
@@ -218,40 +221,39 @@ export default function WatchlistPage({ onSelectArchive, onBack }) {
         </div>
 
         <section className="glass-panel section-reveal section-reveal-delay-1" style={{ padding: isNarrow ? '16px 14px' : '20px 24px' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginBottom: '18px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '18px', fontWeight: 600 }}>
-                <HeaderGlyph />
-                <span>全部待看</span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-sub)', fontSize: '13px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                {selectedCount > 0 && (
-                  <>
-                    <span>{selectedCount} 项已选</span>
-                    <button className="btn" onClick={requestBatchDelete} style={{ padding: '6px 12px', fontSize: '12px' }}>移除选中</button>
-                    <button className="btn" onClick={clearSelection} style={{ padding: '6px 12px', fontSize: '12px' }}>取消选择</button>
-                  </>
-                )}
-                {selectionMode && selectedCount === 0 && filteredItems.length > 0 && (
-                  <button className="btn" onClick={selectAllVisible} style={{ padding: '6px 12px', fontSize: '12px' }}>全选当前</button>
-                )}
-                {filteredItems.length > 0 && (
-                  <button
-                    className="btn"
-                    onClick={toggleSelectionMode}
-                    style={{
-                      padding: '6px 12px',
-                      fontSize: '12px',
-                      background: selectionMode ? 'var(--accent)' : undefined,
-                      borderColor: selectionMode ? 'var(--accent)' : undefined,
-                      color: selectionMode ? '#fff' : undefined,
-                    }}
-                  >
-                    {selectionMode ? '退出多选' : '多选'}
-                  </button>
-                )}
-              </div>
+          <div className="history-section-header">
+            <div className="history-section-title">
+              <HeaderGlyph />
+              <span>全部待看</span>
             </div>
+            <div className="history-section-actions">
+              {selectedCount > 0 && (
+                <>
+                  <span>{selectedCount} 项已选</span>
+                  <button className="btn" onClick={requestBatchDelete}>移除选中</button>
+                  <button className="btn" onClick={clearSelection}>取消选择</button>
+                </>
+              )}
+              {selectionMode && selectedCount === 0 && filteredItems.length > 0 && (
+                <button className="btn" onClick={selectAllVisible}>全选当前</button>
+              )}
+              {filteredItems.length > 0 && (
+                <button
+                  className="btn"
+                  onClick={toggleSelectionMode}
+                  style={{
+                    background: selectionMode ? 'var(--accent)' : undefined,
+                    borderColor: selectionMode ? 'var(--accent)' : undefined,
+                    color: selectionMode ? '#fff' : undefined,
+                  }}
+                >
+                  {selectionMode ? '退出多选' : '多选'}
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="history-section-toolbar">
             <ArchiveSearchBox query={query} setQuery={setQuery} placeholder="在待看档案中搜索标题或标签" />
           </div>
 

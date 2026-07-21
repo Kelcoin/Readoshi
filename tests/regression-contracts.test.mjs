@@ -353,6 +353,45 @@ test('archive grids combine dense backfill with shared row centering', () => {
   assert.match(watchlist, /<ArchiveGrid/);
 });
 
+test('history page header has ordered narrow-screen layout hooks', () => {
+  const css = read('src/index.css');
+  const history = read('src/pages/HistoryPage.jsx');
+  const watchlist = read('src/pages/WatchlistPage.jsx');
+
+  assert.match(history, /className="history-page"/);
+  assert.match(history, /className="history-page-header"/);
+  assert.match(history, /className="history-page-title-block"/);
+  assert.match(history, /className="history-page-title-row"/);
+  assert.match(history, /className="history-section-header"/);
+  assert.match(history, /className="history-section-actions"/);
+  assert.match(history, /className="history-section-toolbar"/);
+  assert.match(history, /className="history-hide-read-toggle"/);
+  assert.match(history, /className="history-summary-part"/);
+  assert.match(history, /className="history-page-actions"/);
+  assert.ok(history.indexOf('className="history-page-title"') < history.indexOf('className="history-page-summary"'));
+  assert.ok(history.indexOf('className="history-section-actions"') < history.indexOf('className="history-section-toolbar"'));
+  assert.ok(history.indexOf('className="history-section-toolbar"') < history.indexOf('<ArchiveSearchBox'));
+  assert.match(watchlist, /className="history-page watchlist-page"/);
+  assert.match(watchlist, /className="history-page-title-row"/);
+  assert.match(watchlist, /className="history-section-header"/);
+  assert.match(watchlist, /className="history-section-actions"/);
+  assert.match(css, /\.history-page-header\s*\{/);
+  assert.match(css, /\.history-page-actions\s*\{/);
+  assert.match(css, /\.history-page-title-row\s*\{/);
+  assert.match(css, /\.history-section-header\s*\{/);
+  assert.match(css, /\.history-section-actions\s*\{/);
+  assert.match(css, /\.history-section-toolbar\s*\{/);
+  assert.match(css, /\.history-summary-part\s*\{/);
+  assert.match(css, /\.history-hide-read-toggle\s*\{[\s\S]*margin-left:\s*auto;/s);
+  assert.match(css, /@media \(max-width:\s*600px\)[\s\S]*\.history-page-header\s*\{[\s\S]*flex-direction:\s*column;[\s\S]*align-items:\s*stretch;/s);
+  assert.match(css, /@media \(max-width:\s*600px\)[\s\S]*\.history-page-title-row\s*\{[\s\S]*display:\s*grid;[\s\S]*grid-template-columns:\s*minmax\(0,\s*auto\)\s+minmax\(0,\s*1fr\);[\s\S]*align-items:\s*center;/s);
+  assert.match(css, /@media \(max-width:\s*600px\)[\s\S]*\.history-page-summary\s*\{[\s\S]*justify-self:\s*end;[\s\S]*text-align:\s*right;/s);
+  assert.match(css, /@media \(max-width:\s*600px\)[\s\S]*\.history-summary-part\s*\{[\s\S]*display:\s*block;/s);
+  assert.match(css, /@media \(max-width:\s*600px\)[\s\S]*\.history-page-actions\s*\{[\s\S]*display:\s*grid;[\s\S]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\);/s);
+  assert.match(css, /@media \(max-width:\s*600px\)[\s\S]*\.history-section-header\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;/s);
+  assert.match(css, /@media \(max-width:\s*380px\)[\s\S]*\.history-page-actions\s*\{[\s\S]*grid-template-columns:\s*1fr;/s);
+});
+
 test('archive title uses one cross-platform two-line geometry contract', () => {
   const card = read('src/components/ArchiveCard.jsx');
   const workflow = read('.github/workflows/mobile-build.yml');

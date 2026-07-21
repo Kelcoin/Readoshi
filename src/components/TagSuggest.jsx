@@ -76,12 +76,29 @@ export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSe
     if (!visible || !containerRef?.current) { setAnchor(null); return undefined; }
     const update = () => {
       const rect = containerRef.current.getBoundingClientRect();
-      setAnchor(getTagSuggestPlacement(rect, window.innerWidth, window.innerHeight));
+      const visualViewport = window.visualViewport;
+      const viewportLeft = visualViewport?.offsetLeft || 0;
+      const viewportTop = visualViewport?.offsetTop || 0;
+      const viewportWidth = visualViewport?.width || window.innerWidth;
+      const viewportHeight = visualViewport?.height || window.innerHeight;
+      setAnchor(getTagSuggestPlacement(rect, window.innerWidth, window.innerHeight, {
+        viewportLeft,
+        viewportTop,
+        viewportRight: viewportLeft + viewportWidth,
+        viewportBottom: viewportTop + viewportHeight,
+      }));
     };
     update();
     window.addEventListener('resize', update);
     window.addEventListener('scroll', update, true);
-    return () => { window.removeEventListener('resize', update); window.removeEventListener('scroll', update, true); };
+    window.visualViewport?.addEventListener('resize', update);
+    window.visualViewport?.addEventListener('scroll', update);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+      window.visualViewport?.removeEventListener('resize', update);
+      window.visualViewport?.removeEventListener('scroll', update);
+    };
   }, [containerRef, visible]);
 
   // ── Dismiss on outside click/tap ──

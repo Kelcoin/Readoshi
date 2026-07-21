@@ -40,3 +40,15 @@ test('tag suggestion placement clamps width and available height to viewport', (
   assert.equal(placement.maxHeight, 72);
   assert.equal(placement.bottom, 96);
 });
+
+test('tag suggestions use the visible viewport when mobile chrome or keyboard reduces space', () => {
+  const placement = getTagSuggestPlacement(
+    { left: 20, width: 300, top: 360, bottom: 404 },
+    390,
+    844,
+    { viewportTop: 0, viewportBottom: 430 },
+  );
+  assert.equal(placement.bottom, 76);
+  assert.equal('top' in placement, false);
+  assert.equal(placement.maxHeight, 320);
+});
