@@ -249,7 +249,7 @@ export const lrrApi = {
       : `${id}.zip`;
     return { blob: await res.blob(), filename };
   },
-  getArchiveThumbnail: async (id, { page = null, noFallback = false } = {}) => {
+  getArchiveThumbnail: async (id, { page = null, noFallback = false, signal } = {}) => {
     const base = getBaseUrl();
     if (!base) throw new Error('未配置服务器地址');
 
@@ -260,6 +260,7 @@ export const lrrApi = {
     const query = params.toString();
     const res = await fetch(`${base}/api/archives/${encodeURIComponent(id)}/thumbnail${query ? `?${query}` : ''}`, {
       headers: getAuthHeaders(),
+      signal,
     });
 
     if (res.status === 202) {

@@ -5,9 +5,10 @@ export const IMAGE_LOAD_PRIORITY = Object.freeze({
   PRELOAD: 0,
 });
 
-export function createImageLoadQueue({ maxConcurrent = 3 } = {}) {
+export function createImageLoadQueue({ maxConcurrent = 3, timeoutMs = 20_000 } = {}) {
   const limit = Math.max(2, Number(maxConcurrent) || 3);
   const backgroundLimit = Math.max(1, limit - 1);
+  const timeout = Math.max(1, Number(timeoutMs) || 20_000);
   const pending = new Map();
   const queued = [];
   const active = new Set();
@@ -30,10 +31,20 @@ export function createImageLoadQueue({ maxConcurrent = 3 } = {}) {
       job.state = 'active';
       active.add(job);
 
-      Promise.resolve()
-        .then(job.task)
+      let timer;
+      const timeoutPromise = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new DOMException('Image load timed out', 'TimeoutError'));
+          job.controller.abort();
+        }, timeout);
+      });
+      Promise.race([
+        Promise.resolve().then(() => job.task(job.controller.signal)),
+        timeoutPromise,
+      ])
         .then(job.resolve, job.reject)
         .finally(() => {
+          clearTimeout(timer);
           active.delete(job);
           if (pending.get(job.key) === job) pending.delete(job.key);
           pump();
@@ -57,6 +68,7 @@ export function createImageLoadQueue({ maxConcurrent = 3 } = {}) {
       priority,
       sequence: sequence++,
       state: 'queued',
+      controller: new AbortController(),
     };
     job.promise = new Promise((resolve, reject) => {
       job.resolve = resolve;

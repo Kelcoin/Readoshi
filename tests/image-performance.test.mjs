@@ -123,6 +123,26 @@ test('image decode queue supports one slot and applies runtime limit changes', a
   }
 });
 
+test('image load queue times out a stalled job and releases the next slot', async () => {
+  const queue = imageLoadQueue.createImageLoadQueue({ maxConcurrent: 2, timeoutMs: 20 });
+  let stalledSignal;
+  let nextStarted = false;
+  const stalled = queue.schedule('stalled', async (signal) => {
+    stalledSignal = signal;
+    await new Promise(() => {});
+  });
+  const stalledResult = stalled.catch((error) => error);
+  const next = queue.schedule('next', async () => {
+    nextStarted = true;
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(stalledSignal?.aborted, true);
+  assert.equal(nextStarted, true);
+  assert.equal((await stalledResult)?.name, 'TimeoutError');
+  await next;
+});
+
 test('paged Reader covers stale bitmaps while the target spread decodes', () => {
   const reader = read('src/pages/Reader.jsx');
   assert.match(reader, /targetPending\s*&&\s*!webtoonActive[\s\S]{0,1200}正在切换到第/);

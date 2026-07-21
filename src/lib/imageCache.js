@@ -44,9 +44,9 @@ function retireObjectUrl(objectUrl) {
   }
 }
 
-async function fetchForScope(fetcher, scope) {
+async function fetchForScope(fetcher, scope, signal) {
   if (getConfigScopeId() !== scope) return null;
-  const blob = await fetcher();
+  const blob = await fetcher(signal);
   return getConfigScopeId() === scope ? blob : null;
 }
 
@@ -161,12 +161,12 @@ function rememberBlob(key, blob) {
 }
 
 function scheduleImageLoad(key, fetcher, priority = IMAGE_LOAD_PRIORITY.NORMAL) {
-  return imageLoadQueue.schedule(key, async () => {
+  return imageLoadQueue.schedule(key, async (signal) => {
     const memoryEntry = getMemoryEntry(key);
     if (memoryEntry) return memoryEntry.blob;
     let blob = await diskGet(key);
     if (!blob) {
-      blob = await fetcher();
+      blob = await fetcher(signal);
       if (!blob) return null;
       diskPut(key, blob).catch(() => {});
     }
@@ -180,7 +180,7 @@ export async function primeImage(key, fetcher, { priority = IMAGE_LOAD_PRIORITY.
   key = scopedCacheKey(key);
   if (getMemoryEntry(key)) return true;
   try {
-    return !!(await scheduleImageLoad(key, () => fetchForScope(fetcher, scope), priority));
+    return !!(await scheduleImageLoad(key, (signal) => fetchForScope(fetcher, scope, signal), priority));
   } catch {
     return false;
   }
@@ -204,7 +204,7 @@ export async function getImage(key, fetcher, { priority = IMAGE_LOAD_PRIORITY.NO
   if (memoryEntry) return memoryEntry.objectUrl;
 
   let blob;
-  try { blob = await scheduleImageLoad(key, () => fetchForScope(fetcher, scope), priority); } catch { return null; }
+  try { blob = await scheduleImageLoad(key, (signal) => fetchForScope(fetcher, scope, signal), priority); } catch { return null; }
   if (!blob) return null;
   const loadedEntry = getMemoryEntry(key);
   if (loadedEntry) return loadedEntry.objectUrl;

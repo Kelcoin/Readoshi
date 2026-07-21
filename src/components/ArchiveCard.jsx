@@ -225,12 +225,12 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
         const cacheKey = `thumb:${id}`;
         const src = cacheOnly && !allowNetworkFallback
           ? await getCachedImage(cacheKey)
-          : await getImage(cacheKey, async () => {
+          : await getImage(cacheKey, async (signal) => {
               const base = (localStorage.getItem('lrr_server_url') || '').replace(/\/$/, '');
               const key = localStorage.getItem('lrr_api_key') || '';
               const headers = {};
               if (key) headers['Authorization'] = `Bearer ${encodeApiKey(key)}`;
-              const res = await fetch(`${base}/api/archives/${id}/thumbnail`, { headers });
+              const res = await fetch(`${base}/api/archives/${id}/thumbnail`, { headers, signal });
               if (!res.ok) throw new Error(`HTTP ${res.status}`);
               return res.blob();
             });

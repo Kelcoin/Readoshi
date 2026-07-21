@@ -124,11 +124,11 @@ async function resolvePageImageSource(pageUrl, {
   if (cacheOnly && !allowNetworkFallback) {
     return getCachedImage(normalized);
   }
-  return getImage(normalized, async () => {
+  return getImage(normalized, async (signal) => {
     const headers = {};
     if (key) headers.Authorization = `Bearer ${encodeApiKey(key)}`;
     onNetworkStart?.();
-    const res = await fetch(normalized, { headers });
+    const res = await fetch(normalized, { headers, signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.blob();
   }, { priority });
@@ -480,12 +480,12 @@ const ReaderArchiveThumb = ({ archiveId, cacheOnly = false }) => {
       try {
         const blobUrl = cacheOnly && !allowNetworkFallback
           ? await getCachedImage(`thumb:hist:${archiveId}`)
-          : await getImage(`thumb:hist:${archiveId}`, async () => {
+          : await getImage(`thumb:hist:${archiveId}`, async (signal) => {
               const base = (localStorage.getItem('lrr_server_url') || '').replace(/\/$/, '');
               const key = localStorage.getItem('lrr_api_key') || '';
               const h = {};
               if (key) h['Authorization'] = `Bearer ${encodeApiKey(key)}`;
-              const r = await fetch(`${base}/api/archives/${archiveId}/thumbnail`, { headers: h });
+              const r = await fetch(`${base}/api/archives/${archiveId}/thumbnail`, { headers: h, signal });
               if (!r.ok) throw new Error();
               return r.blob();
             });
@@ -733,10 +733,10 @@ async function primePageBlob(pageUrl, priority = IMAGE_LOAD_PRIORITY.PRELOAD) {
   if (!pageUrl) return false;
   const normalized = toLocalUrl(pageUrl);
   const key = localStorage.getItem('lrr_api_key') || '';
-  return primeImage(normalized, async () => {
+  return primeImage(normalized, async (signal) => {
     const headers = {};
     if (key) headers.Authorization = `Bearer ${encodeApiKey(key)}`;
-    const res = await fetch(normalized, { headers });
+    const res = await fetch(normalized, { headers, signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.blob();
   }, { priority });
@@ -1917,10 +1917,10 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         const normalized = toLocalUrl(pageUrl);
         const src = assetCacheOnly
           ? await getCachedImage(normalized)
-          : await getImage(normalized, async () => {
+          : await getImage(normalized, async (signal) => {
             const headers = {};
             if (key) headers.Authorization = `Bearer ${encodeApiKey(key)}`;
-            const res = await fetch(normalized, { headers });
+            const res = await fetch(normalized, { headers, signal });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             return res.blob();
           }, { priority });
