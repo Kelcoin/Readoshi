@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useReducer } from 'react';
 import { createPortal } from 'react-dom';
 import { loadArchiveMetadataBatch, lrrApi } from '../lib/api';
+import { getArchiveCatalog, loadArchiveCatalog } from '../lib/archiveMetadataCache';
+import { sliceArchiveCatalog, sortArchiveCatalog } from '../lib/archiveCatalog';
 import { getHistory, getHideRead, setHideRead, getCropCover, setCropCover, getArchiveBrowseMode, setArchiveBrowseMode, removeHistoryItem, loadHistoryState } from '../lib/history';
 import { addWatchlistItem, getWatchlist, getWatchlistAutoRemoveIds, loadWatchlistState, mergeWatchlistProgress, removeWatchlistItem, removeWatchlistItems } from '../lib/watchlist';
 import { loadTagDB, startTagDBUpdateTimer, stopTagDBUpdateTimer } from '../lib/tags';
@@ -49,8 +51,6 @@ const RANDOMS_RETRY_DELAY_MS = 350;
 const ARCHIVES_SCROLL_KEY = 'lrr_scroll_archives_on_arrival';
 const RANDOMS_REVALIDATE_STALE_MS = 10 * 60 * 1000;
 const RANDOMS_RESTORE_GRACE_MS = 90 * 1000;
-const ARCHIVES_AUTO_REFRESH_MS = 60 * 1000;
-const ARCHIVES_FOCUS_REFRESH_MS = 30 * 1000;
 const RESUME_REFRESH_SUPPRESS_MS = 10 * 1000;
 const FILTER_INPUT_MIN_WIDTH = 400;
 const FILTER_ACTIONS_MIN_WIDTH = 320;
@@ -1093,11 +1093,23 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
         const nextPage = isPagedMode ? clampArchivePage(requestedPage, total, pageSize) : 0;
         const batchStart = isPagedMode ? getArchivePageStart(nextPage, pageSize) : (isReset ? 0 : current.startOffset);
         const batchIds = ids.slice(batchStart, batchStart + pageSize);
-        const data = await loadArchiveMetadataBatch(
-          batchIds,
-          (id) => lrrApi.getArchive(id, { signal: controller.signal }),
-          { signal: controller.signal, ignoreMissing: true },
+        let catalog = getArchiveCatalog();
+        if (!Array.isArray(catalog)) {
+          try { catalog = await loadArchiveCatalog({ signal: controller.signal }); } catch {}
+        }
+        const metadataById = new Map(
+          (Array.isArray(catalog) ? catalog : []).map((archive) => [archive.arcid || archive.id, archive]),
         );
+        const missingIds = batchIds.filter((id) => !metadataById.has(id));
+        if (missingIds.length > 0) {
+          const fetched = await loadArchiveMetadataBatch(
+            missingIds,
+            (id) => lrrApi.getArchive(id, { signal: controller.signal }),
+            { signal: controller.signal, ignoreMissing: true },
+          );
+          fetched.forEach((archive) => metadataById.set(archive.arcid || archive.id, archive));
+        }
+        const data = batchIds.map((id) => metadataById.get(id)).filter(Boolean);
         if (fetchSeq !== archiveFetchSeqRef.current) return false;
         setArchiveTotal(total);
         setArchivePage(nextPage);
@@ -1110,6 +1122,35 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
       }
       const query = effectiveFilter.active ? (effectiveFilter.query || '').trim() : '';
       const start = isPagedMode ? getArchivePageStart(requestedPage, pageSize) : (isReset ? 0 : current.startOffset);
+      if (!effectiveFilter.active) {
+        const catalog = await loadArchiveCatalog({ force, signal: controller.signal });
+        if (fetchSeq !== archiveFetchSeqRef.current) return false;
+        const ordered = sortArchiveCatalog(catalog, effectiveFilter.sortBy, effectiveFilter.order);
+        const total = ordered.length;
+        const nextPage = isPagedMode ? clampArchivePage(requestedPage, total, pageSize) : 0;
+        const localStart = isPagedMode ? getArchivePageStart(nextPage, pageSize) : start;
+        const data = sliceArchiveCatalog(ordered, localStart, pageSize);
+        setArchiveTotal(total);
+        if (isPagedMode) {
+          setArchivePage(nextPage);
+          setArchivePageInput(String(nextPage + 1));
+          setArchives(data);
+          setStartOffset(localStart + data.length);
+          setHasMore(nextPage < getArchivePageCount(total, pageSize) - 1);
+        } else if (isReset) {
+          setArchivePage(0);
+          setArchivePageInput('1');
+          setArchives(data);
+          setStartOffset(data.length);
+          setHasMore(data.length < total);
+        } else {
+          setArchives((prev) => [...prev, ...data]);
+          setStartOffset(localStart + data.length);
+          setHasMore(localStart + data.length < total);
+        }
+        markArchiveFetchCompleted();
+        return true;
+      }
       let res = await lrrApi.search(query, start, effectiveFilter.sortBy, effectiveFilter.order, { signal: controller.signal });
       let data = res.data || [];
       if (isPagedMode && data.length > 0 && data.length < pageSize) {
@@ -1615,35 +1656,6 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
         : next
     ));
   }, []);
-
-  useEffect(() => {
-    if (archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged) return undefined;
-    if (coldRestoreRef.current) return undefined;
-    const refresh = () => {
-      if (document.visibilityState !== 'visible' || loadingRef.current) return;
-      if (skipResumeTriggeredRefresh()) return;
-      doFetch(true, { background: true, force: true, clearSearchCache: true });
-    };
-    const timer = setInterval(refresh, ARCHIVES_AUTO_REFRESH_MS);
-    return () => clearInterval(timer);
-  }, [archiveBrowseMode, doFetch, skipResumeTriggeredRefresh]);
-
-  useEffect(() => {
-    if (archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged) return undefined;
-    const handleFocusRefresh = () => {
-      if (coldRestoreRef.current || document.visibilityState !== 'visible') return;
-      const now = Date.now();
-      if (skipResumeTriggeredRefresh()) return;
-      if (now - lastFetchedRef.current < ARCHIVES_FOCUS_REFRESH_MS) return;
-      doFetch(true, { background: true, force: true, clearSearchCache: true });
-    };
-    window.addEventListener('focus', handleFocusRefresh);
-    document.addEventListener('visibilitychange', handleFocusRefresh);
-    return () => {
-      window.removeEventListener('focus', handleFocusRefresh);
-      document.removeEventListener('visibilitychange', handleFocusRefresh);
-    };
-  }, [archiveBrowseMode, doFetch, skipResumeTriggeredRefresh]);
 
   const handleCategoryClick = useCallback((cat) => {
     const tag = cat.search || `category:${cat.name}$`;

@@ -618,6 +618,15 @@ test('normal Reader holds old spread geometry until every target slot is decoded
   assert.match(reader, /handleNormalSpreadUnitReady/);
 });
 
+test('Home uses the archive catalog without periodic list replacement', () => {
+  const home = read('src/pages/Home.jsx');
+  assert.match(home, /loadArchiveCatalog/);
+  assert.match(home, /sortArchiveCatalog/);
+  assert.match(home, /sliceArchiveCatalog/);
+  assert.doesNotMatch(home, /ARCHIVES_AUTO_REFRESH_MS|ARCHIVES_FOCUS_REFRESH_MS/);
+  assert.doesNotMatch(home, /setInterval\(refresh|handleFocusRefresh/);
+});
+
 test('touch surfaces suppress native WebKit tap highlight globally', () => {
   const css = read('src/index.css');
   assert.match(css, /\*\s*\{[^}]*-webkit-tap-highlight-color:\s*transparent;/s);
