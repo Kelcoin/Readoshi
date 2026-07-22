@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useReducer } from 'react';
 import { createPortal } from 'react-dom';
 import { loadArchiveMetadataBatch, lrrApi } from '../lib/api';
-import { getArchiveCatalog, loadArchiveCatalog } from '../lib/archiveMetadataCache';
-import { sliceArchiveCatalog, sortArchiveCatalog } from '../lib/archiveCatalog';
 import { getHistory, getHideRead, setHideRead, getCropCover, setCropCover, getArchiveBrowseMode, setArchiveBrowseMode, removeHistoryItem, loadHistoryState } from '../lib/history';
 import { addWatchlistItem, getWatchlist, getWatchlistAutoRemoveIds, loadWatchlistState, mergeWatchlistProgress, removeWatchlistItem, removeWatchlistItems } from '../lib/watchlist';
 import { loadTagDB, startTagDBUpdateTimer, stopTagDBUpdateTimer } from '../lib/tags';
@@ -1093,23 +1091,11 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
         const nextPage = isPagedMode ? clampArchivePage(requestedPage, total, pageSize) : 0;
         const batchStart = isPagedMode ? getArchivePageStart(nextPage, pageSize) : (isReset ? 0 : current.startOffset);
         const batchIds = ids.slice(batchStart, batchStart + pageSize);
-        let catalog = getArchiveCatalog();
-        if (!Array.isArray(catalog)) {
-          try { catalog = await loadArchiveCatalog({ signal: controller.signal }); } catch {}
-        }
-        const metadataById = new Map(
-          (Array.isArray(catalog) ? catalog : []).map((archive) => [archive.arcid || archive.id, archive]),
+        const data = await loadArchiveMetadataBatch(
+          batchIds,
+          (id) => lrrApi.getArchive(id, { signal: controller.signal }),
+          { signal: controller.signal, ignoreMissing: true },
         );
-        const missingIds = batchIds.filter((id) => !metadataById.has(id));
-        if (missingIds.length > 0) {
-          const fetched = await loadArchiveMetadataBatch(
-            missingIds,
-            (id) => lrrApi.getArchive(id, { signal: controller.signal }),
-            { signal: controller.signal, ignoreMissing: true },
-          );
-          fetched.forEach((archive) => metadataById.set(archive.arcid || archive.id, archive));
-        }
-        const data = batchIds.map((id) => metadataById.get(id)).filter(Boolean);
         if (fetchSeq !== archiveFetchSeqRef.current) return false;
         setArchiveTotal(total);
         setArchivePage(nextPage);
@@ -1122,35 +1108,6 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
       }
       const query = effectiveFilter.active ? (effectiveFilter.query || '').trim() : '';
       const start = isPagedMode ? getArchivePageStart(requestedPage, pageSize) : (isReset ? 0 : current.startOffset);
-      if (!effectiveFilter.active) {
-        const catalog = await loadArchiveCatalog({ force, signal: controller.signal });
-        if (fetchSeq !== archiveFetchSeqRef.current) return false;
-        const ordered = sortArchiveCatalog(catalog, effectiveFilter.sortBy, effectiveFilter.order);
-        const total = ordered.length;
-        const nextPage = isPagedMode ? clampArchivePage(requestedPage, total, pageSize) : 0;
-        const localStart = isPagedMode ? getArchivePageStart(nextPage, pageSize) : start;
-        const data = sliceArchiveCatalog(ordered, localStart, pageSize);
-        setArchiveTotal(total);
-        if (isPagedMode) {
-          setArchivePage(nextPage);
-          setArchivePageInput(String(nextPage + 1));
-          setArchives(data);
-          setStartOffset(localStart + data.length);
-          setHasMore(nextPage < getArchivePageCount(total, pageSize) - 1);
-        } else if (isReset) {
-          setArchivePage(0);
-          setArchivePageInput('1');
-          setArchives(data);
-          setStartOffset(data.length);
-          setHasMore(data.length < total);
-        } else {
-          setArchives((prev) => [...prev, ...data]);
-          setStartOffset(localStart + data.length);
-          setHasMore(localStart + data.length < total);
-        }
-        markArchiveFetchCompleted();
-        return true;
-      }
       let res = await lrrApi.search(query, start, effectiveFilter.sortBy, effectiveFilter.order, { signal: controller.signal });
       let data = res.data || [];
       if (isPagedMode && data.length > 0 && data.length < pageSize) {
@@ -1275,7 +1232,6 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
       lastFetchedRef.current = Date.now();
       return;
     }
-    if ((filter.query || '').trim() && !filter.active) return;
     const firstFetch = !didFetchArchivesRef.current;
     didFetchArchivesRef.current = true;
     doFetch(true, { force: firstFetch });
@@ -2375,7 +2331,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           })()}
         </div>
 
-        <ArchiveGrid ref={gridRef} className={archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged ? 'is-paged' : ''} data-refresh-phase={archiveRefreshPhase} aria-busy={archivesRefreshing} style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: isNarrow ? '10px' : '16px', '--archive-grid-half-gap': isNarrow ? '5px' : '8px' }}>
+        <ArchiveGrid ref={gridRef} className={archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged ? 'is-paged' : ''} data-refresh-phase={archiveRefreshPhase} aria-busy={archivesRefreshing} style={{ gap: isNarrow ? '10px' : '16px' }}>
           {archives.length === 0 && loading ? (
             Array.from({ length: 12 }).map((_, i) => <SkeletonCard key={`gsk-${i}`} showProgress={showGlobalArchiveProgress} />)
           ) : (

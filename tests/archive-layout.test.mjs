@@ -1,42 +1,20 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import * as pagination from '../src/lib/archivePagination.js';
 import * as readerUiState from '../src/lib/readerUiState.js';
 import * as horizontalScroller from '../src/lib/horizontalScroller.js';
 
-const container = { left: 0, width: 640 };
 const read = (path) => readFileSync(path, 'utf8');
 
-test('centers every incomplete visual row and leaves full rows unchanged', () => {
-  assert.equal(typeof pagination.getArchiveRowCentering, 'function');
-  const result = pagination.getArchiveRowCentering(container, [
-    { top: 0, left: 0, right: 150, span: 1 },
-    { top: 0, left: 160, right: 310, span: 1 },
-    { top: 300, left: 0, right: 150, span: 1 },
-    { top: 300, left: 160, right: 310, span: 1 },
-    { top: 300, left: 320, right: 470, span: 1 },
-    { top: 300, left: 480, right: 630, span: 1 },
-    { top: 600, left: 0, right: 310, span: 2 },
-  ], 4);
-
-  assert.deepEqual(result.translations, [
-    { index: 0, offset: 165 },
-    { index: 1, offset: 165 },
-    { index: 6, offset: 165 },
-  ]);
-});
-
-test('removes centering when scrolling fills a formerly incomplete row', () => {
-  assert.equal(typeof pagination.getArchiveRowCentering, 'function');
-  const result = pagination.getArchiveRowCentering(container, [
-    { top: 0, left: 0, right: 150, span: 1 },
-    { top: 0, left: 160, right: 310, span: 1 },
-    { top: 0, left: 320, right: 470, span: 1 },
-    { top: 0, left: 480, right: 630, span: 1 },
-  ], 4);
-
-  assert.deepEqual(result.translations, []);
+test('archive grid layout uses CSS flex wrapping without JavaScript centering observers', () => {
+  const css = read('src/index.css');
+  const grid = read('src/components/ArchiveGrid.jsx');
+  const pagination = read('src/lib/archivePagination.js');
+  assert.equal(/\.archive-grid\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;[^}]*justify-content:\s*center;/s.test(css), true);
+  assert.match(css, /\.archive-grid\s*\{[^}]*align-items:\s*flex-start;/s);
+  assert.match(css, /\.archive-grid\s*>\s*\.archive-card-wrap\.is-wide\s*\{[^}]*flex:\s*0\s+1\s+316px;[^}]*width:\s*min\(316px,\s*100%\);[^}]*max-width:\s*100%;/s);
+  assert.doesNotMatch(grid, /observeArchiveGridLayout/);
+  assert.doesNotMatch(pagination, /style\.translate|observeArchiveGridLayout/);
 });
 
 test('drawer virtualization uses content width and includes the row gap', () => {

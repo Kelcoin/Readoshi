@@ -2546,9 +2546,10 @@ textarea:focus-visible,
 }
 
 .archive-grid {
-  display: grid;
-  grid-auto-flow: row dense;
-  justify-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-start;
   opacity: 1;
   transform: scale(1);
   transform-origin: center top;
@@ -2574,7 +2575,7 @@ textarea:focus-visible,
 
 .history-page-title-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   flex-wrap: wrap;
   gap: 8px 14px;
 }
@@ -2811,8 +2812,9 @@ textarea:focus-visible,
 }
 
 .archive-grid > .archive-card-wrap.is-wide {
-  width: 100%;
-  grid-column: span 2 !important;
+  flex: 0 1 316px;
+  width: min(316px, 100%);
+  max-width: 100%;
 }
 
 .archive-grid > .archive-card-wrap.is-wide > .archive-card-shell {
@@ -3262,10 +3264,4 @@ textarea:focus-visible,
   .upload-results { padding: 17px; }
   .upload-dropzone,
   .upload-url-input { min-height: 155px; }
-}
-
-@media (max-width: 380px) {
-  .archive-grid > .archive-card-wrap.is-wide {
-    grid-column: 1 / -1 !important;
-  }
 }

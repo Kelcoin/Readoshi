@@ -382,7 +382,7 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
                     </div>
                   </div>
 
-                  <ArchiveGrid style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: isNarrow ? '10px' : '16px', '--archive-grid-half-gap': isNarrow ? '5px' : '8px' }}>
+                  <ArchiveGrid style={{ gap: isNarrow ? '10px' : '16px' }}>
                     {group.items.map((h) => {
                       const selected = selectedIds.has(h.id);
                       return (

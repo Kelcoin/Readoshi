@@ -258,7 +258,7 @@ export default function WatchlistPage({ onSelectArchive, onBack }) {
           </div>
 
           {filteredItems.length > 0 ? (
-            <ArchiveGrid ref={gridRef} style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: isNarrow ? '10px' : '16px', '--archive-grid-half-gap': isNarrow ? '5px' : '8px' }}>
+            <ArchiveGrid ref={gridRef} style={{ gap: isNarrow ? '10px' : '16px' }}>
               {filteredItems.map((item) => {
                 const selected = selectedIds.has(item.id);
                 return (

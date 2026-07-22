@@ -340,14 +340,20 @@ test('login import feedback stays outside the height-limited form and expires', 
   assert.match(css, /\.login-stack-notice\s*\{[^}]*width:\s*100%/s);
 });
 
-test('archive grids combine dense backfill with shared row centering', () => {
+test('archive grids use native flex wrapping with shared card sizing', () => {
   const css = read('src/index.css');
   const home = read('src/pages/Home.jsx');
   const history = read('src/pages/HistoryPage.jsx');
   const watchlist = read('src/pages/WatchlistPage.jsx');
-  assert.match(css, /\.archive-grid\s*\{[^}]*grid-auto-flow:\s*row dense;/s);
-  assert.match(css, /\.archive-grid\s*>\s*\.archive-card-wrap\.is-wide\s*\{[^}]*grid-column:\s*span 2\s*!important;/s);
+  const grid = read('src/components/ArchiveGrid.jsx');
+  const pagination = read('src/lib/archivePagination.js');
+  assert.match(css, /\.archive-grid\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;[^}]*justify-content:\s*center;/s);
+  assert.match(css, /\.archive-grid\s*>\s*\.archive-card-wrap\.is-wide\s*\{[^}]*flex:\s*0\s+1\s+316px;[^}]*width:\s*min\(316px,\s*100%\);[^}]*max-width:\s*100%;/s);
   assert.match(css, /\.archive-grid\s*>\s*\.archive-card-wrap\.is-wide\s*>\s*\.archive-card-shell\s*\{[^}]*width:\s*100%\s*!important;/s);
+  assert.doesNotMatch(css, /grid-auto-flow/);
+  assert.doesNotMatch(css, /grid-column:\s*span 2/);
+  assert.doesNotMatch(grid, /observeArchiveGridLayout/);
+  assert.doesNotMatch(pagination, /observeArchiveGridLayout/);
   assert.match(home, /<ArchiveGrid/);
   assert.match(history, /<ArchiveGrid/);
   assert.match(watchlist, /<ArchiveGrid/);
@@ -689,13 +695,20 @@ test('normal Reader holds old spread geometry until every target slot is decoded
   assert.match(reader, /handleNormalSpreadUnitReady/);
 });
 
-test('Home uses the archive catalog without periodic list replacement', () => {
+test('Home paginates archive searches without periodic list replacement', () => {
   const home = read('src/pages/Home.jsx');
-  assert.match(home, /loadArchiveCatalog/);
-  assert.match(home, /sortArchiveCatalog/);
-  assert.match(home, /sliceArchiveCatalog/);
+  assert.match(home, /lrrApi\.search\(query, start,/);
+  assert.equal(/loadArchiveCatalog|getArchiveCatalog|sortArchiveCatalog|sliceArchiveCatalog/.test(home), false);
   assert.doesNotMatch(home, /ARCHIVES_AUTO_REFRESH_MS|ARCHIVES_FOCUS_REFRESH_MS/);
   assert.doesNotMatch(home, /setInterval\(refresh|handleFocusRefresh/);
+});
+
+test('Home auto-loads archives and desktop history count badges stay vertically centered', () => {
+  const home = read('src/pages/Home.jsx');
+  const css = read('src/index.css');
+
+  assert.doesNotMatch(home, /if \(\(filter\.query \|\| ''\)\.trim\(\) && !filter\.active\) return;/);
+  assert.match(css, /\.history-page-title-row\s*\{[^}]*align-items:\s*center;/s);
 });
 
 test('touch surfaces suppress native WebKit tap highlight globally', () => {

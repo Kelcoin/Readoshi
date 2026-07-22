@@ -510,7 +510,6 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
       style={{
         position: 'relative',
         display: 'inline-block',
-        gridColumn: isWide ? 'span 2' : undefined,
         transform: isPanelVisible ? 'translateY(-6px)' : undefined,
         transformOrigin: 'center top',
         transition: 'transform 0.22s cubic-bezier(0.22, 1, 0.36, 1)',
