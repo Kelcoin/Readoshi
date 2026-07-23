@@ -102,6 +102,17 @@ test('archive reflow preserves an in-flight visual offset during another layout 
   );
 });
 
+test('archive reflow does not restart an active animation when layout is unchanged', () => {
+  assert.equal(
+    getArchiveCardMove(
+      { left: 100, top: 20 },
+      { left: 100, top: 20 },
+      { x: -50, y: 0 },
+    ),
+    null,
+  );
+});
+
 test('archive grid animates keyed reflow with reduced-motion protection', () => {
   const grid = read('src/components/ArchiveGrid.jsx');
   const card = read('src/components/ArchiveCard.jsx');
@@ -110,6 +121,10 @@ test('archive grid animates keyed reflow with reduced-motion protection', () => 
   assert.match(grid, /element\.animate\(/);
   assert.match(grid, /element\.offsetLeft/);
   assert.match(grid, /element\.offsetTop/);
+  assert.match(
+    grid,
+    /const logicalMove = getArchiveCardMove[\s\S]*if \(!logicalMove\) continue;[\s\S]*const activeAnimation/,
+  );
   assert.match(grid, /duration:\s*220/);
   assert.match(grid, /cubic-bezier\(0\.22, 1, 0\.36, 1\)/);
 });

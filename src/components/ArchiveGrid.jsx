@@ -90,6 +90,12 @@ const ArchiveGrid = forwardRef(function ArchiveGrid({ className = '', children, 
       const key = element.dataset.archiveGridKey;
       if (!key) continue;
 
+      const nextRect = { left: element.offsetLeft, top: element.offsetTop };
+      const previousRect = previousRectsRef.current.get(key);
+      const logicalMove = getArchiveCardMove(previousRect, nextRect);
+      nextRects.set(key, nextRect);
+      if (!logicalMove) continue;
+
       const activeAnimation = animationsRef.current.get(key);
       const animatedRect = activeAnimation ? element.getBoundingClientRect() : null;
       activeAnimation?.cancel();
@@ -98,9 +104,9 @@ const ArchiveGrid = forwardRef(function ArchiveGrid({ className = '', children, 
         x: animatedRect.left - settledRect.left,
         y: animatedRect.top - settledRect.top,
       } : null;
-      const nextRect = { left: element.offsetLeft, top: element.offsetTop };
-      const move = getArchiveCardMove(previousRectsRef.current.get(key), nextRect, animationOffset);
-      nextRects.set(key, nextRect);
+      const move = animationOffset
+        ? getArchiveCardMove(previousRect, nextRect, animationOffset)
+        : logicalMove;
 
       if (!move || reduceMotion || typeof element.animate !== 'function') continue;
       const animation = element.animate(

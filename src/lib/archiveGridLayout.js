@@ -3,9 +3,13 @@ export const WIDE_ARCHIVE_CARD_WIDTH = 316;
 
 export function getArchiveCardMove(previousRect, nextRect, animationOffset = null) {
   if (!previousRect || !nextRect) return null;
-  const x = previousRect.left - nextRect.left + (animationOffset?.x || 0);
-  const y = previousRect.top - nextRect.top + (animationOffset?.y || 0);
-  return Math.abs(x) < 0.5 && Math.abs(y) < 0.5 ? null : { x, y };
+  const logicalX = previousRect.left - nextRect.left;
+  const logicalY = previousRect.top - nextRect.top;
+  if (Math.abs(logicalX) < 0.5 && Math.abs(logicalY) < 0.5) return null;
+  return {
+    x: logicalX + (animationOffset?.x || 0),
+    y: logicalY + (animationOffset?.y || 0),
+  };
 }
 
 function createFirstFitIndex(capacity) {
