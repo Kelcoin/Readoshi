@@ -10,6 +10,7 @@ import { encodeApiKey } from '../lib/api';
 import { scopedCacheKey } from '../lib/configScope';
 import { isOutsideHorizontalViewport } from '../lib/horizontalScroller';
 import { getContentLanguage } from '../lib/readerUiState';
+import { ARCHIVE_CARD_WIDTH, WIDE_ARCHIVE_CARD_WIDTH } from '../lib/archiveGridLayout';
 
 const NAMESPACE_COLORS = NAMESPACE_COLORS_MAP;
 const archiveAspectRatioCache = new Map();
@@ -18,6 +19,32 @@ const ARCHIVE_TITLE_FONT_SIZE = 13;
 const ARCHIVE_TITLE_LINE_HEIGHT = 1.5;
 const ARCHIVE_TITLE_GLYPH_SAFETY_PX = 3;
 const ARCHIVE_TITLE_VERTICAL_BUDGET = 51.7;
+const nearViewportCallbacks = new Map();
+let nearViewportObserver = null;
+
+function observeNearViewport(node, onEnter) {
+  if (typeof IntersectionObserver === 'undefined') {
+    onEnter();
+    return () => {};
+  }
+  if (!nearViewportObserver) {
+    nearViewportObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const callback = nearViewportCallbacks.get(entry.target);
+        nearViewportCallbacks.delete(entry.target);
+        nearViewportObserver.unobserve(entry.target);
+        callback?.();
+      }
+    }, { rootMargin: '1200px 800px' });
+  }
+  nearViewportCallbacks.set(node, onEnter);
+  nearViewportObserver.observe(node);
+  return () => {
+    nearViewportCallbacks.delete(node);
+    nearViewportObserver?.unobserve(node);
+  };
+}
 
 function calculatePanelPosition(cardRect, panelHeight, pointerY = null) {
   const panelWidth = 320;
@@ -71,28 +98,7 @@ function calculatePanelPosition(cardRect, panelHeight, pointerY = null) {
   };
 }
 
-async function readImageAspectRatio(src) {
-  if (!src) return null;
-  const img = new Image();
-  img.decoding = 'async';
-  img.src = src;
-  try {
-    if (!img.complete) {
-      await new Promise((resolve, reject) => {
-        img.onload = resolve;
-        img.onerror = reject;
-      });
-    }
-    if (typeof img.decode === 'function') {
-      try { await img.decode(); } catch {}
-    }
-    return img.naturalWidth && img.naturalHeight ? img.naturalWidth / img.naturalHeight : null;
-  } catch {
-    return null;
-  }
-}
-
-export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveContextMenu, longPressTitle = '', currentPage, progress, showProgressBar, reserveProgressSpace = false, noCrop, cacheOnly = false, wrapStyle, className, overlay, selectionMode = false, selected = false, onSelectToggle, disabled = false }) {
+export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveContextMenu, longPressTitle = '', currentPage, progress, showProgressBar, reserveProgressSpace = false, noCrop, cacheOnly = false, wrapStyle, className, overlay, selectionMode = false, selected = false, onSelectToggle, disabled = false, archiveGridItemKey, archiveGridChildrenVersion, archiveGridLayoutVersion, onArchiveGridWidthChange }) {
   const id = archive.arcid || archive.id;
   const [hovered, setHovered] = useState(false);
   const [closing, setClosing] = useState(false);
@@ -109,6 +115,9 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   const aspectCacheKey = scopedCacheKey(`aspect:${id}`);
   const [aspectRatio, setAspectRatio] = useState(() => archiveAspectRatioCache.get(aspectCacheKey) ?? null);
   const cardRef = useRef(null);
+  const [thumbnailEligible, setThumbnailEligible] = useState(() => (
+    typeof IntersectionObserver === 'undefined'
+  ));
   const panelRef = useRef(null);
   const imgRef = useRef(null);
   const leaveTimerRef = useRef(null);
@@ -119,6 +128,11 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   const longPressTriggeredRef = useRef(false);
   const pointerStartRef = useRef(null);
   const hoverPointerYRef = useRef(null);
+
+  useEffect(() => {
+    if (thumbnailEligible || !cardRef.current) return undefined;
+    return observeNearViewport(cardRef.current, () => setThumbnailEligible(true));
+  }, [thumbnailEligible]);
 
   useEffect(() => {
     if (!cacheOnly) {
@@ -183,6 +197,14 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   const isWide = noCrop && aspectRatio != null && aspectRatio > 1.0;
   const baseMetaFontSize = isMobile ? 10.5 : 11;
 
+  useLayoutEffect(() => {
+    if (!archiveGridItemKey || !onArchiveGridWidthChange) return;
+    onArchiveGridWidthChange(
+      archiveGridItemKey,
+      isWide ? WIDE_ARCHIVE_CARD_WIDTH : ARCHIVE_CARD_WIDTH,
+    );
+  }, [archiveGridItemKey, isWide, onArchiveGridWidthChange]);
+
   const rememberAspectRatio = useCallback((next) => {
     if (!Number.isFinite(next) || next <= 0) return;
     archiveAspectRatioCache.set(aspectCacheKey, next);
@@ -212,8 +234,9 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
     updateAspectRatio(imgRef.current);
   }, [thumbSrc, thumbState, updateAspectRatio]);
 
-  // Load immediately so initial paint never depends on a later scroll/click signal.
+  // Start near the viewport so initial covers are ready without flooding the queue.
   useEffect(() => {
+    if (!thumbnailEligible) return undefined;
     let isMounted = true;
 
     const loadThumbnail = async () => {
@@ -225,20 +248,17 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
         const cacheKey = `thumb:${id}`;
         const src = cacheOnly && !allowNetworkFallback
           ? await getCachedImage(cacheKey)
-          : await getImage(cacheKey, async () => {
+          : await getImage(cacheKey, async (signal) => {
               const base = (localStorage.getItem('lrr_server_url') || '').replace(/\/$/, '');
               const key = localStorage.getItem('lrr_api_key') || '';
               const headers = {};
               if (key) headers['Authorization'] = `Bearer ${encodeApiKey(key)}`;
-              const res = await fetch(`${base}/api/archives/${id}/thumbnail`, { headers });
+              const res = await fetch(`${base}/api/archives/${id}/thumbnail`, { headers, signal });
               if (!res.ok) throw new Error(`HTTP ${res.status}`);
               return res.blob();
             });
         if (!isMounted) return;
         if (src) {
-          const ratio = noCrop ? await readImageAspectRatio(src) : null;
-          if (!isMounted) return;
-          if (ratio) rememberAspectRatio(ratio);
           thumbObjectUrlRef.current = src;
           setThumbSrc(src);
           setThumbState('ready');
@@ -264,7 +284,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
     return () => {
       isMounted = false;
     };
-  }, [allowNetworkFallback, cacheOnly, id, noCrop, rememberAspectRatio, retryKey]);
+  }, [allowNetworkFallback, cacheOnly, id, retryKey, thumbnailEligible]);
 
   const translateDisplayTag = useCallback((rawTag) => {
     if (!rawTag) return rawTag;
@@ -372,7 +392,7 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   useLayoutEffect(() => {
     if (!isPanelVisible || categorizedTags.length === 0) return;
     updatePanelPosition();
-  }, [categorizedTags.length, isPanelVisible, updatePanelPosition]);
+  }, [archiveGridChildrenVersion, archiveGridLayoutVersion, categorizedTags.length, isPanelVisible, updatePanelPosition]);
 
   useEffect(() => {
     if (!isPanelVisible) return;
@@ -506,11 +526,11 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
   return (
     <div
       ref={cardRef}
+      data-archive-grid-key={archiveGridItemKey || undefined}
       className={['archive-card-wrap', isWide ? 'is-wide' : '', className].filter(Boolean).join(' ')}
       style={{
         position: 'relative',
         display: 'inline-block',
-        gridColumn: isWide ? 'span 2' : undefined,
         transform: isPanelVisible ? 'translateY(-6px)' : undefined,
         transformOrigin: 'center top',
         transition: 'transform 0.22s cubic-bezier(0.22, 1, 0.36, 1)',
@@ -628,6 +648,8 @@ export default function ArchiveCard({ archive, onClick, onLongPress, onArchiveCo
               className="archive-cover-image"
               src={thumbSrc}
               alt="cover"
+              loading="lazy"
+              decoding="async"
               draggable={false}
               onLoad={handleImageLoad}
               onContextMenu={(e) => e.preventDefault()}

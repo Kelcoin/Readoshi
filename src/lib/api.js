@@ -1,6 +1,50 @@
+import { getConfigScopeId } from './configScope.js';
+
 const getBaseUrl = () => {
   return (localStorage.getItem('lrr_server_url') || '').replace(/\/$/, '');
 };
+
+const ARCHIVE_SEARCH_CACHE_TTL_MS = 60 * 1000;
+const ARCHIVE_SEARCH_CACHE_LIMIT = 30;
+const archiveSearchResponseCache = new Map();
+
+export function clearArchiveSearchResponseCache() {
+  archiveSearchResponseCache.clear();
+}
+
+function cachedArchiveSearch(filter, start, sortby, order, options) {
+  const normalizedFilter = String(filter || '').trim();
+  const key = `${getConfigScopeId()}|${normalizedFilter}|${start}|${sortby}|${order}`;
+  const now = Date.now();
+  const cached = archiveSearchResponseCache.get(key);
+  if (cached && cached.expiresAt > now) {
+    archiveSearchResponseCache.delete(key);
+    archiveSearchResponseCache.set(key, cached);
+    return waitForCaller(cached.promise, options?.signal);
+  }
+  archiveSearchResponseCache.delete(key);
+
+  const promise = request(`/search?filter=${encodeURIComponent(normalizedFilter)}&start=${start}&sortby=${sortby}&order=${order}`)
+    .catch((error) => {
+      if (archiveSearchResponseCache.get(key)?.promise === promise) archiveSearchResponseCache.delete(key);
+      throw error;
+    });
+  archiveSearchResponseCache.set(key, { expiresAt: now + ARCHIVE_SEARCH_CACHE_TTL_MS, promise });
+  while (archiveSearchResponseCache.size > ARCHIVE_SEARCH_CACHE_LIMIT) {
+    archiveSearchResponseCache.delete(archiveSearchResponseCache.keys().next().value);
+  }
+  return waitForCaller(promise, options?.signal);
+}
+
+function waitForCaller(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(abortReason(signal));
+    signal.addEventListener('abort', abort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
+}
 
 export function encodeApiKey(key = '') {
   const bytes = new TextEncoder().encode(String(key));
@@ -152,10 +196,14 @@ export async function loadArchiveMetadataBatch(ids, loadArchive, { concurrency =
 
 export const lrrApi = {
   search: (filter = '', start = 0, sortby = 'date_added', order = 'desc', options = {}) =>
-    request(`/search?filter=${encodeURIComponent(filter)}&start=${start}&sortby=${sortby}&order=${order}`, 'GET', null, options),
-  clearSearchCache: () => request('/search/cache', 'DELETE'),
+    cachedArchiveSearch(filter, start, sortby, order, options),
+  clearSearchCache: () => {
+    clearArchiveSearchResponseCache();
+    return request('/search/cache', 'DELETE');
+  },
 
   getRandom: (count = 10, options = {}) => request(`/search/random?count=${count}`, 'GET', null, options),
+  getAllArchives: (options = {}) => request('/archives', 'GET', null, options),
   getUntaggedArchives: async (options = {}) => normalizeUntaggedArchiveIds(await request('/archives/untagged', 'GET', null, options)),
   getArchive: (id, options = {}) => request(`/archives/${id}/metadata`, 'GET', null, options),
   updateArchiveMetadata: (id, { title = '', tags = '', summary = '' }, options = {}) => {
@@ -201,7 +249,7 @@ export const lrrApi = {
       : `${id}.zip`;
     return { blob: await res.blob(), filename };
   },
-  getArchiveThumbnail: async (id, { page = null, noFallback = false } = {}) => {
+  getArchiveThumbnail: async (id, { page = null, noFallback = false, signal } = {}) => {
     const base = getBaseUrl();
     if (!base) throw new Error('未配置服务器地址');
 
@@ -212,6 +260,7 @@ export const lrrApi = {
     const query = params.toString();
     const res = await fetch(`${base}/api/archives/${encodeURIComponent(id)}/thumbnail${query ? `?${query}` : ''}`, {
       headers: getAuthHeaders(),
+      signal,
     });
 
     if (res.status === 202) {

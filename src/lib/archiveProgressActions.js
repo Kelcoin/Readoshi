@@ -3,7 +3,7 @@ import { removeHistoryItem, saveHistory } from './history';
 import { clearArchiveProgressMarker, clearArchiveReadingProgress, markArchiveProgressCleared } from './archiveProgress';
 import { clearReaderSnapshot, updateArchiveProgressInSessionSnapshots } from './sessionState';
 import { dispatchReadingProgressChanged } from './readingProgress';
-import { rememberArchiveMetadata } from './archiveMetadataCache';
+import { rememberArchiveProgressInCatalog } from './archiveMetadataCache';
 
 export async function clearConfiguredArchiveReadingProgress(archive) {
   const result = await clearArchiveReadingProgress(archive, {
@@ -16,7 +16,7 @@ export async function clearConfiguredArchiveReadingProgress(archive) {
   else markArchiveProgressCleared(id);
   clearReaderSnapshot(id);
   updateArchiveProgressInSessionSnapshots(id, result.page);
-  rememberArchiveMetadata({ ...archive, id, arcid: id, page: result.page, progress: result.page });
+  rememberArchiveProgressInCatalog(id, result.page);
   dispatchReadingProgressChanged({
     archiveId: id,
     page: result.page,

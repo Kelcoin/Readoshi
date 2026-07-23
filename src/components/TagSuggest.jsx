@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { searchTags, isDBReady, NAMESPACE_COLORS_MAP, NS_CN_LABELS } from '../lib/tags';
+import { getTagSuggestPlacement } from '../lib/tagSuggestLayout';
 
 const COLORS = NAMESPACE_COLORS_MAP || {};
 
@@ -30,7 +31,6 @@ export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSe
   const listRef = useRef(null);
   const debounceRef = useRef(null);
   const dismissTimerRef = useRef(null);
-  const [panelShift, setPanelShift] = useState(0); // mobile: px to shift panel left
   const [anchor, setAnchor] = useState(null);
 
   const updateSuggestions = useCallback((val) => {
@@ -70,36 +70,35 @@ export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSe
     if (onSetActive) onSetActive(visible);
   }, [visible, onSetActive]);
 
-  // Calculate horizontal shift for mobile panel (pull to viewport edge)
   const isNarrow = typeof window !== 'undefined' && window.innerWidth < 600;
-  useEffect(() => {
-    if (!visible || !isNarrow || !containerRef?.current) {
-      setPanelShift(0);
-      return;
-    }
-    const parent = containerRef.current.parentElement;
-    if (parent) {
-      const parentRect = parent.getBoundingClientRect();
-      setPanelShift(parentRect.left - 16);
-    }
-  }, [visible, isNarrow, containerRef]);
 
   useEffect(() => {
     if (!visible || !containerRef?.current) { setAnchor(null); return undefined; }
     const update = () => {
       const rect = containerRef.current.getBoundingClientRect();
-      const gap = 6;
-      const viewportGap = 12;
-      const below = window.innerHeight - rect.bottom - gap - viewportGap;
-      const above = rect.top - gap - viewportGap;
-      const openAbove = below < 180 && above > below;
-      const maxHeight = Math.max(120, Math.min(320, openAbove ? above : below));
-      setAnchor({ left: Math.max(viewportGap, Math.min(rect.left, window.innerWidth - rect.width - viewportGap)), top: openAbove ? Math.max(viewportGap, rect.top - gap - maxHeight) : rect.bottom + gap, width: rect.width, maxHeight });
+      const visualViewport = window.visualViewport;
+      const viewportLeft = visualViewport?.offsetLeft || 0;
+      const viewportTop = visualViewport?.offsetTop || 0;
+      const viewportWidth = visualViewport?.width || window.innerWidth;
+      const viewportHeight = visualViewport?.height || window.innerHeight;
+      setAnchor(getTagSuggestPlacement(rect, window.innerWidth, window.innerHeight, {
+        viewportLeft,
+        viewportTop,
+        viewportRight: viewportLeft + viewportWidth,
+        viewportBottom: viewportTop + viewportHeight,
+      }));
     };
     update();
     window.addEventListener('resize', update);
     window.addEventListener('scroll', update, true);
-    return () => { window.removeEventListener('resize', update); window.removeEventListener('scroll', update, true); };
+    window.visualViewport?.addEventListener('resize', update);
+    window.visualViewport?.addEventListener('scroll', update);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+      window.visualViewport?.removeEventListener('resize', update);
+      window.visualViewport?.removeEventListener('scroll', update);
+    };
   }, [containerRef, visible]);
 
   // ── Dismiss on outside click/tap ──
@@ -163,7 +162,7 @@ export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSe
     }
   }, [visible, suggestions, activeIndex, selectItem]);
 
-  if (!visible || suggestions.length === 0) return null;
+  if (!visible || suggestions.length === 0 || !anchor) return null;
 
   const basePanel = {
     overflowY: 'auto',
@@ -178,42 +177,12 @@ export default function TagSuggest({ inputValue, onSelectTag, containerRef, onSe
     padding: '6px 0',
   };
 
-  // Desktop: absolute, anchored below the input
-  // Mobile: absolute with negative left shift, fills viewport width
-  let panelStyle;
-  if (anchor) {
-    panelStyle = {
-      ...basePanel,
-      position: 'fixed',
-      left: anchor.left,
-      top: anchor.top,
-      width: anchor.width,
-      maxHeight: anchor.maxHeight,
-      zIndex: 200000,
-    };
-  } else if (isNarrow) {
-    panelStyle = {
-      ...basePanel,
-      position: 'absolute',
-      left: -panelShift,
-      width: 'calc(100vw - 32px)',
-      maxWidth: '400px',
-      top: 'calc(100% + 4px)',
-      maxHeight: '50vh',
-      borderRadius: '16px',
-      zIndex: 9999,
-    };
-  } else {
-    panelStyle = {
-      ...basePanel,
-      position: 'absolute',
-      top: 'calc(100% + 4px)',
-      left: 0,
-      width: '100%',
-      maxHeight: '320px',
-      zIndex: 200,
-    };
-  }
+  const panelStyle = {
+    ...basePanel,
+    position: 'fixed',
+    ...anchor,
+    zIndex: 200000,
+  };
 
   return createPortal(
       <div

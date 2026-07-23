@@ -340,17 +340,79 @@ test('login import feedback stays outside the height-limited form and expires', 
   assert.match(css, /\.login-stack-notice\s*\{[^}]*width:\s*100%/s);
 });
 
-test('archive grids combine dense backfill with shared row centering', () => {
+test('archive grids use native flex wrapping with shared card sizing', () => {
   const css = read('src/index.css');
   const home = read('src/pages/Home.jsx');
   const history = read('src/pages/HistoryPage.jsx');
   const watchlist = read('src/pages/WatchlistPage.jsx');
-  assert.match(css, /\.archive-grid\s*\{[^}]*grid-auto-flow:\s*row dense;/s);
-  assert.match(css, /\.archive-grid\s*>\s*\.archive-card-wrap\.is-wide\s*\{[^}]*grid-column:\s*span 2\s*!important;/s);
+  const grid = read('src/components/ArchiveGrid.jsx');
+  const pagination = read('src/lib/archivePagination.js');
+  assert.match(css, /\.archive-grid\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;[^}]*justify-content:\s*center;/s);
+  assert.match(css, /\.archive-grid\s*>\s*\.archive-card-wrap\.is-wide\s*\{[^}]*flex:\s*0\s+1\s+316px;[^}]*width:\s*min\(316px,\s*100%\);[^}]*max-width:\s*100%;/s);
   assert.match(css, /\.archive-grid\s*>\s*\.archive-card-wrap\.is-wide\s*>\s*\.archive-card-shell\s*\{[^}]*width:\s*100%\s*!important;/s);
+  assert.doesNotMatch(css, /grid-auto-flow/);
+  assert.doesNotMatch(css, /grid-column:\s*span 2/);
+  assert.doesNotMatch(grid, /observeArchiveGridLayout/);
+  assert.doesNotMatch(pagination, /observeArchiveGridLayout/);
   assert.match(home, /<ArchiveGrid/);
   assert.match(history, /<ArchiveGrid/);
   assert.match(watchlist, /<ArchiveGrid/);
+});
+
+test('history page header has ordered narrow-screen layout hooks', () => {
+  const css = read('src/index.css');
+  const history = read('src/pages/HistoryPage.jsx');
+  const watchlist = read('src/pages/WatchlistPage.jsx');
+
+  assert.match(history, /className="history-page"/);
+  assert.match(history, /className="history-page-header"/);
+  assert.match(history, /className="history-page-title-block"/);
+  assert.match(history, /className="history-page-title-row"/);
+  assert.match(history, /className="history-section-header"/);
+  assert.match(history, /className="history-section-actions"/);
+  assert.match(history, /className="history-section-toolbar"/);
+  assert.doesNotMatch(history, /className="history-hide-read-toggle"/);
+  assert.doesNotMatch(history, /handleToggleHideRead|setHideRead\(/);
+  assert.match(history, /className="history-summary-part"/);
+  assert.match(history, /className="history-page-actions"/);
+  assert.ok(history.indexOf('className="history-page-title"') < history.indexOf('className="history-page-summary"'));
+  assert.ok(history.indexOf('className="history-section-actions"') < history.indexOf('className="history-section-toolbar"'));
+  assert.ok(history.indexOf('className="history-section-toolbar"') < history.indexOf('<ArchiveSearchBox'));
+  assert.match(watchlist, /className="history-page watchlist-page"/);
+  assert.match(watchlist, /className="history-page-title-row"/);
+  assert.match(watchlist, /className="history-page-actions"/);
+  assert.match(watchlist, /className="history-section-header"/);
+  assert.match(watchlist, /className="history-section-actions"/);
+  assert.match(css, /\.history-page-header\s*\{/);
+  assert.match(css, /\.history-page-actions\s*\{/);
+  assert.match(css, /\.history-page-title-row\s*\{/);
+  assert.match(css, /\.history-section-header\s*\{/);
+  assert.match(css, /\.history-section-actions\s*\{/);
+  assert.match(css, /\.history-section-toolbar\s*\{/);
+  assert.match(css, /\.history-summary-part\s*\{/);
+  assert.doesNotMatch(css, /\.history-hide-read-toggle/);
+  assert.match(css, /\.history-page-summary\s*\{[\s\S]*font-family:\s*'Noto Sans SC Variable', system-ui, sans-serif;[\s\S]*font-size:\s*12px;[\s\S]*font-synthesis:\s*none;[\s\S]*font-variant-numeric:\s*tabular-nums;[\s\S]*font-weight:\s*520;[\s\S]*line-height:\s*1\.35;[\s\S]*background:\s*var\(--surface-2\);[\s\S]*border:\s*1px solid var\(--glass-border\);[\s\S]*border-radius:\s*999px;/s);
+  assert.match(css, /@media \(max-width:\s*600px\)[\s\S]*\.history-page-header\s*\{[\s\S]*flex-direction:\s*column;[\s\S]*align-items:\s*stretch;/s);
+  assert.match(css, /@media \(max-width:\s*600px\)[\s\S]*\.history-page-title-row\s*\{[\s\S]*display:\s*grid;[\s\S]*grid-template-columns:\s*minmax\(0,\s*auto\)\s+minmax\(0,\s*1fr\);[\s\S]*align-items:\s*center;/s);
+  assert.match(css, /@media \(max-width:\s*600px\)[\s\S]*\.history-page-summary\s*\{[\s\S]*justify-self:\s*end;[\s\S]*text-align:\s*right;/s);
+  assert.match(css, /@media \(max-width:\s*600px\)[\s\S]*\.history-summary-part\s*\{[\s\S]*display:\s*block;/s);
+  assert.match(css, /@media \(max-width:\s*600px\)[\s\S]*\.history-page-actions\s*\{[\s\S]*display:\s*flex;[\s\S]*flex-wrap:\s*nowrap;[\s\S]*justify-content:\s*center;/s);
+  assert.match(css, /@media \(max-width:\s*600px\)[\s\S]*\.history-section-header\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;/s);
+  assert.match(css, /@media \(max-width:\s*600px\)[\s\S]*\.history-page-actions \.btn\s*\{[\s\S]*width:\s*auto;[\s\S]*flex:\s*0 1 auto;[\s\S]*font-size:\s*13px;/s);
+});
+
+test('home archive toolbar count is styled and empty cold restore fetches archives', () => {
+  const home = read('src/pages/Home.jsx');
+  const css = read('src/index.css');
+
+  assert.match(home, /className="archive-count-badge"/);
+  assert.match(home, /className="archive-toolbar-actions"/);
+  assert.match(home, /className="archive-toolbar-summary"[\s\S]*alignItems:\s*'center'/);
+  assert.match(home, /const hasHydratedArchives = homeSnapshot && Array\.isArray\(homeSnapshot\.archives\) && homeSnapshot\.archives\.length > 0;/);
+  assert.match(home, /if \(coldRestoreRef\.current && hasHydratedArchives\) return;/);
+  assert.match(home, /if \(navigationRestoreRef\.current && hasHydratedArchives\)/);
+  assert.match(css, /\.archive-count-badge\s*\{[\s\S]*font-family:\s*'Noto Sans SC Variable', system-ui, sans-serif;[\s\S]*font-size:\s*12px;[\s\S]*font-synthesis:\s*none;[\s\S]*font-variant-numeric:\s*tabular-nums;[\s\S]*font-weight:\s*520;[\s\S]*line-height:\s*1\.35;[\s\S]*background:\s*var\(--surface-2\);[\s\S]*border:\s*1px solid var\(--glass-border\);[\s\S]*border-radius:\s*999px;/s);
+  assert.match(css, /\.archive-toolbar-summary h2,[\s\S]*\.archive-toolbar-summary h2 > span\s*\{[\s\S]*white-space:\s*nowrap;/s);
 });
 
 test('archive title uses one cross-platform two-line geometry contract', () => {
@@ -492,6 +554,21 @@ test('history list is the only persisted reading progress source', () => {
   assert.match(recommendations, /applyCanonicalHistoryProgress/);
 });
 
+test('archive mutations synchronize catalog and short search caches after success', () => {
+  const deletion = read('src/lib/archiveDeletion.js');
+  const metadataPage = read('src/pages/MetadataPage.jsx');
+  const uploadPage = read('src/pages/UploadPage.jsx');
+  const progressActions = read('src/lib/archiveProgressActions.js');
+  const reader = read('src/pages/Reader.jsx');
+
+  assert.match(deletion, /await lrrApi\.deleteArchive\(archiveId\);[\s\S]{0,300}removeArchivesFromCatalog\(archiveId\);[\s\S]{0,200}clearArchiveSearchResponseCache\(\);/);
+  assert.match(metadataPage, /await lrrApi\.updateArchiveMetadata[\s\S]{0,500}rememberArchiveInCatalog\(/);
+  assert.match(uploadPage, /const uploadResults = await runUploadTasks[\s\S]{0,300}uploadResults\.some[\s\S]{0,200}invalidateArchiveCatalog\(\)/);
+  assert.match(progressActions, /rememberArchiveProgressInCatalog\(id, result\.page/);
+  assert.match(reader, /await lrrApi\.updateProgress\(id, targetPage[\s\S]{0,300}rememberArchiveProgressInCatalog\(id, targetPage/);
+  assert.doesNotMatch(progressActions, /clearArchiveSearchResponseCache|clearSearchCache/);
+});
+
 test('server-derived recommendation caches are scoped and the retired sync module is gone', () => {
   const home = read('src/pages/Home.jsx');
   const recommendations = read('src/components/Recommendations.jsx');
@@ -618,7 +695,31 @@ test('normal Reader holds old spread geometry until every target slot is decoded
   assert.match(reader, /handleNormalSpreadUnitReady/);
 });
 
+test('Home paginates archive searches without periodic list replacement', () => {
+  const home = read('src/pages/Home.jsx');
+  assert.match(home, /lrrApi\.search\(query, start,/);
+  assert.equal(/loadArchiveCatalog|getArchiveCatalog|sortArchiveCatalog|sliceArchiveCatalog/.test(home), false);
+  assert.doesNotMatch(home, /ARCHIVES_AUTO_REFRESH_MS|ARCHIVES_FOCUS_REFRESH_MS/);
+  assert.doesNotMatch(home, /setInterval\(refresh|handleFocusRefresh/);
+});
+
+test('Home auto-loads archives and desktop history count badges stay vertically centered', () => {
+  const home = read('src/pages/Home.jsx');
+  const css = read('src/index.css');
+
+  assert.doesNotMatch(home, /if \(\(filter\.query \|\| ''\)\.trim\(\) && !filter\.active\) return;/);
+  assert.match(css, /\.history-page-title-row\s*\{[^}]*align-items:\s*center;/s);
+});
+
 test('touch surfaces suppress native WebKit tap highlight globally', () => {
   const css = read('src/index.css');
   assert.match(css, /\*\s*\{[^}]*-webkit-tap-highlight-color:\s*transparent;/s);
+});
+
+test('home uses automatic archive loading or the manual fallback, never both', () => {
+  const home = read('src/pages/Home.jsx');
+  assert.match(home, /const supportsAutomaticArchiveLoading = typeof IntersectionObserver !== 'undefined';/);
+  assert.match(home, /if \(!supportsAutomaticArchiveLoading\) return undefined;/);
+  assert.match(home, /supportsAutomaticArchiveLoading\s*\?\s*\(/);
+  assert.match(home, /:\s*\(\s*<button[^>]*onClick=\{\(\) => doFetch\(false\)\}/s);
 });

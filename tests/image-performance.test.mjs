@@ -84,7 +84,7 @@ test('image decode queue can start one adjacent decode beside active critical wo
 });
 
 test('image decode queue cancels stale queued and active work', async () => {
-  const queue = imageLoadQueue.createImageDecodeQueue();
+  const queue = imageLoadQueue.createImageDecodeQueue({ maxConcurrent: 1 });
   let activeSignal;
   let staleStarted = false;
   const active = queue.schedule('active', async (signal) => {
@@ -98,6 +98,55 @@ test('image decode queue cancels stale queued and active work', async () => {
   await Promise.allSettled([active.promise, stale.promise]);
   assert.equal(activeSignal.aborted, true);
   assert.equal(staleStarted, false);
+});
+
+test('image decode queue supports one slot and applies runtime limit changes', async () => {
+  const queue = imageLoadQueue.createImageDecodeQueue({ maxConcurrent: 1 });
+  assert.equal(typeof queue.setMaxConcurrent, 'function');
+  const events = [];
+  let releaseFirst;
+  const first = queue.schedule('first', async () => {
+    events.push('first');
+    await new Promise((resolve) => { releaseFirst = resolve; });
+  });
+  const second = queue.schedule('second', async () => { events.push('second'); });
+  const third = queue.schedule('third', async () => { events.push('third'); });
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(events, ['first']);
+    queue.setMaxConcurrent(6);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(events, ['first', 'second', 'third']);
+  } finally {
+    releaseFirst?.();
+    await Promise.allSettled([first.promise, second.promise, third.promise]);
+  }
+});
+
+test('image load queue times out a stalled job and releases the next slot', async () => {
+  const queue = imageLoadQueue.createImageLoadQueue({ maxConcurrent: 2, timeoutMs: 20 });
+  let stalledSignal;
+  let nextStarted = false;
+  const stalled = queue.schedule('stalled', async (signal) => {
+    stalledSignal = signal;
+    await new Promise(() => {});
+  });
+  const stalledResult = stalled.catch((error) => error);
+  const next = queue.schedule('next', async () => {
+    nextStarted = true;
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(stalledSignal?.aborted, true);
+  assert.equal(nextStarted, true);
+  assert.equal((await stalledResult)?.name, 'TimeoutError');
+  await next;
+});
+
+test('paged Reader covers stale bitmaps while the target spread decodes', () => {
+  const reader = read('src/pages/Reader.jsx');
+  assert.match(reader, /targetPending\s*&&\s*!webtoonActive[\s\S]{0,1200}正在切换到第/);
+  assert.match(reader, /background:\s*'#000'/);
 });
 
 test('memory image cache policy uses byte budget and oldest-first eviction', () => {
@@ -243,7 +292,7 @@ test('paged readers retain the visible frame until the replacement spread is dec
   assert.match(reader, /getPendingSpreadRenderState\(currentSpread, displayedSpread, targetPending\)/);
   assert.match(reader, /key=\{`spread-slot:\$\{slotIndex\}`\}/);
   assert.match(reader, /const decoded = await decodeImageSource\(resolved\.src/);
-  assert.match(reader, /loadSpread\(\[imgCurrRef, imgCurrSecondRef\], activeSpread, IMAGE_LOAD_PRIORITY\.CRITICAL, true, true\)/);
+  assert.match(reader, /loadSpread\(\[imgCurrRef, imgCurrSecondRef\], activeSpread, IMAGE_LOAD_PRIORITY\.CRITICAL, true\)/);
   assert.match(reader, /const commits = await Promise\.all/);
   assert.match(reader, /commits\.forEach\(\(commit\) =>[\s\S]{0,80}commit\(\)/);
 });
@@ -266,4 +315,23 @@ test('webtoon pages always use offscreen decode even when preview downsampling i
 test('border crop is measured from the decoded replacement before it is displayed', () => {
   const reader = read('src/pages/Reader.jsx');
   assert.match(reader, /detectImageBorderInsets\(decoded\.image\)/);
+});
+
+test('archive covers wait for one shared near-viewport observer', () => {
+  const card = read('src/components/ArchiveCard.jsx');
+  assert.match(card, /let nearViewportObserver/);
+  assert.match(card, /rootMargin:\s*'1200px 800px'/);
+  assert.match(card, /if \(!thumbnailEligible\) return undefined;/);
+});
+
+test('archive covers use the displayed image as their only decoder', () => {
+  const card = read('src/components/ArchiveCard.jsx');
+  assert.match(card, /loading="lazy"/);
+  assert.match(card, /decoding="async"/);
+  assert.doesNotMatch(card, /function readImageAspectRatio|new Image\(\)/);
+});
+
+test('image cache allows four normal covers beside the reserved critical slot', () => {
+  const cache = read('src/lib/imageCache.js');
+  assert.match(cache, /createImageLoadQueue\(\{ maxConcurrent: 5 \}\)/);
 });

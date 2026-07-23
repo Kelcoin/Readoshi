@@ -6,7 +6,7 @@ import ConfirmDialog from '../components/ConfirmDialog';
 import ArchiveSearchBox from '../components/ArchiveSearchBox';
 import EhFavoriteDeleteSwitch from '../components/EhFavoriteDeleteSwitch';
 import { HomeSectionGlyph, getSectionGlyphColor } from '../components/AppGlyphs';
-import { getCropCover, getHideRead, getHistory, loadHistoryState, removeHistoryItems, setHideRead } from '../lib/history';
+import { getCropCover, getHideRead, getHistory, loadHistoryState, removeHistoryItems } from '../lib/history';
 import { isArchiveMissingError, runHistoryExistenceCheck } from '../lib/historyMaintenance';
 import { getSyncToken, getWorkerUrl } from '../lib/worker-config';
 import { archiveMatchesSearch } from '../lib/archiveSearch';
@@ -143,14 +143,6 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
         setSelectedIds(new Set());
         setLastSelectedId(null);
       }
-      return next;
-    });
-  }, []);
-
-  const handleToggleHideRead = useCallback(() => {
-    setHideReadState((value) => {
-      const next = !value;
-      setHideRead(next).catch(() => {});
       return next;
     });
   }, []);
@@ -301,58 +293,60 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
 
   return (
     <>
-      <div style={{ padding: isNarrow ? '16px 10px' : '24px 20px', maxWidth: '1680px', margin: '0 auto' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: '16px', marginBottom: '24px', flexWrap: 'wrap' }}>
-          <div>
-            <h1 style={{ fontWeight: 600, margin: '0 0 8px 0', fontSize: '28px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <HeaderGlyph />
-              阅读历史
-            </h1>
-            <div style={{ color: 'var(--text-sub)', fontSize: '14px' }}>
-              共 {history.length} 条记录{hideRead ? `，当前显示 ${filteredHistory.length} 条` : ''}{query.trim() ? `，搜索结果 ${searchedHistory.length} 条` : ''}
+      <div className="history-page" style={{ padding: isNarrow ? '16px 10px' : '24px 20px' }}>
+        <div className="history-page-header">
+          <div className="history-page-title-block">
+            <div className="history-page-title-row">
+              <h1 className="history-page-title">
+                <HeaderGlyph />
+                阅读历史
+              </h1>
+              <div className="history-page-summary">
+                <span className="history-summary-part">共 {history.length} 条记录</span>
+                {hideRead && <span className="history-summary-part">当前显示 {filteredHistory.length} 条</span>}
+                {query.trim() && <span className="history-summary-part">搜索结果 {searchedHistory.length} 条</span>}
+              </div>
             </div>
           </div>
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            <button className="btn" onClick={onBack} style={{ fontSize: '13px' }}>返回</button>
+          <div className="history-page-actions">
+            <button className="btn" onClick={onBack}>返回</button>
             <button
               className="btn"
               onClick={handleSyncHistory}
               disabled={!getWorkerUrl() || !getSyncToken() || syncing}
-              style={{ fontSize: '13px', opacity: !getWorkerUrl() || !getSyncToken() ? 0.5 : 1 }}
+              style={{ opacity: !getWorkerUrl() || !getSyncToken() ? 0.5 : 1 }}
               title={!getWorkerUrl() || !getSyncToken() ? '配置 Worker 后可从远端读取历史记录' : '从 Worker 刷新阅读历史'}
             >
               {syncing ? '刷新中' : '刷新'}
             </button>
-            <button className="btn" onClick={handleCheckHistory} disabled={checking} style={{ fontSize: '13px' }}>
+            <button className="btn" onClick={handleCheckHistory} disabled={checking}>
               {checking ? '检查中' : '清理失效'}
             </button>
           </div>
         </div>
 
         <section className="glass-panel section-reveal section-reveal-delay-1" style={{ padding: isNarrow ? '16px 14px' : '20px 24px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '18px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '18px', fontWeight: 600 }}>
+          <div className="history-section-header">
+            <div className="history-section-title">
               <HeaderGlyph />
               <span>全部历史记录</span>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-sub)', fontSize: '13px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <div className="history-section-actions">
               {selectedCount > 0 && (
                 <>
                   <span>{selectedCount} 项已选</span>
-                  <button className="btn" onClick={requestBatchDelete} style={{ padding: '6px 12px', fontSize: '12px' }}>删除选中</button>
-                  <button className="btn" onClick={clearSelection} style={{ padding: '6px 12px', fontSize: '12px' }}>取消选择</button>
+                  <button className="btn" onClick={requestBatchDelete}>删除选中</button>
+                  <button className="btn" onClick={clearSelection}>取消选择</button>
                 </>
               )}
               {selectionMode && selectedCount === 0 && searchedHistory.length > 0 && (
-                <button className="btn" onClick={selectAllVisible} style={{ padding: '6px 12px', fontSize: '12px' }}>全选当前</button>
+                <button className="btn" onClick={selectAllVisible}>全选当前</button>
               )}
               {searchedHistory.length > 0 && (
                 <button
                   className="btn"
                   onClick={toggleSelectionMode}
                   style={{
-                    padding: '6px 12px',
-                    fontSize: '12px',
                     background: selectionMode ? 'var(--accent)' : undefined,
                     borderColor: selectionMode ? 'var(--accent)' : undefined,
                     color: selectionMode ? '#fff' : undefined,
@@ -361,38 +355,12 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
                   {selectionMode ? '退出多选' : '多选'}
                 </button>
               )}
-              <span>历史记录中隐藏已读完</span>
-              <button
-                type="button"
-                onClick={handleToggleHideRead}
-                style={{
-                  width: '36px',
-                  height: '20px',
-                  borderRadius: '10px',
-                  background: hideRead ? 'var(--accent)' : 'rgba(255,255,255,0.2)',
-                  border: 'none',
-                  cursor: 'pointer',
-                  position: 'relative',
-                  transition: 'background 0.2s ease',
-                  flexShrink: 0,
-                }}
-                title={hideRead ? '历史记录中显示已读完' : '历史记录中隐藏已读完'}
-              >
-                <span style={{
-                  position: 'absolute',
-                  top: '2px',
-                  left: hideRead ? '18px' : '2px',
-                  width: '16px',
-                  height: '16px',
-                  borderRadius: '50%',
-                  background: '#fff',
-                  transition: 'left 0.2s ease',
-                }} />
-              </button>
             </div>
           </div>
 
-          <ArchiveSearchBox query={query} setQuery={setQuery} placeholder="在阅读历史中搜索标题或标签" />
+          <div className="history-section-toolbar">
+            <ArchiveSearchBox query={query} setQuery={setQuery} placeholder="在阅读历史中搜索标题或标签" />
+          </div>
 
           {searchedHistory.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: isNarrow ? '22px' : '28px' }}>
@@ -414,7 +382,7 @@ export default function HistoryPage({ onSelectArchive, onBack }) {
                     </div>
                   </div>
 
-                  <ArchiveGrid style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: isNarrow ? '10px' : '16px', '--archive-grid-half-gap': isNarrow ? '5px' : '8px' }}>
+                  <ArchiveGrid style={{ gap: isNarrow ? '10px' : '16px' }}>
                     {group.items.map((h) => {
                       const selected = selectedIds.has(h.id);
                       return (

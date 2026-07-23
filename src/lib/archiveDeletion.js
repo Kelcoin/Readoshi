@@ -1,4 +1,5 @@
-import { lrrApi } from './api';
+import { clearArchiveSearchResponseCache, lrrApi } from './api';
+import { removeArchivesFromCatalog } from './archiveMetadataCache';
 import { extractEhGalleryUrl, getEhCookie, hasReadyEhFavoriteSync, removeEhFavorite, shouldSyncEhFavorite } from './ehFavoriteSync';
 import { getSyncToken, getWorkerUrl } from './worker-config';
 
@@ -14,5 +15,7 @@ export async function deleteArchiveWithFavoriteSync(archive, { syncEnabled = fal
     if (galleryUrl) await removeEhFavorite({ galleryUrl, cookie: getEhCookie(), workerUrl: getWorkerUrl(), token: getSyncToken() });
   }
   await lrrApi.deleteArchive(archiveId);
+  removeArchivesFromCatalog(archiveId);
+  clearArchiveSearchResponseCache();
   return archiveId;
 }

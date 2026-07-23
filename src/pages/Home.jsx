@@ -49,8 +49,6 @@ const RANDOMS_RETRY_DELAY_MS = 350;
 const ARCHIVES_SCROLL_KEY = 'lrr_scroll_archives_on_arrival';
 const RANDOMS_REVALIDATE_STALE_MS = 10 * 60 * 1000;
 const RANDOMS_RESTORE_GRACE_MS = 90 * 1000;
-const ARCHIVES_AUTO_REFRESH_MS = 60 * 1000;
-const ARCHIVES_FOCUS_REFRESH_MS = 30 * 1000;
 const RESUME_REFRESH_SUPPRESS_MS = 10 * 1000;
 const FILTER_INPUT_MIN_WIDTH = 400;
 const FILTER_ACTIONS_MIN_WIDTH = 320;
@@ -342,6 +340,7 @@ function writeReaderSettings(settings) {
 }
 
 export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', onThemeModeChange }) {
+  const supportsAutomaticArchiveLoading = typeof IntersectionObserver !== 'undefined';
   const [navSnapshot] = useState(() => consumeHomeNavigationSnapshot());
   const [coldRestoreBoot] = useState(() => {
     const params = new URLSearchParams(window.location.search);
@@ -1185,6 +1184,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
   useEffect(() => { archivesLenRef.current = archives.length; }, [archives.length]);
 
   useEffect(() => {
+    if (!supportsAutomaticArchiveLoading) return undefined;
     const sentinel = sentinelRef.current;
     if (archiveBrowseMode !== ARCHIVE_BROWSE_MODES.scroll) return undefined;
     if (!sentinel) return;
@@ -1198,7 +1198,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [archiveBrowseMode, archives.length, doFetch, filter.query, filter.sortBy, filter.order, filter.active]);
+  }, [archiveBrowseMode, archives.length, doFetch, filter.query, filter.sortBy, filter.order, filter.active, supportsAutomaticArchiveLoading]);
 
   // Watch for new filter arrivals from tag clicks (poll localStorage briefly)
   useEffect(() => {
@@ -1227,13 +1227,13 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
 
   // Fetch archives when filter changes
   useEffect(() => {
-    if (coldRestoreRef.current) return;
-    if (navigationRestoreRef.current) {
+    const hasHydratedArchives = homeSnapshot && Array.isArray(homeSnapshot.archives) && homeSnapshot.archives.length > 0;
+    if (coldRestoreRef.current && hasHydratedArchives) return;
+    if (navigationRestoreRef.current && hasHydratedArchives) {
       didFetchArchivesRef.current = true;
       lastFetchedRef.current = Date.now();
       return;
     }
-    if ((filter.query || '').trim() && !filter.active) return;
     const firstFetch = !didFetchArchivesRef.current;
     didFetchArchivesRef.current = true;
     doFetch(true, { force: firstFetch });
@@ -1615,35 +1615,6 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
         : next
     ));
   }, []);
-
-  useEffect(() => {
-    if (archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged) return undefined;
-    if (coldRestoreRef.current) return undefined;
-    const refresh = () => {
-      if (document.visibilityState !== 'visible' || loadingRef.current) return;
-      if (skipResumeTriggeredRefresh()) return;
-      doFetch(true, { background: true, force: true, clearSearchCache: true });
-    };
-    const timer = setInterval(refresh, ARCHIVES_AUTO_REFRESH_MS);
-    return () => clearInterval(timer);
-  }, [archiveBrowseMode, doFetch, skipResumeTriggeredRefresh]);
-
-  useEffect(() => {
-    if (archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged) return undefined;
-    const handleFocusRefresh = () => {
-      if (coldRestoreRef.current || document.visibilityState !== 'visible') return;
-      const now = Date.now();
-      if (skipResumeTriggeredRefresh()) return;
-      if (now - lastFetchedRef.current < ARCHIVES_FOCUS_REFRESH_MS) return;
-      doFetch(true, { background: true, force: true, clearSearchCache: true });
-    };
-    window.addEventListener('focus', handleFocusRefresh);
-    document.addEventListener('visibilitychange', handleFocusRefresh);
-    return () => {
-      window.removeEventListener('focus', handleFocusRefresh);
-      document.removeEventListener('visibilitychange', handleFocusRefresh);
-    };
-  }, [archiveBrowseMode, doFetch, skipResumeTriggeredRefresh]);
 
   const handleCategoryClick = useCallback((cat) => {
     const tag = cat.search || `category:${cat.name}$`;
@@ -2138,13 +2109,13 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
       <section ref={archivesSectionRef} className="glass-panel section-reveal section-reveal-delay-3" style={{ padding: isNarrow ? '20px 14px' : '24px' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginBottom: '24px' }}>
           <div className="archive-toolbar-primary" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
-            <div className="archive-toolbar-summary" style={{ display: 'flex', alignItems: 'flex-end', gap: '10px', minWidth: 0 }}>
+            <div className="archive-toolbar-summary" style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
               <SectionHeading glyph="archives" style={{ lineHeight: 1 }}>全部档案</SectionHeading>
-              <span style={{ color: 'var(--text-sub)', fontSize: '12px', lineHeight: 1, paddingBottom: '1px' }}>
+              <span className="archive-count-badge">
                 {archiveCountLabel}
               </span>
             </div>
-            <div style={{ display: 'flex', gap: isNarrow ? '4px' : '8px', flexShrink: 0, alignItems: 'center', justifyContent: 'flex-end' }}>
+            <div className="archive-toolbar-actions" style={{ display: 'flex', gap: isNarrow ? '4px' : '8px', flexShrink: 0, alignItems: 'center', justifyContent: 'flex-end' }}>
               <button
                 className="btn"
                 style={{ padding: '6px 12px', fontSize: '12px' }}
@@ -2362,7 +2333,7 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
           })()}
         </div>
 
-        <ArchiveGrid ref={gridRef} className={archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged ? 'is-paged' : ''} data-refresh-phase={archiveRefreshPhase} aria-busy={archivesRefreshing} style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: isNarrow ? '10px' : '16px', '--archive-grid-half-gap': isNarrow ? '5px' : '8px' }}>
+        <ArchiveGrid ref={gridRef} className={archiveBrowseMode === ARCHIVE_BROWSE_MODES.paged ? 'is-paged' : ''} data-refresh-phase={archiveRefreshPhase} aria-busy={archivesRefreshing} style={{ gap: isNarrow ? '10px' : '16px' }}>
           {archives.length === 0 && loading ? (
             Array.from({ length: 12 }).map((_, i) => <SkeletonCard key={`gsk-${i}`} showProgress={showGlobalArchiveProgress} />)
           ) : (
@@ -2408,9 +2379,15 @@ export default function Home({ onSelectArchive, onLogout, themeMode = 'auto', on
               <button className="btn" style={{ padding: '8px 16px', fontSize: '13px' }} onClick={() => goArchivePage(archivePage + 1)} disabled={!canGoNextArchivePage}>下一页</button>
             </div>
           ) : hasMore ? (
-            <button className="btn" style={{ padding: '10px 40px' }} onClick={() => doFetch(false)} disabled={loading || archivesRefreshing}>
-              {loading ? '加载中...' : '加载更多'}
-            </button>
+            supportsAutomaticArchiveLoading ? (
+              loading || archivesRefreshing ? (
+                <div style={{ color: 'var(--text-sub)' }}>加载中...</div>
+              ) : null
+            ) : (
+              <button className="btn" style={{ padding: '10px 40px' }} onClick={() => doFetch(false)} disabled={loading || archivesRefreshing}>
+                {loading ? '加载中...' : '加载更多'}
+              </button>
+            )
           ) : (archives.length > 0 && (
             <div style={{ color: 'var(--text-sub)' }}>— 已经到底啦 —</div>
           ))}

@@ -11,6 +11,7 @@ import {
 } from '../lib/upload';
 import CustomSelect from '../components/CustomSelect';
 import { ToolbarGlyph } from '../components/AppGlyphs';
+import { invalidateArchiveCatalog } from '../lib/archiveMetadataCache';
 
 const ACCEPTED_FILES = '.zip,.cbz,.rar,.cbr,.7z,.pdf';
 
@@ -103,7 +104,8 @@ export default function UploadPage() {
     setResults(tasks.map(task => ({ ...task, type: 'file', status: 'queued', progress: 0, message: '' })));
     setRunning(true);
     try {
-      await runUploadTasks(tasks, task => lrrApi.uploadArchive(task.file), updateTask);
+      const uploadResults = await runUploadTasks(tasks, task => lrrApi.uploadArchive(task.file), updateTask);
+      if (uploadResults.some((result) => result.status === 'success')) invalidateArchiveCatalog();
       await clearSearchCache();
     } finally {
       setRunning(false);
@@ -119,13 +121,14 @@ export default function UploadPage() {
     setResults([...tasks.map(task => ({ ...task, type: 'url', status: 'queued', progress: 0, message: '' })), ...invalidResults.map(item => ({ ...item, progress: 100 }))]);
     setRunning(true);
     try {
-      await runUploadTasks(tasks, async (task) => {
+      const uploadResults = await runUploadTasks(tasks, async (task) => {
         const plugin = pluginValue === 'auto'
           ? matchDownloadPlugin(task.url, pluginState.plugins)
           : pluginState.plugins.find(item => item.value === pluginValue);
         if (!plugin) throw new Error('没有下载插件匹配该 URL，请手动选择插件');
         return lrrApi.useDownloadPlugin(plugin.value, task.url);
       }, updateTask);
+      if (uploadResults.some((result) => result.status === 'success')) invalidateArchiveCatalog();
       await clearSearchCache();
     } finally {
       setRunning(false);

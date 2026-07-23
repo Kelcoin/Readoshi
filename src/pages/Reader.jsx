@@ -20,6 +20,7 @@ import {
   shouldShowArchiveProgress,
 } from '../lib/archiveProgress';
 import { clearConfiguredArchiveReadingProgress } from '../lib/archiveProgressActions';
+import { rememberArchiveProgressInCatalog } from '../lib/archiveMetadataCache';
 import { getReaderSkeletonToolbarGroups } from '../lib/readerSkeletonLayout';
 import { createReaderRenderState, getReaderCapabilities, loadReaderBootstrapResource, readerRenderReducer } from '../lib/readerRenderPipeline';
 import {
@@ -63,7 +64,7 @@ import {
   resolveAutoReadingLayout,
 } from '../lib/readerLayout';
 
-const readerImageDecodeQueue = createImageDecodeQueue();
+const readerImageDecodeQueue = createImageDecodeQueue({ maxConcurrent: 3 });
 
 // ===== Authenticated Image Component =====
 const getConfiguredServerUrl = () => {
@@ -124,11 +125,11 @@ async function resolvePageImageSource(pageUrl, {
   if (cacheOnly && !allowNetworkFallback) {
     return getCachedImage(normalized);
   }
-  return getImage(normalized, async () => {
+  return getImage(normalized, async (signal) => {
     const headers = {};
     if (key) headers.Authorization = `Bearer ${encodeApiKey(key)}`;
     onNetworkStart?.();
-    const res = await fetch(normalized, { headers });
+    const res = await fetch(normalized, { headers, signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.blob();
   }, { priority });
@@ -480,12 +481,12 @@ const ReaderArchiveThumb = ({ archiveId, cacheOnly = false }) => {
       try {
         const blobUrl = cacheOnly && !allowNetworkFallback
           ? await getCachedImage(`thumb:hist:${archiveId}`)
-          : await getImage(`thumb:hist:${archiveId}`, async () => {
+          : await getImage(`thumb:hist:${archiveId}`, async (signal) => {
               const base = (localStorage.getItem('lrr_server_url') || '').replace(/\/$/, '');
               const key = localStorage.getItem('lrr_api_key') || '';
               const h = {};
               if (key) h['Authorization'] = `Bearer ${encodeApiKey(key)}`;
-              const r = await fetch(`${base}/api/archives/${archiveId}/thumbnail`, { headers: h });
+              const r = await fetch(`${base}/api/archives/${archiveId}/thumbnail`, { headers: h, signal });
               if (!r.ok) throw new Error();
               return r.blob();
             });
@@ -733,10 +734,10 @@ async function primePageBlob(pageUrl, priority = IMAGE_LOAD_PRIORITY.PRELOAD) {
   if (!pageUrl) return false;
   const normalized = toLocalUrl(pageUrl);
   const key = localStorage.getItem('lrr_api_key') || '';
-  return primeImage(normalized, async () => {
+  return primeImage(normalized, async (signal) => {
     const headers = {};
     if (key) headers.Authorization = `Bearer ${encodeApiKey(key)}`;
-    const res = await fetch(normalized, { headers });
+    const res = await fetch(normalized, { headers, signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.blob();
   }, { priority });
@@ -1176,8 +1177,6 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     && pageLoadPhase.status === 'ready'
     && pageLoadPhase.targetIndex === currentIndex;
   const [secondaryContentReady, setSecondaryContentReady] = useState(false);
-  const [loadingUiArmed, setLoadingUiArmed] = useState(false);
-  const [immersiveNetworkPending, setImmersiveNetworkPending] = useState(false);
 
   useLayoutEffect(() => {
     forceWindowScrollTop();
@@ -1251,6 +1250,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const snapshotSaveTimerRef = useRef(null);
 
   const [preloadInput, setPreloadInput] = useState(String(settings.preloadCount));
+  const [decodeConcurrencyInput, setDecodeConcurrencyInput] = useState(String(settings.maxConcurrentDecodes));
   const [autoTurnInput, setAutoTurnInput] = useState(String(settings.autoTurnInterval));
   const archiveRef = useRef(archive);
   const pagesRef = useRef(pages);
@@ -1358,10 +1358,15 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       const next = normalizeReaderSettings(typeof updater === 'function' ? updater(prev) : updater);
       localStorage.setItem(READER_SETTINGS_KEY, JSON.stringify(next));
       setPreloadInput(String(next.preloadCount));
+      setDecodeConcurrencyInput(String(next.maxConcurrentDecodes));
       setAutoTurnInput(String(next.autoTurnInterval));
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    readerImageDecodeQueue.setMaxConcurrent(settings.maxConcurrentDecodes);
+  }, [settings.maxConcurrentDecodes]);
 
   useEffect(() => {
     updateSettings(prepareReaderSettingsForArchiveChange);
@@ -1612,6 +1617,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         if (targetPage === latestSyncedPage) return;
         if (!allowProgressRegressionRef.current && targetPage < latestSyncedPage) return;
         await lrrApi.updateProgress(id, targetPage, { keepalive });
+        rememberArchiveProgressInCatalog(id, targetPage);
         highestLrrSyncedPageRef.current.set(id, targetPage);
       })
       .catch(() => {
@@ -1898,7 +1904,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       image.style.transformOrigin = 'center center';
     };
 
-    const loadImg = async (imgRef, unit, priority, trackNetwork = false, preserveVisible = false) => {
+    const loadImg = async (imgRef, unit, priority, preserveVisible = false) => {
       const pageUrl = unit ? pages[unit.pageIndex] : null;
       const pageIndex = unit?.pageIndex;
       if (!pageUrl || !imgRef.current) return false;
@@ -1911,25 +1917,15 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
           delete initialImage.dataset.readerUnit;
         }
         const normalized = toLocalUrl(pageUrl);
-        let src;
-        try {
-          src = assetCacheOnly
-            ? await getCachedImage(normalized)
-            : await getImage(normalized, async () => {
-              const headers = {};
-              if (key) headers.Authorization = `Bearer ${encodeApiKey(key)}`;
-              if (trackNetwork && alive && loadSeq === immersiveLoadSeqRef.current) {
-                setImmersiveNetworkPending(true);
-              }
-              const res = await fetch(normalized, { headers });
-              if (!res.ok) throw new Error(`HTTP ${res.status}`);
-              return res.blob();
-            }, { priority });
-        } finally {
-          if (trackNetwork && alive && loadSeq === immersiveLoadSeqRef.current) {
-            setImmersiveNetworkPending(false);
-          }
-        }
+        const src = assetCacheOnly
+          ? await getCachedImage(normalized)
+          : await getImage(normalized, async (signal) => {
+            const headers = {};
+            if (key) headers.Authorization = `Bearer ${encodeApiKey(key)}`;
+            const res = await fetch(normalized, { headers, signal });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.blob();
+          }, { priority });
         if (!alive || loadSeq !== immersiveLoadSeqRef.current) return false;
         if (!alive || loadSeq !== immersiveLoadSeqRef.current || !imgRef.current) return false;
         if (src) {
@@ -2027,12 +2023,12 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         if (ref.current?.parentElement) resizeObserver.observe(ref.current.parentElement);
       }
     }
-    const loadSpread = async (refs, spread, priority, trackNetwork = false, preserveVisible = false) => {
+    const loadSpread = async (refs, spread, priority, preserveVisible = false) => {
       const first = spread[0]
-        ? loadImg(refs[0], spread[0], priority, trackNetwork, preserveVisible)
+        ? loadImg(refs[0], spread[0], priority, preserveVisible)
         : Promise.resolve(false);
       const second = spread[1]
-        ? loadImg(refs[1], spread[1], priority, false, preserveVisible)
+        ? loadImg(refs[1], spread[1], priority, preserveVisible)
         : Promise.resolve(() => { unloadImg(refs[1]); return true; });
       const commits = await Promise.all([first, second]);
       if (commits.some((commit) => typeof commit !== 'function')) return false;
@@ -2041,13 +2037,11 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
       return committed;
     };
 
-    setImmersiveNetworkPending(false);
-    loadSpread([imgCurrRef, imgCurrSecondRef], activeSpread, IMAGE_LOAD_PRIORITY.CRITICAL, true, true).then((ok) => {
+    loadSpread([imgCurrRef, imgCurrSecondRef], activeSpread, IMAGE_LOAD_PRIORITY.CRITICAL, true).then((ok) => {
       if (!alive || loadSeq !== immersiveLoadSeqRef.current) return;
       if (currentIndexRef.current !== idx || currentSpreadIndexRef.current !== activeSpreadIndex) return;
       if (ok) {
         setDisplayedIndex(idx);
-        setLoadingUiArmed(false);
         setPageLoadPhase((prev) => (
           idx !== prev.targetIndex
             ? prev
@@ -2230,6 +2224,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         if (archiveHasNewMarker(restoredArchive) && !progressWasCleared) {
           try {
             await lrrApi.updateProgress(archiveId, 1);
+            rememberArchiveProgressInCatalog(archiveId, 1);
             highestLrrSyncedPageRef.current.set(archiveId, Math.max(1, highestLrrSyncedPageRef.current.get(archiveId) || 0));
             restoredArchive = clearArchiveNewMarker(restoredArchive);
           } catch {}
@@ -2256,7 +2251,6 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         setPages(restoredPages);
         setCurrentIndex(restoredIndex);
         setDisplayedIndex(restoredIndex);
-        setLoadingUiArmed(false);
         setPageLoadPhase({
           status: 'loading',
           visibleIndex: restoredIndex,
@@ -2299,6 +2293,7 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
           if (archiveHasNewMarker(meta) && !hasArchiveProgressMarker(archiveId)) {
             void lrrApi.updateProgress(archiveId, 1).then(() => {
               if (!isActive()) return;
+              rememberArchiveProgressInCatalog(archiveId, 1);
               highestLrrSyncedPageRef.current.set(archiveId, Math.max(1, highestLrrSyncedPageRef.current.get(archiveId) || 0));
               const updatedMeta = { ...clearArchiveNewMarker(meta), progress: Math.max(1, Number.parseInt(meta.progress, 10) || 0) };
               archiveRef.current = updatedMeta;
@@ -2356,11 +2351,9 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         if (savedProgress > 0 && savedProgress <= extractedPages.length) {
           setCurrentIndex(savedProgress - 1);
           setDisplayedIndex(savedProgress - 1);
-          setLoadingUiArmed(false);
           setPageLoadPhase({ status: 'loading', visibleIndex: savedProgress - 1, targetIndex: savedProgress - 1, shownAt: Date.now() });
         } else {
           setDisplayedIndex(0);
-          setLoadingUiArmed(false);
           setPageLoadPhase({ status: extractedPages.length > 0 ? 'loading' : 'idle', visibleIndex: 0, targetIndex: 0, shownAt: extractedPages.length > 0 ? Date.now() : 0 });
         }
         dispatchRender({ type: 'ready', resource: 'selection' });
@@ -2793,7 +2786,6 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
     const promoted = promoteImmersiveTarget(bounded, targetSplitPart);
     const visibleImmediately = assumeVisible || promoted;
     void exitColdRestoreMode();
-    setLoadingUiArmed(false);
     if (resetZoom) {
       zoomScaleRef.current = 1.0;
       panRef.current = { x: 0, y: 0, startX: 0, startY: 0, originX: 0, originY: 0 };
@@ -2962,7 +2954,6 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const handlePageVisualReady = useCallback((pageIndex) => {
     if (typeof pageIndex !== 'number') return;
     setDisplayedIndex(pageIndex);
-    setLoadingUiArmed(false);
     setPageLoadPhase((prev) => (
       pageIndex !== prev.targetIndex
         ? prev
@@ -2994,15 +2985,6 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
         : { ...prev, status: 'error' }
     ));
   }, []);
-
-  useEffect(() => {
-    if (viewMode !== 'immersive' || !immersiveNetworkPending) {
-      setLoadingUiArmed(false);
-      return undefined;
-    }
-    const timer = setTimeout(() => setLoadingUiArmed(true), 180);
-    return () => clearTimeout(timer);
-  }, [immersiveNetworkPending, viewMode]);
 
   const confirmRemoveHistory = useCallback(() => {
     if (!historyDeleteTarget?.id) return;
@@ -3319,8 +3301,9 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
   const displayedSpreadIndex = findSpreadIndex(readerSpreads, { pageIndex: displayedIndex, splitPart });
   const displayedSpread = readerSpreads[Math.max(0, displayedSpreadIndex)] || [];
   const normalSpreadRenderState = getPendingSpreadRenderState(currentSpread, displayedSpread, targetPending);
-  const loadingUiVisible = targetPending && pageLoadPhase.status === 'loading' && loadingUiArmed;
-  const immersivePagePending = viewMode === 'immersive' && loadingUiVisible;
+  const normalPagePending = targetPending && !webtoonActive;
+  const pageSwitchLabel = normalPagePending ? `正在切换到第 ${normalTargetIndex + 1} 页…` : '';
+  const immersivePagePending = viewMode === 'immersive' && normalPagePending;
   const spreadPageNumbers = [...new Set(currentSpread.map((unit) => unit.pageIndex + 1))].sort((a, b) => a - b);
   const normalPageLabel = currentSpread.some((unit) => unit.cropSide)
     ? `${normalTargetIndex + 1}（${splitPart + 1}/2） / ${pages.length}`
@@ -3583,6 +3566,15 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                     </label>
                   ))}
                   <label style={{ fontSize: '12px', color: 'var(--text-sub)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    最大同时解码
+                    <input type="text" inputMode="numeric" pattern="[0-9]*" className="input-glass no-spinner"
+                      value={decodeConcurrencyInput}
+                      onChange={(e) => { const raw = e.target.value; setDecodeConcurrencyInput(raw); const n = parseInt(raw, 10); if (!isNaN(n) && n >= 1 && n <= 6) { updateSettings((s) => ({ ...s, maxConcurrentDecodes: n })); } }}
+                      onBlur={() => { const n = parseInt(decodeConcurrencyInput, 10); const next = Math.max(1, Math.min(6, isNaN(n) ? 3 : n)); setDecodeConcurrencyInput(String(next)); updateSettings((s) => ({ ...s, maxConcurrentDecodes: next })); }}
+                      style={{ width: '56px', padding: '5px 8px', fontSize: '12px', borderRadius: '6px', border: '1px solid var(--reader-control-border)', background: 'var(--comment-input-bg)', color: 'var(--text-main)', textAlign: 'center' }}
+                    />
+                  </label>
+                  <label style={{ fontSize: '12px', color: 'var(--text-sub)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     预加载
                     <input type="text" inputMode="numeric" pattern="[0-9]*" className="input-glass no-spinner"
                       value={preloadInput}
@@ -3713,6 +3705,29 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                   status={renderState.manifest.status === 'error' ? 'error' : (renderState.manifest.status === 'ready' ? 'empty' : 'loading')}
                   onRetry={() => setBootstrapRetryToken((token) => token + 1)}
                 />
+              )}
+              {viewMode === 'normal' && normalPagePending && (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    zIndex: 4,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '24px',
+                    textAlign: 'center',
+                    background: '#000',
+                    color: '#f2f3f6',
+                    fontSize: 'clamp(18px, 3vw, 30px)',
+                    fontWeight: 750,
+                    pointerEvents: 'none',
+                  }}
+                >
+                  {pageSwitchLabel}
+                </div>
               )}
               {!webtoonActive && adjacentDecodePageIndices.length > 0 && (
                 <div
@@ -3960,10 +3975,10 @@ export default function Reader({ archiveId, onBack, coldRestoreBoot = false }) {
                   }}
                 >
                   <div style={{ fontSize: 'clamp(24px, 4vw, 40px)', lineHeight: 1.35, fontWeight: 800, color: '#f2f3f6', letterSpacing: '0.5px', textWrap: 'balance' }}>
-                    {`正在加载第 ${currentIndex + 1} 页`}
+                    {pageSwitchLabel}
                   </div>
                   <div style={{ fontSize: 'clamp(16px, 2.6vw, 26px)', fontWeight: 600, color: 'rgba(223,225,232,0.62)' }}>
-                    正在请求图像
+                    正在解码图像
                   </div>
                 </div>
               )}

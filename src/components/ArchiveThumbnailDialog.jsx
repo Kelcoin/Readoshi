@@ -21,10 +21,10 @@ function normalizePageUrl(rawUrl) {
 async function loadPageImage(pageUrl) {
   const normalized = normalizePageUrl(pageUrl);
   if (!normalized) return null;
-  return getImage(normalized, async () => {
+  return getImage(normalized, async (signal) => {
     const apiKey = localStorage.getItem('lrr_api_key') || '';
     const headers = apiKey ? { Authorization: `Bearer ${encodeApiKey(apiKey)}` } : {};
-    const response = await fetch(normalized, { headers });
+    const response = await fetch(normalized, { headers, signal });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.blob();
   }, { priority: IMAGE_LOAD_PRIORITY.CRITICAL });

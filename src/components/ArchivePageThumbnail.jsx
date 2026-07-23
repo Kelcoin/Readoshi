@@ -67,11 +67,11 @@ export default function ArchivePageThumbnail({ archiveId, pageIndex, active, cac
         setThumbState((state) => state === 'queued' ? state : 'loading');
         let blobUrl = await getCachedImage(thumbKey);
         if (!blobUrl && !(cacheOnly && !allowNetworkFallback)) {
-          blobUrl = await getImage(thumbKey, async () => {
-            let result = await lrrApi.getArchiveThumbnail(archiveId, { page, noFallback: true });
+          blobUrl = await getImage(thumbKey, async (signal) => {
+            let result = await lrrApi.getArchiveThumbnail(archiveId, { page, noFallback: true, signal });
             if (result.status === 202 && result.job) {
               await waitForThumbnailJob(result.job);
-              result = await lrrApi.getArchiveThumbnail(archiveId, { page, noFallback: true });
+              result = await lrrApi.getArchiveThumbnail(archiveId, { page, noFallback: true, signal });
             }
             return result.status !== 202 ? result.blob : null;
           }, { priority: IMAGE_LOAD_PRIORITY.NORMAL });

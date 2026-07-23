@@ -12,6 +12,7 @@ export const DEFAULT_READER_SETTINGS = Object.freeze({
   webtoonGap: 0, doublePageGap: 8,
   pageIndicatorVisibilityMode: 'auto',
   optimizedImageDecodeEnabled: true,
+  maxConcurrentDecodes: 3,
   allowProgressRegression: true,
   progressBarVisibility: ARCHIVE_PROGRESS_VISIBILITY.HISTORY,
 });
@@ -35,6 +36,13 @@ export function normalizeReaderSettings(value = {}) {
     next[key] = Boolean(next[key]);
   }
   next.preloadCount = Math.max(0, Math.min(10, Number(next.preloadCount) || 0));
+  const maxConcurrentDecodes = Number(next.maxConcurrentDecodes);
+  next.maxConcurrentDecodes = Math.max(
+    1,
+    Math.min(6, Number.isFinite(maxConcurrentDecodes)
+      ? Math.floor(maxConcurrentDecodes)
+      : DEFAULT_READER_SETTINGS.maxConcurrentDecodes),
+  );
   const autoTurnInterval = Number(next.autoTurnInterval);
   next.autoTurnInterval = Number.isFinite(autoTurnInterval) && autoTurnInterval > 0
     ? Math.min(3600, autoTurnInterval)

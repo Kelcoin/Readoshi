@@ -1,8 +1,10 @@
 import { lrrApi } from './api';
+import { mergeArchiveProgress } from './archiveCatalog';
 import { getConfigScopeId, migrateLegacyStorageKey } from './configScope';
 
 const metadataCache = new Map();
 const metadataRequests = new Map();
+const archiveCatalogs = new Map();
 const HYDRATE_CONCURRENCY = 6;
 const METADATA_STORAGE_KEY = 'lrr_archive_metadata_cache_v1';
 const METADATA_STORAGE_LIMIT = 300;
@@ -72,6 +74,71 @@ function rememberArchiveMetadataForScope(archive, scope) {
   if (metadataCache.size > METADATA_STORAGE_LIMIT) metadataCache.delete(metadataCache.keys().next().value);
   scheduleMetadataPersist();
   return metadata;
+}
+
+function getCatalogEntry(scope = getConfigScopeId()) {
+  if (!archiveCatalogs.has(scope)) archiveCatalogs.set(scope, { items: null, request: null });
+  return archiveCatalogs.get(scope);
+}
+
+export function getArchiveCatalog() {
+  return getCatalogEntry().items;
+}
+
+export async function loadArchiveCatalog({ force = false, signal } = {}) {
+  const scope = getConfigScopeId();
+  const entry = getCatalogEntry(scope);
+  if (!force && Array.isArray(entry.items)) return entry.items;
+  if (entry.request) return entry.request;
+  entry.request = lrrApi.getAllArchives({ signal })
+    .then((response) => {
+      const items = Array.isArray(response) ? response : [];
+      entry.items = items.map((archive) => (
+        rememberArchiveMetadataForScope(archive, scope) || archive
+      ));
+      return entry.items;
+    })
+    .finally(() => {
+      entry.request = null;
+    });
+  return entry.request;
+}
+
+export function rememberArchiveInCatalog(archive) {
+  const metadata = rememberArchiveMetadata(archive);
+  if (!metadata) return null;
+  const entry = getCatalogEntry();
+  if (!Array.isArray(entry.items)) return metadata;
+  const id = archiveId(metadata);
+  const index = entry.items.findIndex((item) => archiveId(item) === id);
+  if (index >= 0) entry.items = entry.items.map((item, itemIndex) => (itemIndex === index ? metadata : item));
+  else entry.items = [...entry.items, metadata];
+  return metadata;
+}
+
+export function rememberArchiveProgressInCatalog(id, page, lastreadtime) {
+  const archiveIdValue = String(id || '').trim();
+  if (!archiveIdValue) return null;
+  const entry = getCatalogEntry();
+  const archive = entry.items?.find((item) => archiveId(item) === archiveIdValue)
+    || metadataCache.get(scopedArchiveKey(archiveIdValue))
+    || { id: archiveIdValue, arcid: archiveIdValue };
+  return rememberArchiveInCatalog(mergeArchiveProgress(archive, archiveIdValue, page, lastreadtime));
+}
+
+export function removeArchivesFromCatalog(ids) {
+  const removed = new Set((Array.isArray(ids) ? ids : [ids]).map(String));
+  removed.forEach((id) => metadataCache.delete(scopedArchiveKey(id)));
+  scheduleMetadataPersist();
+  const entry = getCatalogEntry();
+  if (Array.isArray(entry.items)) {
+    entry.items = entry.items.filter((archive) => !removed.has(archiveId(archive)));
+  }
+}
+
+export function invalidateArchiveCatalog() {
+  const entry = getCatalogEntry();
+  entry.items = null;
 }
 
 export function decorateArchiveRecord(record) {
